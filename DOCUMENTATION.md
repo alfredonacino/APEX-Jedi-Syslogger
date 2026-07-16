@@ -92,7 +92,7 @@ sees it. Common fields:
 |-------|---------|
 | `id` | Random unique id |
 | `ts` | Epoch ms timestamp |
-| `srcType` | Source category (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`, appliance vendors, `file`) |
+| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 20 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `auditd`, …), or `file` |
 | `host` / `hostIp` | Device name / management IP |
 | `facility` / `severity` | Syslog numeric facility (0–23) and severity (0–7) |
 | `program` / `pid` | Process / tag |
@@ -108,6 +108,22 @@ sees it. Common fields:
 
 Syslog severity mapping (lower = more severe): `0 emerg, 1 alert, 2 crit,
 3 err, 4 warning, 5 notice, 6 info, 7 debug`.
+
+**Source-specific fields.** A formatter reads only the fields its vendor needs, so
+some sources add their own. The ones a detection rule reads:
+
+| Field | Source | Meaning |
+|-------|--------|---------|
+| `sigName` | `snort`, `ciscoftd` | Signature text **for display**. Deliberately separate from `threatSig`: an IDS names every alert, including benign priority-3 noise, but only `threatSig` raises an alert. |
+| `gid` / `sid` / `rev` / `classification` / `priority` | `snort`, `ciscoftd` | Snort rule identity and priority |
+| `termState` / `timers` / `conns` | `haproxy` | 4-char termination state (`----` clean, `PR--` proxy-denied) and the `Tq/Tw/Tc/Tr/Tt` tuple |
+| `qtype` / `qflags` / `clientHandle` | `bind` | DNS query type, trailing flag chars, `@0x…` client handle |
+| `iseCategory` / `msgCode` / `mac` / `nasName` / `failReason` | `ciscoise` | Logging category, message code (`5200` pass / `5400` fail), supplicant MAC, NAS, failure text |
+| `totalSeg` / `segNum` / `iseSeq` | `ciscoise` | ISE's datagram-segmentation header |
+| `criticality` / `logName` / `logType` / `snareCounter` | `snare` | Snare agent fields wrapping the Windows event |
+| `auditType` / `auditSerial` / `auditTs` / `auditBody` | `auditd` | Record type (`SYSCALL`/`EXECVE`), and the shared `audit(epoch:serial)` join key — **identical across every record of one event** |
+| `auid` / `uid` / `comm` | `auditd` | Login identity (survives `su`/`sudo`), effective uid, command |
+| `pfAction` / `smtpCode` / `pfReason` | `postfix` | `reject`/`sent`, SMTP reply code, reason text |
 
 ---
 
@@ -533,12 +549,22 @@ rsync -av --exclude '.git' --exclude 'node_modules' \
 
 ```bash
 cd /home/alfreddgreat/APEX_JediSyslogger
-node server.js                       # foreground, port 8099
-PORT=80 node server.js               # privileged port (needs root/setcap)
-nohup node server.js > apex.log 2>&1 &   # detached
+node server.js                                    # foreground, port 8099
+PORT=80 node server.js                            # privileged port (needs root/setcap)
+setsid node server.js </dev/null >apex.log 2>&1 & # detached
 ```
 
 Then browse to `http://172.26.250.20:8099`.
+
+> **Starting it over SSH: use `setsid`, not `nohup`.** A plain
+> `nohup node server.js > apex.log 2>&1 &` leaves the server's stdout attached to
+> the SSH session, so the channel never closes and the command appears to hang.
+> `setsid` with stdin redirected from `/dev/null` fully detaches it.
+
+**Updating a running deployment** needs only the `rsync` above — `server.js` serves
+the static files from disk on each request, so a change to `js/`, `css/`, or the
+docs is live immediately with **no restart and no downtime**. Restart only when
+`server.js` itself changes.
 
 ### Run as a systemd service (recommended)
 
@@ -584,15 +610,34 @@ sudo ufw allow out 514/udp          # syslog egress (adjust to your collector)
 - **New generic log source** — add a builder to `BASELINE` in `js/syslogger.js`
   and a `SOURCE_META` colour/label in `js/ui.js`.
 - **New appliance format** — add a formatter to `VENDOR_FORMATTERS` in
-  `js/data.js` and a generator to `APPLIANCE` in `js/syslogger.js`.
+  `js/data.js` and a generator to `APPLIANCE` in `js/syslogger.js`, plus a
+  `SOURCE_META` entry in `js/ui.js`.
 - **New attack scenario** — add an entry to `MORE_ATTACKS` (or `SCENARIOS`) in
   `js/syslogger.js`; set `threatSig` or emit content a rule matches.
 - **New detection rule** — push a rule object into `makeRules()` in `js/jedi.js`.
   Use `ctx.window()` / `ctx.windowSet()` / `ctx.cooldown()` for correlation.
 
+Four conventions worth keeping:
+
+1. **Declare a non-native `transport`.** If the product can't reach a collector
+   without an agent or an API connector, set `transport: 'agent'` / `'api'` on the
+   `APPLIANCE` entry. Default is `'native'`. The UI badges anything non-native.
+   Silently presenting an API-only product as a syslog appliance teaches a false
+   fact about log ingestion, which defeats the point of the tool.
+2. **Reuse a rule instead of cloning it.** If a new source carries telemetry an
+   existing rule already reads, widen that rule's `srcType` gate. `snare` is
+   Windows Event Log over an agent, so it feeds `windows-threat`; `bind` feeds
+   `dns-tunneling`. A near-duplicate rule means two alerts for one event.
+3. **One burst, one alert.** Rules have no global cooldown, so a burst where every
+   line carries `threatSig` raises an alert per line. Either tag only the final
+   event, or let a stateful rule correlate the burst (`radius-brute`).
+4. **Update the counts** in `README.md`, this file, and `CLAUDE.md`.
+
 Every scenario should be wired to at least one rule — the headless harness pattern
 (load `js/*` under a stubbed `window`, inject each scenario, assert alerts fire) is
-the quickest way to verify coverage.
+the quickest way to verify coverage. Note that `Jedi.ingest()` wraps each
+`rule.run()` in `try/catch` and discards the error, so a **broken rule fails
+silently** — a harness that asserts on alerts is the only thing that catches it.
 
 ---
 
