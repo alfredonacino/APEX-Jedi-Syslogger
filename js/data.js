@@ -115,6 +115,13 @@
       `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   }
 
+  // Snare agent clock: "Tue Apr 06 15:40:08 2021"
+  const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  function snareTimestamp(d) {
+    return `${DAYS[d.getDay()]} ${MONTHS[d.getMonth()]} ${pad(d.getDate())} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ${d.getFullYear()}`;
+  }
+
   // Vendor-specific wire formats for common security appliances. Each takes a
   // fully-populated event and returns the raw line exactly as the device would
   // emit it over syslog (PRI header + native payload). The RFC 3164/5424 toggle
@@ -319,6 +326,30 @@
         ? `NOQUEUE: reject: RCPT from ${ev.clientHost}[${ev.srcIp}]: ${ev.smtpCode} ${ev.pfReason}; ${tail}`
         : `${ev.queueId}: to=<${ev.to}>, relay=${ev.relay}, delay=${ev.delay}, dsn=2.0.0, status=sent (250 2.0.0 OK)`;
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} postfix/${ev.pfProc}[${ev.pid}]: ${body}`;
+    },
+    // Snare / NXLog Windows Event Log — TAB-delimited, literal MSWinEventLog marker.
+    // Windows speaks no syslog: this is what a Snare or NXLog agent relays.
+    snare(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const T = '\t';
+      const f = [
+        'MSWinEventLog', ev.criticality, ev.logName, ev.snareCounter, snareTimestamp(d),
+        ev.eventId, ev.sourceName, ev.user || 'N/A', ev.sidType || 'N/A', ev.logType,
+        ev.host, ev.categoryStr || 'N/A', '', ev.message, ev.snareCounter,
+      ];
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} ${f.join(T)}`;
+    },
+    // Linux auditd, relayed by the audisp-syslog plugin. Every record of one event
+    // shares the audit(epoch:serial) stamp, so SYSCALL/EXECVE/PATH lines arrive as
+    // separate syslog messages a collector must stitch back together.
+    auditd(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      // auditTs is fixed at build time, not per-line: every record of one event
+      // must carry a byte-identical audit(epoch:serial) for the collector to join on.
+      const stamp = `audit(${(ev.auditTs / 1000).toFixed(3)}:${ev.auditSerial})`;
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} audispd[${ev.pid}]: type=${ev.auditType} msg=${stamp}: ${ev.auditBody}`;
     },
     // Generic CEF (ArcSight Common Event Format).
     cef(ev) {

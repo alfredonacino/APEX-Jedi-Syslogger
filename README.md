@@ -5,7 +5,7 @@ practice. It has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **18 native appliance formats** (Palo Alto, FortiGate, Cisco ASA, Cisco FTD, Cisco ISE, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, Snort 3, HAProxy, BIND 9, Postfix, and generic CEF/LEEF) from simulated infrastructure at a configurable *events-per-second*, injects **26 attack scenarios** on demand, and can replay a log file in a loop. |
+| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **20 appliance formats** (Palo Alto, FortiGate, Cisco ASA, Cisco FTD, Cisco ISE, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, Snort 3, HAProxy, BIND 9, Postfix, Windows Event Log via Snare, Linux auditd, and generic CEF/LEEF) from simulated infrastructure at a configurable *events-per-second*, injects **26 attack scenarios** on demand, and can replay a log file in a loop. |
 | **Jedi**      | A miniature SIEM engine. Ingests every event, keeps rolling statistics, and runs a **stateful detection-rule engine** that raises **MITRE ATT&CK-tagged** alerts. |
 
 The dashboard runs entirely in the browser. An optional **zero-dependency Node
@@ -147,9 +147,10 @@ If your SIEM shows nothing:
 | DoS / Flood | SYN-flood markers or a volumetric block burst to one host | T1498 |
 | Phishing Email | SPF/DKIM/DMARC fail + risky attachment | T1566 |
 | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` auth failures from one MAC / 60s | T1110 |
+| Root Shell From Unprivileged Login | auditd `SYSCALL` with `auid`≠0 but `uid=0` | T1548 |
 | Appliance IPS / WAF Signature | any appliance threat/violation signature | T1190 (mapped by signature) |
 
-**Scenarios** — 26 attacks (`Attack ›`) and 18 appliance formats (`Appliance logs ›`).
+**Scenarios** — 26 attacks (`Attack ›`) and 20 appliance formats (`Appliance logs ›`).
 Every scenario is wired to a detection, so each button demonstrably lights up the
 dashboard. The **Threat Level** meter aggregates recent alerts (last 2 min) weighted
 by severity, DEFCON-style: `GUARDED → ELEVATED → HIGH → SEVERE → CRITICAL`.
@@ -167,7 +168,7 @@ in [DOCUMENTATION.md §5](DOCUMENTATION.md#5-attack-scenarios).
 - **Windows persistence / evasion** — New Admin Account · Audit Log Cleared
 - **Email** — Phishing Email
 
-## Appliance log formats (18)
+## Appliance log formats (20)
 
 Injected from the **Appliance logs ›** menu — each event is rendered in the
 vendor's real wire format (syslog `<PRI>` + native payload). Full example lines
@@ -191,6 +192,8 @@ and detection mapping: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-appliance-log-f
 | HAProxy | positional + termination flags | `appliance-threat` |
 | BIND 9 (DNS) | `named` query log | `dns-tunneling` |
 | Postfix (mail) | prose + `key=<value>` | `appliance-threat` |
+| Windows Event Log (Snare) `agent` | TAB-delimited `MSWinEventLog` | `windows-threat` |
+| Linux auditd `agent` | `type=… msg=audit(ts:serial)` | `auditd-rootshell` |
 | CEF (generic) | ArcSight CEF | `appliance-threat` |
 | LEEF (generic) | QRadar LEEF | `appliance-threat` |
 
@@ -201,9 +204,14 @@ correlation-driven rather than signature-driven: **Cisco ISE** emits a burst of
 RADIUS rejects that `radius-brute` counts over a 60 s window, and **BIND 9** emits
 DGA-length and known-bad queries that `dns-tunneling` catches.
 
-Every source above is **native syslog** — the device emits the format itself. Each
-`Appliance logs ›` button reports its transport on hover; sources needing an agent
-or an API connector would be marked as such.
+**Transport matters.** Most sources are **native syslog** — the device emits the
+format itself. Two are not: Windows has no syslog (a **Snare**/NXLog agent relays
+the Event Log) and **auditd** needs the `audisp-syslog` plugin. Those carry an
+`agent` badge on their button, because presenting them as native syslog devices
+would teach something false. Every button reports its transport on hover.
+
+Snare is Windows Event Log over a different wire format, so it reuses the existing
+`windows-threat` rule — same event IDs (4624/4625/4688), no duplicate rule.
 
 ## Project layout
 

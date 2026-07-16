@@ -155,6 +155,26 @@
         },
       },
       {
+        id: 'auditd-rootshell', name: 'Root Shell From Unprivileged Login', severity: 'high',
+        tactic: 'Privilege Escalation', technique: 'T1548 · Abuse Elevation Control Mechanism',
+        run(ev) {
+          if (ev.srcType !== 'auditd' || ev.auditType !== 'SYSCALL') return;
+          // auid is the login identity and survives su/sudo; uid is who the syscall
+          // runs as. auid set, non-root, but uid=0 means an unprivileged login is
+          // executing as root. Legitimate sudo looks like this too, which is why
+          // the audit rule key (set by a local watch) is required to narrow it.
+          const unset = 4294967295; // auid = -1 when no login session (daemons)
+          if (ev.uid !== 0 || ev.auid == null || ev.auid === 0 || ev.auid === unset) return;
+          if (!/key="rootshell"/.test(ev.auditBody || '')) return;
+          return {
+            severity: 'high',
+            message: `Root shell from unprivileged login on ${ev.host}: auid=${ev.auid} running uid=0 (${ev.comm})`,
+            srcIp: ev.hostIp, host: ev.host,
+            evidence: [`auid=${ev.auid}`, `uid=${ev.uid}`, `comm=${ev.comm}`, ev.raw || ev.message],
+          };
+        },
+      },
+      {
         id: 'radius-brute', name: 'RADIUS / 802.1X Brute Force', severity: 'high',
         tactic: 'Credential Access', technique: 'T1110 · Brute Force',
         run(ev, ctx) {
@@ -216,7 +236,9 @@
         id: 'windows-threat', name: 'Windows Security Event', severity: 'high',
         tactic: 'Credential Access', technique: 'T1078 · Valid Accounts',
         run(ev, ctx) {
-          if (ev.srcType !== 'windows') return;
+          // 'snare' is the same Windows Event Log over an agent — same event IDs,
+          // different wire format, so it reuses this rule rather than cloning it.
+          if (ev.srcType !== 'windows' && ev.srcType !== 'snare') return;
           const m = ev.message || '', eid = ev.eventId;
           if (eid === 4625) {
             const users = ctx.windowSet('winspray', ev.srcIp || 'x', 60000, ev.ts, ev.user);
