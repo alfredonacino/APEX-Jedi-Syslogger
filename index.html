@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>APEX_JediSyslogger — SIEM Log Ingestion Simulator</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>" />
+</head>
+<body>
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">⚔️</span>
+      <div>
+        <h1><span class="brand-apex">APEX</span>_Jedi<span class="brand-accent">Syslogger</span></h1>
+        <p class="brand-sub">SIEM Log Ingestion Simulator</p>
+      </div>
+    </div>
+
+    <div class="controls">
+      <button id="btn-toggle" class="btn btn-primary" aria-pressed="false">
+        <span class="dot"></span><span id="btn-toggle-label">Start Ingestion</span>
+      </button>
+
+      <label class="eps-control">
+        <span>Rate <strong id="eps-value">8</strong> eps</span>
+        <input id="eps-slider" type="range" min="0" max="60" value="8" step="1" />
+      </label>
+
+      <div class="format-toggle" role="group" aria-label="Syslog format">
+        <button class="fmt active" data-fmt="rfc3164">RFC 3164</button>
+        <button class="fmt" data-fmt="rfc5424">RFC 5424</button>
+      </div>
+
+      <button id="btn-reset" class="btn btn-ghost" title="Clear all state">Reset</button>
+    </div>
+  </header>
+
+  <!-- ── KPI row ────────────────────────────────────────────────────── -->
+  <section class="kpi-row" aria-label="Key metrics">
+    <div class="kpi">
+      <span class="kpi-label">Events Ingested</span>
+      <span class="kpi-value" id="kpi-events">0</span>
+      <span class="kpi-foot" id="kpi-events-foot">across 6 sources</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-label">Ingest Rate</span>
+      <span class="kpi-value" id="kpi-eps">0.0<small>eps</small></span>
+      <span class="kpi-foot">trailing 3s</span>
+    </div>
+    <div class="kpi">
+      <span class="kpi-label">Active Alerts</span>
+      <span class="kpi-value alert-fg" id="kpi-alerts">0</span>
+      <span class="kpi-foot" id="kpi-alerts-foot">0 critical · 0 high</span>
+    </div>
+    <div class="kpi threat-kpi" id="threat-kpi" data-level="low">
+      <span class="kpi-label">Threat Level</span>
+      <span class="kpi-value" id="kpi-threat">GUARDED</span>
+      <span class="kpi-foot"><span class="defcon-bar" id="defcon-bar"></span></span>
+    </div>
+  </section>
+
+  <!-- ── Source & delivery configuration ────────────────────────────── -->
+  <section class="config-bar" aria-label="Source and delivery configuration">
+    <div class="config-group">
+      <span class="cfg-label">📡 Log collector (receiver)</span>
+      <div class="cfg-row">
+        <input id="cfg-ip" class="cfg-input" value="10.0.0.100" spellcheck="false" aria-label="Collector IP" />
+        <span class="cfg-colon">:</span>
+        <input id="cfg-port" class="cfg-input cfg-port" value="514" aria-label="Collector port" />
+        <select id="cfg-proto" class="cfg-input cfg-proto" aria-label="Protocol">
+          <option value="udp">UDP</option>
+          <option value="tcp">TCP</option>
+        </select>
+        <button id="cfg-test" class="cfg-test-btn" title="Test reachability of this IP:port">Test</button>
+      </div>
+      <div class="cfg-row">
+        <label class="cfg-radio"><input type="checkbox" id="cfg-forward" /> Forward live</label>
+        <span class="cfg-foot" id="fwd-foot">simulation only (no backend)</span>
+      </div>
+      <div class="cfg-row">
+        <span class="cfg-foot test-result" id="test-result">connectivity: not tested</span>
+      </div>
+    </div>
+
+    <div class="config-group">
+      <span class="cfg-label">🔢 Volume limit</span>
+      <div class="cfg-row">
+        <label class="cfg-radio"><input type="radio" name="vol" id="vol-unlimited" checked /> Unlimited</label>
+        <label class="cfg-radio"><input type="radio" name="vol" id="vol-limit" /> Limit to</label>
+        <input id="cfg-max" class="cfg-input cfg-num" type="number" min="1" step="1" value="1000" disabled />
+      </div>
+      <span class="cfg-foot" id="vol-foot">0 emitted · no limit</span>
+    </div>
+
+    <div class="config-group config-file">
+      <span class="cfg-label">📂 File replay</span>
+      <div class="cfg-row">
+        <label class="file-btn">Choose file…<input type="file" id="cfg-file" accept=".log,.txt,.csv,.json,text/*" hidden /></label>
+        <label class="cfg-radio"><input type="checkbox" id="cfg-loop" checked /> loop</label>
+        <label class="cfg-radio"><input type="checkbox" id="cfg-usefile" disabled /> use as source</label>
+      </div>
+      <span class="cfg-foot" id="file-foot">no file loaded</span>
+    </div>
+  </section>
+
+  <!-- ── Scenario injector ──────────────────────────────────────────── -->
+  <section class="scenario-bar" aria-label="Inject scenarios">
+    <div class="scn-line">
+      <span class="scenario-title">Attack ›</span>
+      <div id="scenario-buttons" class="scenario-buttons"></div>
+    </div>
+    <div class="scn-line">
+      <span class="scenario-title">Appliance logs ›</span>
+      <div id="appliance-buttons" class="scenario-buttons"></div>
+    </div>
+  </section>
+
+  <!-- ── Charts ─────────────────────────────────────────────────────── -->
+  <section class="charts">
+    <div class="panel chart-timeline">
+      <div class="panel-head">
+        <h2>Ingestion Timeline</h2>
+        <span class="legend"><i class="sw sw-events"></i>events/s <i class="sw sw-alerts"></i>alerts/s</span>
+      </div>
+      <canvas id="timeline-canvas" height="150" aria-label="Events and alerts per second over time"></canvas>
+    </div>
+
+    <div class="panel chart-dist">
+      <div class="panel-head"><h2>Severity Mix</h2></div>
+      <div id="severity-bars" class="bars"></div>
+    </div>
+
+    <div class="panel chart-dist">
+      <div class="panel-head"><h2>Events by Source</h2></div>
+      <div id="source-bars" class="bars"></div>
+    </div>
+  </section>
+
+  <!-- ── Stream + Alerts ────────────────────────────────────────────── -->
+  <section class="feeds">
+    <div class="panel stream-panel">
+      <div class="panel-head">
+        <h2>Live Event Stream</h2>
+        <div class="stream-tools">
+          <input id="stream-filter" type="search" placeholder="filter host / ip / text…" aria-label="Filter stream" />
+          <label class="pause-toggle"><input type="checkbox" id="stream-pause" /> pause</label>
+        </div>
+      </div>
+      <div class="stream-head-row">
+        <span>Time</span><span>Sev</span><span>Source</span><span>Host</span><span>Message</span>
+      </div>
+      <div id="event-stream" class="event-stream" role="log" aria-live="off"></div>
+    </div>
+
+    <div class="panel alerts-panel">
+      <div class="panel-head">
+        <h2>Detections <span class="count-pill" id="alerts-count">0</span></h2>
+        <button id="btn-clear-alerts" class="btn btn-ghost btn-sm">clear</button>
+      </div>
+      <div id="alerts-list" class="alerts-list" role="log" aria-live="polite"></div>
+    </div>
+  </section>
+
+  <!-- ── Event detail drawer ────────────────────────────────────────── -->
+  <div id="drawer" class="drawer" hidden>
+    <div class="drawer-inner">
+      <button id="drawer-close" class="drawer-close" aria-label="Close">✕</button>
+      <h3 id="drawer-title">Event detail</h3>
+      <div class="drawer-section">
+        <h4>Raw syslog</h4>
+        <pre id="drawer-raw" class="raw"></pre>
+      </div>
+      <div class="drawer-section">
+        <h4>Parsed fields</h4>
+        <table id="drawer-fields" class="fields"></table>
+      </div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <span>All traffic is synthetic — generated locally for SIEM / detection-engineering practice. Enable “Forward live” (with <code>node server.js</code>) to relay it as real UDP/TCP syslog to a collector.</span>
+  </footer>
+
+  <script src="js/data.js"></script>
+  <script src="js/syslogger.js"></script>
+  <script src="js/jedi.js"></script>
+  <script src="js/ui.js"></script>
+</body>
+</html>
