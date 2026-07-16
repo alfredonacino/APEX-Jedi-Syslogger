@@ -170,7 +170,7 @@ function serveStatic(req, res) {
 }
 
 server.listen(PORT, () => {
-  console.log(`\n  ⚔️  APEX_JediSyslogger running → http://localhost:${PORT}`);
+  console.log(`\n  ⚔️  APEX JediSyslogger running → http://localhost:${PORT}`);
   console.log(`      POST /forward relays syslog to your configured collector (UDP/TCP).`);
   console.log(`      Press Ctrl+C to stop.\n`);
 });

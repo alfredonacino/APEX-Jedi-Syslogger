@@ -1,4 +1,4 @@
-# ⚔️ APEX_JediSyslogger
+# ⚔️ APEX JediSyslogger
 
 A browser-based **SIEM log-ingestion simulator** for security / detection-engineering
 practice. It has two halves:
@@ -14,6 +14,44 @@ syslog** to an actual collector and test connectivity to it.
 
 > 📖 **Full technical reference:** [DOCUMENTATION.md](DOCUMENTATION.md) — architecture,
 > every scenario & detection rule, the HTTP API, log formats, and deployment.
+
+## Install on a new machine
+
+The app is a static web front-end plus an optional **zero-dependency Node
+backend**. The only thing the target machine needs is **Node.js** — there is no
+`npm install` and no build step.
+
+**1. Install Node.js** — version 14 or newer (any current LTS). From your package
+manager or <https://nodejs.org>. Verify:
+
+```bash
+node --version
+```
+
+**2. Get the code** — clone it, or download an archive if you don't have git:
+
+```bash
+# Option A — clone with git
+git clone https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger.git
+cd apex-jedisyslogger
+
+# Option B — download a tarball (no git required)
+curl -L -o apex.tar.gz \
+  "https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger/-/archive/main/apex-jedisyslogger-main.tar.gz"
+tar xzf apex.tar.gz && cd apex-jedisyslogger-main
+```
+
+*(Or on GitLab: **Code ▾ → Download source code → zip/tar.gz**, then unpack it.)*
+
+**3. Start it** and open the dashboard in a browser:
+
+```bash
+node server.js                 # serves the app on http://localhost:8099
+```
+
+That's the entire install. For a custom port, a systemd service, or firewall
+rules see [Run it](#run-it) below and
+[DOCUMENTATION.md §13](DOCUMENTATION.md#13-deployment).
 
 ## Run it
 
@@ -45,7 +83,7 @@ nohup node server.js > apex.log 2>&1 &
 ```
 
 Requires **Node.js** on the target (no npm install — zero dependencies). Then
-browse to `http://<server-ip>:8099`. See [DOCUMENTATION.md](DOCUMENTATION.md#deployment)
+browse to `http://<server-ip>:8099`. See [DOCUMENTATION.md §13](DOCUMENTATION.md#13-deployment)
 for a systemd unit and firewall notes.
 
 ## Using it
@@ -113,6 +151,44 @@ Every scenario is wired to a detection, so each button demonstrably lights up th
 dashboard. The **Threat Level** meter aggregates recent alerts (last 2 min) weighted
 by severity, DEFCON-style: `GUARDED → ELEVATED → HIGH → SEVERE → CRITICAL`.
 
+## Attack scenarios (26)
+
+Injected from the **Attack ›** menu; each button fires a burst built to trip a
+detection. Full detail — burst sizes, payloads, and the rule each one fires — is
+in [DOCUMENTATION.md §5](DOCUMENTATION.md#5-attack-scenarios).
+
+- **Network / recon** — Port Scan · SYN Flood (DDoS) · C2 Beacon · DNS Tunneling · Data Exfiltration · Cryptomining
+- **Web application** — SQL Injection · Log4Shell RCE · XSS Injection · Path Traversal / LFI · Web Shell · Vuln Scan
+- **Credential / identity** — SSH Brute Force · RDP Brute Force · Password Spray · Kerberoasting · DCSync · Pass-the-Hash
+- **Endpoint / execution** — Reverse Shell · Malicious PowerShell · Privilege Escalation · Malware / IDS Hit · Ransomware
+- **Windows persistence / evasion** — New Admin Account · Audit Log Cleared
+- **Email** — Phishing Email
+
+## Appliance log formats (12)
+
+Injected from the **Appliance logs ›** menu — each event is rendered in the
+vendor's real wire format (syslog `<PRI>` + native payload). Full example lines
+and detection mapping: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-appliance-log-formats).
+
+| Appliance | Format | Detection |
+|-----------|--------|-----------|
+| Palo Alto (PAN-OS) | CSV | `appliance-threat` |
+| FortiGate (FortiOS) | `key=value` | `appliance-threat` |
+| Cisco ASA | `%ASA-lvl-id` | `c2-beacon` |
+| Check Point | `key=value;` | `c2-beacon` |
+| Sophos XG | `key=value` | `appliance-threat` |
+| pfSense | filterlog CSV | `c2-beacon` |
+| Juniper SRX | RT_FLOW | `c2-beacon` |
+| SonicWall | `id/sn key=value` | `appliance-threat` |
+| Zscaler ZIA | NSS `key=value` | `appliance-threat` |
+| F5 BIG-IP ASM | `key=value` (WAF) | `appliance-threat` |
+| CEF (generic) | ArcSight CEF | `appliance-threat` |
+| LEEF (generic) | QRadar LEEF | `appliance-threat` |
+
+Appliances carrying an IPS/WAF signature fire **`appliance-threat`**; the pure
+firewalls (Cisco ASA, Check Point, pfSense, Juniper) route their malicious event
+through **`c2-beacon`** (internal host → threat-intel IP) instead.
+
 ## Project layout
 
 ```
@@ -135,3 +211,7 @@ samples/sample.log  example mixed-format log for the file-replay demo
 - **Add a detection**: push a rule object into `makeRules()` in `jedi.js`. Use
   `ctx.window()` / `ctx.windowSet()` / `ctx.cooldown()` for stateful correlation.
 - **Add a scenario**: add an entry to `SCENARIOS` in `syslogger.js`.
+
+---
+
+Created By: **Alfredo Nacino** · [www.alfredonacino.com](https://www.alfredonacino.com) · alfredo@nacino.net

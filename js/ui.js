@@ -85,6 +85,7 @@
       lastRenderedId = null;
       $('#event-stream').innerHTML = '';
       $('#alerts-list').innerHTML = '';
+      clearSelection('attack'); clearSelection('appliance');
       renderKPIs(); renderAlerts(); renderSources(); renderSeverity(); drawTimeline(); renderVolume();
     });
 
@@ -106,11 +107,57 @@
     Syslogger.scenarioList().forEach((s) => {
       const isAppliance = s.category === 'appliance';
       const b = el('button', isAppliance ? 'scn-btn scn-appliance' : 'scn-btn', s.label);
+      b.dataset.id = s.id;
+      b.setAttribute('aria-pressed', 'false');
+      b.title = 'Inject this scenario — marks it as selected';
       b.addEventListener('click', () => {
+        // Fire the scenario and mark this button as selected so it's clear
+        // which attacks / appliance logs have been chosen. Clear via the
+        // per-group "clear" link or a global Reset.
         syslogger.injectScenario(s.id);
+        b.classList.add('selected');
+        b.setAttribute('aria-pressed', 'true');
+        updateSelectedCounts();
         b.animate([{ transform: 'scale(1)' }, { transform: 'scale(.92)' }, { transform: 'scale(1)' }], { duration: 180 });
       });
       (isAppliance ? applianceWrap : attackWrap).appendChild(b);
+    });
+    wireScenarioGroups();
+    updateSelectedCounts();
+  }
+
+  // Collapse/expand each scenario group and clear its selection marks.
+  function wireScenarioGroups() {
+    document.querySelectorAll('.scenario-title').forEach((title) => {
+      title.addEventListener('click', () => {
+        const line = title.closest('.scn-line');
+        const collapsed = line.classList.toggle('collapsed');
+        title.setAttribute('aria-expanded', String(!collapsed));
+      });
+    });
+    document.querySelectorAll('.scn-clear').forEach((clear) => {
+      clear.addEventListener('click', () => clearSelection(clear.dataset.for));
+    });
+  }
+
+  function groupWrap(key) { return key === 'appliance' ? $('#appliance-buttons') : $('#scenario-buttons'); }
+
+  function clearSelection(key) {
+    groupWrap(key).querySelectorAll('.scn-btn.selected').forEach((b) => {
+      b.classList.remove('selected');
+      b.setAttribute('aria-pressed', 'false');
+    });
+    updateSelectedCounts();
+  }
+
+  // Refresh the "N selected" badge + show/hide the clear link for each group.
+  function updateSelectedCounts() {
+    ['attack', 'appliance'].forEach((key) => {
+      const n = groupWrap(key).querySelectorAll('.scn-btn.selected').length;
+      const badge = document.querySelector(`.scn-selected[data-for="${key}"]`);
+      const clear = document.querySelector(`.scn-clear[data-for="${key}"]`);
+      if (badge) { badge.textContent = n ? `${n} selected` : ''; badge.hidden = n === 0; }
+      if (clear) clear.hidden = n === 0;
     });
   }
 

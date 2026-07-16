@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>APEX_JediSyslogger — SIEM Log Ingestion Simulator</title>
+  <title>APEX JediSyslogger — SIEM Log Ingestion Simulator</title>
   <link rel="stylesheet" href="css/styles.css" />
   <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>" />
 </head>
@@ -13,7 +13,7 @@
     <div class="brand">
       <span class="brand-mark">⚔️</span>
       <div>
-        <h1><span class="brand-apex">APEX</span>_Jedi<span class="brand-accent">Syslogger</span></h1>
+        <h1><span class="brand-apex">APEX</span> Jedi<span class="brand-accent">Syslogger</span></h1>
         <p class="brand-sub">SIEM Log Ingestion Simulator</p>
       </div>
     </div>
@@ -107,12 +107,24 @@
 
   <!-- ── Scenario injector ──────────────────────────────────────────── -->
   <section class="scenario-bar" aria-label="Inject scenarios">
-    <div class="scn-line">
-      <span class="scenario-title">Attack ›</span>
+    <div class="scn-line" data-group="attack">
+      <div class="scn-head">
+        <button type="button" class="scenario-title" aria-expanded="true" aria-controls="scenario-buttons">
+          <span class="scn-chevron" aria-hidden="true">▸</span>Attack
+        </button>
+        <span class="scn-selected" data-for="attack" hidden></span>
+        <button type="button" class="scn-clear" data-for="attack" hidden>clear</button>
+      </div>
       <div id="scenario-buttons" class="scenario-buttons"></div>
     </div>
-    <div class="scn-line">
-      <span class="scenario-title">Appliance logs ›</span>
+    <div class="scn-line" data-group="appliance">
+      <div class="scn-head">
+        <button type="button" class="scenario-title" aria-expanded="true" aria-controls="appliance-buttons">
+          <span class="scn-chevron" aria-hidden="true">▸</span>Appliance logs
+        </button>
+        <span class="scn-selected" data-for="appliance" hidden></span>
+        <button type="button" class="scn-clear" data-for="appliance" hidden>clear</button>
+      </div>
       <div id="appliance-buttons" class="scenario-buttons"></div>
     </div>
   </section>
@@ -181,6 +193,7 @@
 
   <footer class="app-footer">
     <span>All traffic is synthetic — generated locally for SIEM / detection-engineering practice. Enable “Forward live” (with <code>node server.js</code>) to relay it as real UDP/TCP syslog to a collector.</span>
+    <span class="app-credit">Created By: <strong>Alfredo Nacino</strong> · <a href="https://www.alfredonacino.com" target="_blank" rel="noopener">www.alfredonacino.com</a> · <a href="mailto:alfredo@nacino.net">alfredo@nacino.net</a></span>
   </footer>
 
   <script src="js/data.js"></script>
