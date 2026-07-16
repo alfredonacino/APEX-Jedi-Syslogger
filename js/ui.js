@@ -28,10 +28,23 @@
     sonicwall:  { color: '#ff7a00', label: 'sonicwall' },
     zscaler:    { color: '#0093d0', label: 'zscaler' },
     f5:         { color: '#e4002b', label: 'f5 asm' },
+    ciscoftd:   { color: '#00bceb', label: 'cisco ftd' },
+    ciscoise:   { color: '#0d5eaf', label: 'cisco ise' },
+    snort:      { color: '#ff6699', label: 'snort' },
+    haproxy:    { color: '#63b32e', label: 'haproxy' },
+    bind:       { color: '#d4a017', label: 'bind dns' },
+    postfix:    { color: '#d19bf0', label: 'postfix' },
     cef:        { color: '#7c9cff', label: 'cef' },
     leef:       { color: '#22c1a6', label: 'leef' },
     mail:       { color: '#c084fc', label: 'mail' },
     file:       { color: '#94a3b8', label: 'file' },
+  };
+
+  // How each appliance's logs actually reach a collector in the real world.
+  const TRANSPORT_NOTE = {
+    native: 'native syslog, emitted by the device itself',
+    agent: 'needs a forwarding agent — not native syslog',
+    api: 'API/webhook only, re-emitted by a connector — not native syslog',
   };
 
   // ── State ────────────────────────────────────────────────────────────
@@ -109,7 +122,9 @@
       const b = el('button', isAppliance ? 'scn-btn scn-appliance' : 'scn-btn', s.label);
       b.dataset.id = s.id;
       b.setAttribute('aria-pressed', 'false');
-      b.title = 'Inject this scenario — marks it as selected';
+      b.title = isAppliance
+        ? `Emit ${s.label} logs — ${TRANSPORT_NOTE[s.transport] || s.transport}`
+        : 'Inject this scenario — marks it as selected';
       b.addEventListener('click', () => {
         // Fire the scenario and mark this button as selected so it's clear
         // which attacks / appliance logs have been chosen. Clear via the
