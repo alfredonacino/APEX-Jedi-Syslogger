@@ -75,26 +75,35 @@ xdg-open index.html            # or just open the file (file://)
 
 ```bash
 # from the project directory, copy to the target host
-rsync -av --exclude '.git' ./ alfreddgreat@172.26.250.20:/home/alfreddgreat/APEX_JediSyslogger/
+rsync -av --exclude '.git' --exclude 'apex.log' \
+  ./ alfreddgreat@172.26.250.20:/home/alfreddgreat/APEX_JediSyslogger/
 
 # on the server
 cd /home/alfreddgreat/APEX_JediSyslogger
-node server.js                 # foreground
-# or run it detached:
-nohup node server.js > apex.log 2>&1 &
+node server.js                                    # foreground
+setsid node server.js </dev/null >apex.log 2>&1 & # detached
 ```
 
 Requires **Node.js** on the target (no npm install — zero dependencies). Then
 browse to `http://<server-ip>:8099`. See [DOCUMENTATION.md §13](DOCUMENTATION.md#13-deployment)
 for a systemd unit and firewall notes.
 
+> **Use `setsid`, not `nohup`, when starting it over SSH** — a plain `nohup … &`
+> keeps the session's stdout attached and hangs the SSH channel.
+
+Updating an existing deployment is just the `rsync`: static files are served from
+disk, so a UI/rule change needs **no restart**. Only a change to `server.js`
+itself does.
+
 ## Using it
 
 1. **Start Ingestion** — begins benign baseline traffic. Drag the **Rate** slider
    (0–60 eps) to change volume.
 2. **Attack ›** — inject a burst of malicious activity and watch **Detections**
-   correlate it. **Appliance logs ›** — inject Palo Alto / FortiGate / Cisco ASA /
-   Check Point events in their native wire formats.
+   correlate it. **Appliance logs ›** — emit any of the 20 sources in its real
+   wire format, from firewalls (Palo Alto, FortiGate, Cisco ASA/FTD) to an IDS
+   (Snort), a load balancer (HAProxy), DNS (BIND 9), mail (Postfix), and
+   agent-relayed hosts (Windows via Snare, Linux auditd).
 3. Toggle **RFC 3164 / RFC 5424** for the generic sources. Click any event to see
    the **raw line + parsed fields** (appliance events keep their vendor format).
 4. **Filter** the live stream, **pause** it, or **Reset** all state.
@@ -147,7 +156,7 @@ If your SIEM shows nothing:
 | DoS / Flood | SYN-flood markers or a volumetric block burst to one host | T1498 |
 | Phishing Email | SPF/DKIM/DMARC fail + risky attachment | T1566 |
 | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` auth failures from one MAC / 60s | T1110 |
-| Root Shell From Unprivileged Login | auditd `SYSCALL` with `auid`≠0 but `uid=0` | T1548 |
+| Root Shell From Unprivileged Login | auditd `SYSCALL`, `auid` set & ≠0, `uid=0`, `key="rootshell"` | T1548 |
 | Appliance IPS / WAF Signature | any appliance threat/violation signature | T1190 (mapped by signature) |
 
 **Scenarios** — 26 attacks (`Attack ›`) and 20 appliance formats (`Appliance logs ›`).
@@ -199,10 +208,12 @@ and detection mapping: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-appliance-log-f
 
 Appliances carrying an IPS/WAF signature fire **`appliance-threat`**; the pure
 firewalls (Cisco ASA, Check Point, pfSense, Juniper) route their malicious event
-through **`c2-beacon`** (internal host → threat-intel IP) instead. Two sources are
-correlation-driven rather than signature-driven: **Cisco ISE** emits a burst of
-RADIUS rejects that `radius-brute` counts over a 60 s window, and **BIND 9** emits
-DGA-length and known-bad queries that `dns-tunneling` catches.
+through **`c2-beacon`** (internal host → threat-intel IP) instead. Four sources are
+**correlation-driven** rather than signature-driven — the burst *is* the signal, so
+they carry no signature and alert **once** rather than once per line: **Cisco ISE**
+(a burst of RADIUS rejects counted by `radius-brute`), **Snare** (a 4625 burst
+counted by `windows-threat`), **auditd** (`auditd-rootshell`), and **BIND 9**
+(DGA-length and known-bad queries caught by `dns-tunneling`).
 
 **Transport matters.** Most sources are **native syslog** — the device emits the
 format itself. Two are not: Windows has no syslog (a **Snare**/NXLog agent relays
@@ -231,10 +242,19 @@ samples/sample.log  example mixed-format log for the file-replay demo
 - **Add a log source**: add a builder to `BASELINE` in `syslogger.js` and a
   `SOURCE_META` entry in `ui.js`.
 - **Add an appliance format**: add a formatter to `VENDOR_FORMATTERS` in `data.js`
-  and an entry to `APPLIANCE` in `syslogger.js`.
+  and an entry to `APPLIANCE` in `syslogger.js`. If the product doesn't speak
+  syslog natively, set `transport: 'agent'` or `'api'` so it isn't presented as a
+  native syslog device.
 - **Add a detection**: push a rule object into `makeRules()` in `jedi.js`. Use
   `ctx.window()` / `ctx.windowSet()` / `ctx.cooldown()` for stateful correlation.
-- **Add a scenario**: add an entry to `SCENARIOS` in `syslogger.js`.
+  Check the existing rules first — a source carrying telemetry another rule already
+  reads should reuse it (Snare reuses `windows-threat`) rather than clone it.
+- **Add a scenario**: add an entry to `SCENARIOS` in `syslogger.js`. Make a burst
+  raise **one** alert, not one per line: tag only its final event with `threatSig`,
+  or let a stateful rule correlate it.
+
+Counts are load-bearing here and in `DOCUMENTATION.md` — update them when adding
+or removing a scenario, format, or rule.
 
 ---
 

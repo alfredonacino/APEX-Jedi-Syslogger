@@ -8,9 +8,9 @@ Guidance for Claude Code when working in this repository.
 detection-engineering practice. Two halves:
 
 - **Syslogger** (`js/syslogger.js`) — a synthetic log source. Emits benign
-  baseline syslog (RFC 3164 / RFC 5424) plus **12 native appliance formats**, at a
-  configurable events-per-second, and injects **26 attack scenarios** on demand.
-  Also replays uploaded log files.
+  baseline syslog (RFC 3164 / RFC 5424) plus **20 appliance formats** (18 native
+  syslog + 2 agent-relayed), at a configurable events-per-second, and injects
+  **26 attack scenarios** on demand. Also replays uploaded log files.
 - **Jedi** (`js/jedi.js`) — a miniature SIEM engine. Ingests every event, keeps
   rolling stats, and runs a stateful, **MITRE ATT&CK-tagged** detection-rule
   engine that raises alerts and a DEFCON-style threat level.
