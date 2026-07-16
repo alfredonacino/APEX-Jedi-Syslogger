@@ -15,6 +15,8 @@ syslog** to an actual collector and test connectivity to it.
 > 📖 **Full technical reference:** [DOCUMENTATION.md](DOCUMENTATION.md) — architecture,
 > every scenario & detection rule, the HTTP API, log formats, and deployment.
 
+![APEX JediSyslogger dashboard — live event stream, MITRE ATT&CK detections, and threat level](images/apex_jedisyslogger.png)
+
 ## Install on a new machine
 
 The app is a static web front-end plus an optional **zero-dependency Node
