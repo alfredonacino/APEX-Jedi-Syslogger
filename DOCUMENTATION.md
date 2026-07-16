@@ -31,7 +31,7 @@ has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 12 native appliance formats, at a configurable rate, with 26 injectable attack scenarios and file replay. |
+| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 18 native appliance formats, at a configurable rate, with 26 injectable attack scenarios and file replay. |
 | **Jedi**      | Miniature SIEM — parses every event, keeps rolling stats, and runs a stateful, MITRE ATT&CK-tagged detection-rule engine. |
 
 Everything renders in the browser. The optional `server.js` backend serves the
@@ -188,21 +188,32 @@ threat-intel matches.
 
 ## 6. Appliance log formats
 
-**12** sources live under the **Appliance logs ›** menu. Each burst mixes 2–5
-benign events with one malicious event, and every event is rendered in the
-vendor's **real wire format** (still wrapped in a syslog `<PRI>` header) by the
-matching formatter in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424
-toggle does **not** apply — real appliances have fixed formats. The **ID** column
-is the internal key the `Appliance logs ›` buttons pass to `injectScenario(id)`.
+**18** sources live under the **Appliance logs ›** menu. Each burst mixes benign
+events with malicious ones, and every event is rendered in the vendor's **real
+wire format** (still wrapped in a syslog `<PRI>` header) by the matching formatter
+in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424 toggle does **not**
+apply — real appliances have fixed formats. The **ID** column is the internal key
+the `Appliance logs ›` buttons pass to `injectScenario(id)`.
 
-Two detection paths cover the malicious event in each burst:
+Every source is **native syslog**: the device emits that format itself, with no
+agent or API connector in the path. `Syslogger.scenarioList()` exposes a
+`transport` field (`native` | `agent` | `api`, defaulting to `native`) that the UI
+surfaces as the button's hover title — so a future agent-based source (Windows via
+Snare/NXLog, Linux auditd) or API-based source (AWS, Okta) can declare that it is
+**not** truly native syslog rather than implying it is.
+
+Three detection paths cover the malicious events in each burst:
 
 - Appliances that carry an IPS/WAF **`threatSig`** field (Palo Alto, FortiGate,
-  Sophos, SonicWall, Zscaler, F5, CEF, LEEF) fire the **`appliance-threat`** rule,
-  which maps the signature text to an ATT&CK technique.
+  Sophos, SonicWall, Zscaler, F5, Cisco FTD, Snort, HAProxy, Postfix, CEF, LEEF)
+  fire the **`appliance-threat`** rule, which maps the signature text to an ATT&CK
+  technique.
 - Pure firewall appliances with no signature field (Cisco ASA, Check Point,
   pfSense, Juniper) route their malicious event through the generic
   **`c2-beacon`** rule instead (internal host → threat-intel IP).
+- **Correlation-driven** sources carry no signature at all and rely on a stateful
+  rule counting a burst: Cisco ISE (`radius-brute`) and BIND 9 (`dns-tunneling`).
+  These deliberately alert **once** per burst rather than once per line.
 
 | ID | Appliance | Format | Detection | Malicious signature / trigger |
 |----|-----------|--------|-----------|-------------------------------|
@@ -216,6 +227,12 @@ Two detection paths cover the malicious event in each burst:
 | `sonicwall` | SonicWall | `id/sn key=value` | `appliance-threat` | Suspected Port Scan, Possible SYN Flood, Malformed packet |
 | `zscaler` | Zscaler ZIA | NSS `key=value` | `appliance-threat` | Win32.Trojan.Emotet, JS.Downloader.GenericKD, EICAR-Test-File, Phishing.Kit |
 | `f5` | F5 BIG-IP ASM | comma `key=value` | `appliance-threat` | SQL-Injection, XSS, Command-Execution, Predictable-Resource-Location |
+| `ciscoftd` | Cisco FTD (Firepower) | `%FTD-lvl-id` + `Key: Value` | `appliance-threat` | `430001` intrusion: Log4j (58722), Emotet CNC (47332), SQLi (41274) |
+| `ciscoise` | Cisco ISE (RADIUS) | segmented hdr + `key=value` | `radius-brute` | 7–10 `CISE_Failed_Attempts` (`5400`) for one MAC — no signature, correlated |
+| `snort` | Snort 3 (IDS) | `[gid:sid:rev]` tokens | `appliance-threat` | Log4j (58722), Cobalt Strike (29889), SSH brute (19559), SQLi (13990) |
+| `haproxy` | HAProxy | positional + timers/flags | `appliance-threat` | 4× `PR--` 403-denied probes (`/.env`, `/wp-admin/`, …) from one bad IP |
+| `bind` | BIND 9 (DNS) | `named` query log | `dns-tunneling` | 42–56-char DGA label under `tunnel.badnet.ru` (TXT) + a threat-intel domain |
+| `postfix` | Postfix (mail) | prose + `key=<value>` | `appliance-threat` | Spamhaus Blocklist Hit (554), Invalid Sender Domain (550) |
 | `cef` | CEF (generic ArcSight) | `CEF:0\|…` | `appliance-threat` | Brute Force Attack, Malware Communication, Data Exfiltration Attempt |
 | `leef` | LEEF (generic QRadar) | `LEEF:2.0\|…` | `appliance-threat` | Port Scan, Suspect Data Loss, Botnet C2 Communication |
 
@@ -246,6 +263,51 @@ IDs are randomised at generation time):
 
 ```
 <146>Jul 16 10:22:41 arcsight-conn CEF:0|Security|ThreatManager|1.0|912|Malware Communication|9|src=185.220.101.44 dst=10.10.1.11 spt=51000 dpt=443 proto=TCP act=blocked
+```
+
+**Cisco FTD** `430001` intrusion (`%FTD-lvl-id` + `Key: Value` — note the space
+after each colon, which is what separates it from PAN-OS CSV and FortiOS `k=v`):
+
+```
+<161>Jul 16 2026 22:05:01 firepower %FTD-1-430001: Protocol: tcp, SrcIP: 5.188.206.130, DstIP: 172.17.214.247, SrcPort: 7374, DstPort: 443, Message: "MALWARE-CNC Win.Trojan.Emotet outbound connection", Classification: A Network Trojan was detected, Priority: 1, GID: 1, SID: 47332, InlineResult: Blocked
+```
+
+**Cisco ISE** failed RADIUS auth. After the category comes ISE's segmented header
+— `msg_id total_seg seg_num` (`0000664767 1 0`): real ISE splits long messages
+across multiple datagrams that a collector must reassemble.
+
+```
+<179>Jul 16 22:05:00 ise-node-02 CISE_Failed_Attempts 0000664767 1 0 2026-07-16 22:05:00.959 +02:00 0001711172 5400 NOTICE Failed-Attempt: Authentication failed, ConfigVersionId=12, Device IP Address=10.0.0.23, DestinationIPAddress=10.10.0.30, DestinationPort=1812, UserName=oracle@corp.local, Protocol=Radius, NetworkDeviceName=SW-ACCESS-3850, NAS-IP-Address=10.0.0.23, Service-Type=Framed, Calling-Station-ID=C7-D6-35-CC-BB-36, NAS-Port-Type=Ethernet, FailureReason=22040 Wrong password or invalid shared secret
+```
+
+**Snort 3** (`alert_syslog`) — `[gid:sid:rev]` then bracketed tokens. Priority-3
+noise events carry no `threatSig` and deliberately raise no alert:
+
+```
+<185>Jul 16 22:05:00 snort-sensor-01 snort[67973]: [1:13990:12] "SQL union select possible sql injection attempt" [Classification: Web Application Attack] [Priority: 1] {TCP} 45.83.193.12:4600 -> 10.17.78.191:443
+```
+
+**HAProxy** — served vs. proxy-denied. The `Tq/Tw/Tc/Tr/Tt` timer tuple and the
+4-character **termination state** are the signal: `----` is a clean exchange,
+`PR--` means the proxy itself denied the request (`<NOSRV>`, so it never reached
+a backend, and the timers are `-1`):
+
+```
+<134>Jul 16 22:05:00 haproxy-02 haproxy[2831]: 77.145.132.91:14561 [16/Jul/2026:22:05:00.805] http-in static/srv2 8/0/23/75/66 200 22640 - - ---- 15/5/1/0/0 0/0 {shop.example.com} {} "GET /health HTTP/1.1"
+<132>Jul 16 22:05:00 haproxy-02 haproxy[24734]: 91.219.236.19:32993 [16/Jul/2026:22:05:00.936] http-in http-in/<NOSRV> -1/-1/-1/-1/0 403 188 - - PR-- 9/1/0/0/0 0/0 {shop.example.com} {} "GET /admin/config.php HTTP/1.1"
+```
+
+**BIND 9** DGA/tunnel query — `@0x…` client handle, and the trailing flag string
+(`+` RD, `E(0)` EDNS, `T` TCP, `D` DNSSEC):
+
+```
+<28>Jul 16 22:05:01 dns-01 named[2293]: client @0x7167c821 192.168.15.161#28383 (1hbbvfodpnemlc5421y4ck9yszoz1bp0ju6abibk4v4j71o86fwyjyg.tunnel.badnet.ru): query: 1hbbvfodpnemlc5421y4ck9yszoz1bp0ju6abibk4v4j71o86fwyjyg.tunnel.badnet.ru IN TXT +E(0)
+```
+
+**Postfix** reject — prose with `key=<value>` angle-bracket pairs (`mail` facility):
+
+```
+<20>Jul 16 22:05:01 mail-gw-01 postfix/smtpd[11030]: NOQUEUE: reject: RCPT from unknown[91.219.236.19]: 550 Sender address rejected: Domain not found; from=<bnev0un1@mail.dark-pool.su> to=<www-data@corp.local> proto=SMTP helo=<Static-IP-9121923619>
 ```
 
 Click any appliance event in the live stream to open the drawer and see its full
@@ -293,9 +355,10 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `sql-injection` | SQL Injection | SQLi regex in an HTTP request | T1190 |
 | `c2-beacon` | C2 / Known-Bad Destination | internal host → threat-intel IP | T1071 |
 | `data-exfil` | Large Outbound Transfer | outbound flow > 100 MB | T1048 |
-| `dns-tunneling` | DNS Tunneling | long DNS label / known-bad domain | T1071.004 |
+| `dns-tunneling` | DNS Tunneling | long DNS label / known-bad domain (`dns` + `bind` sources) | T1071.004 |
 | `priv-esc` | Privilege Escalation | `sudo … USER=root` / Win 4672 | T1068 |
 | `ids-malware` | IDS Malware Signature | Suricata/ET trojan/exploit | T1204 |
+| `radius-brute` | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` failures / MAC / 60 s | T1110 |
 | `appliance-threat` | Appliance IPS / WAF Signature | any `threatSig` present | T1190 (by signature) |
 | `web-exploit` | Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA | T1190·T1059·T1083·T1505.003·T1595 |
 | `windows-threat` | Windows Security Event | 4625 brute/spray, 4769 RC4, 4662 repl, 4732/4720, 1102, 4624 PtH | T1110·T1558.003·T1003.006·T1136·T1070.001·T1550.002 |

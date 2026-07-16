@@ -717,6 +717,216 @@
         return evs;
       },
     },
+    ciscoftd: {
+      label: 'Cisco FTD (Firepower)', category: 'appliance',
+      build() {
+        const host = rand.pick(['ftd-edge-01', 'firepower', 'FTD-DC-02']);
+        const base = () => ({ srcType: 'ciscoftd', vendor: 'ciscoftd', host, facility: FACILITY.local4, program: 'FTD', policy: 'Corp_Access_Control' });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const proto = rand.pick(['tcp', 'udp']);
+          evs.push(Object.assign(base(), {
+            severity: 6, ftdMsgId: '430002', action: 'Allow', proto,
+            srcIp: rand.internalIp(), dstIp: rand.ip(), srcPort: rand.int(1024, 65535), dstPort: rand.pick([443, 80, 53]),
+            fromZone: 'Inside', toZone: 'Outside', rule: rand.pick(['Allow_Web_Outbound', 'Allow_DNS', 'Permit_Corp_HTTPS']),
+            message: 'connection allowed',
+          }));
+        }
+        const intr = rand.pick([
+          ['SERVER-WEBAPP Apache Log4j arbitrary code execution attempt', 58722, 'Attempted User Privilege Gain'],
+          ['MALWARE-CNC Win.Trojan.Emotet outbound connection', 47332, 'A Network Trojan was detected'],
+          ['SERVER-WEBAPP SQL injection attempt', 41274, 'Web Application Attack'],
+        ]);
+        const badSrc = rand.pick(THREAT_INTEL.ips), vic = rand.internalIp();
+        evs.push(Object.assign(base(), {
+          severity: 1, ftdMsgId: '430001', action: 'Blocked', proto: 'tcp',
+          srcIp: badSrc, dstIp: vic, srcPort: rand.int(1024, 65535), dstPort: 443,
+          fromZone: 'Outside', toZone: 'DMZ', gid: 1, sid: intr[1], classification: intr[2], priority: 1,
+          sigName: intr[0], threatSig: intr[0], threatSev: 'critical', message: `intrusion blocked: ${intr[0]}`,
+        }));
+        return evs;
+      },
+    },
+    ciscoise: {
+      label: 'Cisco ISE (RADIUS)', category: 'appliance',
+      build() {
+        const host = rand.pick(['ise-psn-01', 'ise-node-02']);
+        const nasName = rand.pick(['WLC-CORP-01', 'SW-ACCESS-3850', 'WLC-GUEST-02']);
+        const nasIp = '10.0.0.' + rand.int(20, 60);
+        const mac = Array.from({ length: 6 }, () => rand.int(0, 255).toString(16).padStart(2, '0').toUpperCase()).join('-');
+        const base = () => ({
+          srcType: 'ciscoise', vendor: 'ciscoise', host, facility: FACILITY.local6, program: 'CISE',
+          nasName, nasIp, mac, hostIp: '10.10.0.30', configVersion: rand.int(5, 40),
+          portType: rand.pick(['Wireless - IEEE 802.11', 'Ethernet']), totalSeg: 1, segNum: 0,
+          srcIp: nasIp, dstIp: '10.10.0.30', srcPort: rand.int(1024, 65535), dstPort: 1812,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 5, iseCategory: 'CISE_Passed_Authentications', msgCode: 5200, iseSev: 'NOTICE',
+            iseDesc: 'Passed-Authentication: Authentication succeeded',
+            iseSeq: rand.int(1, 999999), iseId: rand.int(1, 9999999),
+            user: rand.pick(USERS) + '@corp.local',
+            message: '802.1X authentication succeeded',
+          }));
+        }
+        // Repeated RADIUS rejects for one MAC — 802.1X credential guessing. No
+        // threatSig here: the burst is the signal, so the radius-brute rule
+        // correlates it and alerts once rather than once per failed attempt.
+        const badUser = rand.pick(BAD_USERS);
+        const reason = rand.pick([
+          '22040 Wrong password or invalid shared secret',
+          '22056 Subject not found in the applicable identity store(s)',
+        ]);
+        for (let i = 0; i < rand.int(7, 10); i++) {
+          evs.push(Object.assign(base(), {
+            severity: 3, iseCategory: 'CISE_Failed_Attempts', msgCode: 5400, iseSev: 'NOTICE',
+            iseDesc: 'Failed-Attempt: Authentication failed',
+            iseSeq: rand.int(1, 999999), iseId: rand.int(1, 9999999),
+            user: badUser + '@corp.local', failReason: reason,
+            message: `802.1X authentication failed for ${badUser} (${reason})`,
+          }));
+        }
+        return evs;
+      },
+    },
+    snort: {
+      label: 'Snort 3 (IDS)', category: 'appliance',
+      build() {
+        const host = rand.pick(['snort-sensor-01', 'ids-inline-02']);
+        const base = () => ({ srcType: 'snort', vendor: 'snort', host, facility: FACILITY.local7, program: 'snort', pid: rand.int(1000, 200000), gid: 1, proto: 'tcp' });
+        const evs = [];
+        // Priority-3 noise: no threatSig, so it renders without raising an alert.
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 6, sid: 408, rev: rand.int(1, 6), proto: 'icmp',
+            sigName: 'PROTOCOL-ICMP Echo Reply', classification: 'Misc Activity', priority: 3,
+            srcIp: rand.internalIp(), dstIp: rand.ip(),
+            message: 'low-priority IDS event',
+          }));
+        }
+        const alert = rand.pick([
+          ['SERVER-WEBAPP Apache Log4j arbitrary code execution attempt', 58722, 'Attempted User Privilege Gain'],
+          ['MALWARE-CNC Win.Trojan.Cobalt Strike beacon outbound', 29889, 'A Network Trojan was detected'],
+          ['INDICATOR-SCAN SSH brute force login attempt', 19559, 'Misc Attack'],
+          ['SQL union select possible sql injection attempt', 13990, 'Web Application Attack'],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 1, sid: alert[1], rev: rand.int(1, 12),
+          sigName: alert[0], threatSig: alert[0], classification: alert[2], priority: 1, threatSev: 'critical',
+          srcIp: rand.pick(THREAT_INTEL.ips), dstIp: rand.internalIp(),
+          srcPort: rand.int(1024, 65535), dstPort: rand.pick([443, 80, 22]),
+          message: `IDS alert: ${alert[0]}`,
+        }));
+        return evs;
+      },
+    },
+    haproxy: {
+      label: 'HAProxy', category: 'appliance',
+      build() {
+        const host = rand.pick(['lb-edge-01', 'haproxy-02']);
+        const base = () => ({
+          srcType: 'haproxy', vendor: 'haproxy', host, facility: FACILITY.local0, program: 'haproxy',
+          pid: rand.int(1000, 30000), frontend: 'http-in', reqHeaders: 'shop.example.com', proto: 'tcp',
+          dstIp: '10.0.0.80', dstPort: 443,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const srv = rand.pick(['srv1', 'srv2', 'srv3']);
+          evs.push(Object.assign(base(), {
+            severity: 6, backend: 'static', server: srv,
+            timers: `${rand.int(0, 40)}/0/${rand.int(0, 30)}/${rand.int(5, 90)}/${rand.int(10, 200)}`,
+            status: 200, bytes: rand.int(500, 40000), termState: '----',
+            conns: `${rand.int(1, 20)}/${rand.int(1, 8)}/${rand.int(0, 4)}/${rand.int(0, 2)}/0`,
+            srcIp: rand.ip(), srcPort: rand.int(1024, 65535), method: 'GET', url: rand.pick(URLS),
+            message: 'request served',
+          }));
+        }
+        // PR-- = request denied by the proxy itself (never reached a backend).
+        // Only the last of the probe burst carries threatSig, so the scan raises
+        // a single alert instead of one per denied request.
+        const badSrc = rand.pick(THREAT_INTEL.ips);
+        const probes = ['/admin/config.php', '/.env', '/wp-admin/', '/../../etc/passwd'];
+        probes.forEach((url, i) => {
+          const last = i === probes.length - 1;
+          evs.push(Object.assign(base(), {
+            severity: 4, backend: 'http-in', server: '<NOSRV>', timers: '-1/-1/-1/-1/0',
+            status: 403, bytes: 188, termState: 'PR--', conns: `${rand.int(1, 20)}/1/0/0/0`,
+            srcIp: badSrc, srcPort: rand.int(1024, 65535), method: 'GET', url,
+            threatSig: last ? 'HAProxy ACL Denied Request Scan (PR--)' : undefined,
+            threatSev: last ? 'medium' : undefined,
+            message: 'request denied by proxy ACL',
+          }));
+        });
+        return evs;
+      },
+    },
+    bind: {
+      label: 'BIND 9 (DNS)', category: 'appliance',
+      build() {
+        const host = 'dns-01';
+        const handle = () => rand.int(0x10000000, 0x7fffffff).toString(16);
+        const base = () => ({ srcType: 'bind', vendor: 'bind', host, facility: FACILITY.daemon, program: 'named', pid: rand.int(500, 9000), proto: 'udp' });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 6, clientHandle: handle(), srcIp: rand.internalIp(), srcPort: rand.int(1024, 65535),
+            domain: rand.pick(DOMAINS), qtype: rand.pick(['A', 'AAAA', 'MX']), qflags: '+',
+            message: 'dns query',
+          }));
+        }
+        // DGA-length label + a known-bad domain — both trip the DNS rule.
+        const dga = Array.from({ length: rand.int(42, 56) }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[rand.int(0, 35)]).join('');
+        const vic = rand.internalIp();
+        evs.push(Object.assign(base(), {
+          severity: 4, clientHandle: handle(), srcIp: vic, srcPort: rand.int(1024, 65535),
+          domain: `${dga}.tunnel.badnet.ru`, qtype: 'TXT', qflags: '+E(0)',
+          message: 'oversized TXT query — possible tunnel',
+        }));
+        evs.push(Object.assign(base(), {
+          severity: 3, clientHandle: handle(), srcIp: vic, srcPort: rand.int(1024, 65535),
+          domain: rand.pick(THREAT_INTEL.domains), qtype: 'A', qflags: '+',
+          message: 'query for known-bad domain',
+        }));
+        return evs;
+      },
+    },
+    postfix: {
+      label: 'Postfix (mail)', category: 'appliance',
+      build() {
+        const host = 'mail-gw-01';
+        const base = () => ({ srcType: 'postfix', vendor: 'postfix', host, facility: FACILITY.mail, program: 'postfix', pid: rand.int(1000, 30000), proto: 'tcp', dstIp: '10.10.0.25', dstPort: 25 });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 4); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 6, pfProc: 'smtp', pfAction: 'sent', queueId: rand.id().toUpperCase().slice(0, 10),
+            to: `${rand.pick(USERS)}@corp.local`, relay: 'mx.corp.local[10.10.0.25]:25',
+            delay: rand.float(0.1, 3).toFixed(1), srcIp: rand.internalIp(), srcPort: rand.int(1024, 65535),
+            message: 'mail delivered',
+          }));
+        }
+        const badIp = rand.pick(THREAT_INTEL.ips);
+        const rej = rand.pick([
+          [554, 'Service unavailable; Client host [IP] blocked using sbl-xbl.spamhaus.org', 'Spamhaus Blocklist Hit'],
+          [550, 'Sender address rejected: Domain not found', 'Invalid Sender Domain'],
+        ]);
+        // Only the final reject carries threatSig — one alert per burst.
+        const n = rand.int(3, 5);
+        for (let i = 0; i < n; i++) {
+          const last = i === n - 1;
+          evs.push(Object.assign(base(), {
+            severity: 4, pfProc: 'smtpd', pfAction: 'reject', smtpCode: rej[0],
+            pfReason: rej[1].replace('[IP]', `[${badIp}]`), clientHost: 'unknown',
+            srcIp: badIp, srcPort: rand.int(1024, 65535),
+            from: `${rand.id()}@${rand.pick(['superig.com.br', 'mail.dark-pool.su', 'bounce.badnet.ru'])}`,
+            to: `${rand.pick(USERS)}@corp.local`, helo: `Static-IP-${badIp.replace(/\./g, '')}`,
+            threatSig: last ? rej[2] : undefined, threatSev: last ? 'medium' : undefined,
+            message: `mail rejected from ${badIp} (${rej[2]})`,
+          }));
+        }
+        return evs;
+      },
+    },
     cef: {
       label: 'CEF (generic)', category: 'appliance',
       build() {
@@ -904,7 +1114,12 @@
     }
 
     static scenarioList() {
-      return Object.entries(SCENARIOS).map(([id, s]) => ({ id, label: s.label, category: s.category || 'attack' }));
+      // transport: how a source's logs reach a collector in reality. Every source
+      // shipped so far is 'native' (the device speaks syslog itself); sources that
+      // need a forwarding agent or an API connector declare 'agent' / 'api'.
+      return Object.entries(SCENARIOS).map(([id, s]) => ({
+        id, label: s.label, category: s.category || 'attack', transport: s.transport || 'native',
+      }));
     }
   }
 

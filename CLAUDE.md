@@ -79,9 +79,13 @@ event drives the appliance-threat rule.
 - No external dependencies anywhere — keep it that way (browser + Node core only).
 - Match the surrounding style: terse, comment-light, `const`/arrow functions,
   template literals. Each module is a single IIFE.
-- Counts are load-bearing in the docs: there are **26 attacks** and **12 appliance
+- Counts are load-bearing in the docs: there are **26 attacks** and **18 appliance
   formats**. If you add or remove one, update the counts and tables in `README.md`
   (§Attack scenarios / §Appliance log formats) **and** `DOCUMENTATION.md` (§5 / §6).
+- Appliance entries may declare `transport: 'agent' | 'api'` when the product does
+  not speak syslog natively (Windows via Snare/NXLog, auditd, AWS, Okta). Default
+  is `'native'`; the UI surfaces it on the button's hover title. Don't present an
+  agent/API source as native syslog.
 - The RFC 3164 / 5424 toggle affects only the generic sources; appliance events
   always use their native vendor format.
 

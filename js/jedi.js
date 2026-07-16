@@ -114,7 +114,7 @@
         id: 'dns-tunneling', name: 'Possible DNS Tunneling', severity: 'medium',
         tactic: 'Exfiltration', technique: 'T1071.004 · DNS',
         run(ev) {
-          if (ev.srcType !== 'dns' || !ev.domain) return;
+          if ((ev.srcType !== 'dns' && ev.srcType !== 'bind') || !ev.domain) return;
           const label = ev.domain.split('.')[0] || '';
           const isBadDomain = THREAT_INTEL.domains.some((d) => ev.domain.endsWith(d));
           if (label.length >= 40 || isBadDomain) {
@@ -152,6 +152,25 @@
             message: `IDS alert: ${sig}`,
             srcIp: ev.srcIp, host: ev.host, evidence: [ev.message],
           };
+        },
+      },
+      {
+        id: 'radius-brute', name: 'RADIUS / 802.1X Brute Force', severity: 'high',
+        tactic: 'Credential Access', technique: 'T1110 · Brute Force',
+        run(ev, ctx) {
+          if (ev.srcType !== 'ciscoise' || ev.msgCode !== 5400) return;
+          // Key on the supplicant MAC — one endpoint guessing many passwords.
+          const key = ev.mac || ev.srcIp;
+          const w = ctx.window('radiusbrute', key, 60000, ev.ts);
+          w.push(ev.ts);
+          if (w.length >= 6 && ctx.cooldown('radiusbrute', key, 60000, ev.ts)) {
+            return {
+              severity: 'high',
+              message: `${w.length} failed 802.1X/RADIUS auths for ${ev.user} via ${ev.nasName} (${key}) within 60s`,
+              srcIp: ev.srcIp, host: ev.host,
+              evidence: [`user=${ev.user}`, `attempts=${w.length}`, `nas=${ev.nasName}`, ev.failReason],
+            };
+          }
         },
       },
       {

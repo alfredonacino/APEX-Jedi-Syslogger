@@ -91,6 +91,30 @@
       `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   }
 
+  function tzOffset(d) {
+    const tz = -d.getTimezoneOffset();
+    const sign = tz >= 0 ? '+' : '-';
+    return `${sign}${pad(Math.floor(Math.abs(tz) / 60))}:${pad(Math.abs(tz) % 60)}`;
+  }
+
+  // HAProxy accept-date: "06/Feb/2009:12:14:14.655"
+  function haproxyTimestamp(d) {
+    return `${pad(d.getDate())}/${MONTHS[d.getMonth()]}/${d.getFullYear()}:` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
+  }
+
+  // Cisco ISE payload clock: "2025-12-09 17:30:23.365 +01:00"
+  function iseTimestamp(d) {
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)} ${tzOffset(d)}`;
+  }
+
+  // Cisco FTD header clock: "Apr 14 2019 12:52:31"
+  function ftdTimestamp(d) {
+    return `${MONTHS[d.getMonth()]} ${pad(d.getDate())} ${d.getFullYear()} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
   // Vendor-specific wire formats for common security appliances. Each takes a
   // fully-populated event and returns the raw line exactly as the device would
   // emit it over syslog (PRI header + native payload). The RFC 3164/5424 toggle
@@ -224,6 +248,77 @@
         `ip_client="${ev.srcIp}"`, `method="${ev.method || 'GET'}"`, `uri="${ev.url || '/'}"`, `severity="${ev.sevName || 'Critical'}"`,
       ];
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} ${kv.join(',')}`;
+    },
+    // Cisco Secure Firewall Threat Defense (FTD) — %FTD-sev-msgid + "Key: Value".
+    ciscoftd(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const f = ev.ftdMsgId === '430001'
+        ? [`Protocol: ${ev.proto}`, `SrcIP: ${ev.srcIp}`, `DstIP: ${ev.dstIp}`,
+          `SrcPort: ${ev.srcPort}`, `DstPort: ${ev.dstPort}`, `Message: "${ev.sigName}"`,
+          `Classification: ${ev.classification}`, `Priority: ${ev.priority}`,
+          `GID: ${ev.gid}`, `SID: ${ev.sid}`, `InlineResult: ${ev.action}`]
+        : [`AccessControlRuleAction: ${ev.action}`, `SrcIP: ${ev.srcIp}`, `DstIP: ${ev.dstIp}`,
+          `SrcPort: ${ev.srcPort}`, `DstPort: ${ev.dstPort}`, `Protocol: ${ev.proto}`,
+          `IngressZone: ${ev.fromZone}`, `EgressZone: ${ev.toZone}`, `ACPolicy: ${ev.policy}`,
+          `AccessControlRuleName: ${ev.rule}`];
+      return `<${pri}>${ftdTimestamp(d)} ${ev.host} %FTD-${ev.severity}-${ev.ftdMsgId}: ${f.join(', ')}`;
+    },
+    // Cisco ISE — category + segmented header (msg_id total_seg seg_num) + comma key=value.
+    // Long ISE messages are split across datagrams; segNum/totalSeg model that.
+    ciscoise(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const kv = [
+        `ConfigVersionId=${ev.configVersion}`, `Device IP Address=${ev.nasIp}`,
+        `DestinationIPAddress=${ev.hostIp}`, `DestinationPort=1812`,
+        `UserName=${ev.user}`, `Protocol=Radius`, `NetworkDeviceName=${ev.nasName}`,
+        `NAS-IP-Address=${ev.nasIp}`, `Service-Type=Framed`, `Calling-Station-ID=${ev.mac}`,
+        `NAS-Port-Type=${ev.portType}`,
+      ];
+      if (ev.failReason) kv.push(`FailureReason=${ev.failReason}`);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} ${ev.iseCategory} ${pad(ev.iseSeq, 10)} ` +
+        `${ev.totalSeg} ${ev.segNum} ${iseTimestamp(d)} ${pad(ev.iseId, 10)} ${ev.msgCode} ` +
+        `${ev.iseSev} ${ev.iseDesc}, ${kv.join(', ')}`;
+    },
+    // Snort 3 (alert_syslog) — bracketed [gid:sid:rev] tokens.
+    // ICMP alerts carry no ports, so the endpoint pair drops them.
+    snort(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const proto = (ev.proto || 'tcp').toUpperCase();
+      const pair = proto === 'ICMP'
+        ? `${ev.srcIp} -> ${ev.dstIp}`
+        : `${ev.srcIp}:${ev.srcPort} -> ${ev.dstIp}:${ev.dstPort}`;
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} snort[${ev.pid}]: [${ev.gid}:${ev.sid}:${ev.rev}] ` +
+        `"${ev.sigName}" [Classification: ${ev.classification}] [Priority: ${ev.priority}] {${proto}} ${pair}`;
+    },
+    // HAProxy — positional; slash-delimited timer/conn tuples + termination state.
+    // HAProxy has no log file: syslog is its only output.
+    haproxy(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} haproxy[${ev.pid}]: ${ev.srcIp}:${ev.srcPort} ` +
+        `[${haproxyTimestamp(d)}] ${ev.frontend} ${ev.backend}/${ev.server} ${ev.timers} ` +
+        `${ev.status} ${ev.bytes} - - ${ev.termState} ${ev.conns} 0/0 {${ev.reqHeaders || ''}} {} ` +
+        `"${ev.method} ${ev.url} HTTP/1.1"`;
+    },
+    // BIND 9 named query log — client handle + trailing flag chars (+ RD, E EDNS, T TCP, D DNSSEC).
+    bind(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} named[${ev.pid}]: client @0x${ev.clientHandle} ` +
+        `${ev.srcIp}#${ev.srcPort} (${ev.domain}): query: ${ev.domain} IN ${ev.qtype} ${ev.qflags}`;
+    },
+    // Postfix — free-text prose with key=<value> angle-bracket pairs (mail facility).
+    postfix(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const tail = `from=<${ev.from}> to=<${ev.to}> proto=SMTP helo=<${ev.helo}>`;
+      const body = ev.pfAction === 'reject'
+        ? `NOQUEUE: reject: RCPT from ${ev.clientHost}[${ev.srcIp}]: ${ev.smtpCode} ${ev.pfReason}; ${tail}`
+        : `${ev.queueId}: to=<${ev.to}>, relay=${ev.relay}, delay=${ev.delay}, dsn=2.0.0, status=sent (250 2.0.0 OK)`;
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} postfix/${ev.pfProc}[${ev.pid}]: ${body}`;
     },
     // Generic CEF (ArcSight Common Event Format).
     cef(ev) {
