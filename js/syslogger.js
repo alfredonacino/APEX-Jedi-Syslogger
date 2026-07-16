@@ -794,7 +794,8 @@
       label: 'Snort 3 (IDS)', category: 'appliance',
       build() {
         const host = rand.pick(['snort-sensor-01', 'ids-inline-02']);
-        const base = () => ({ srcType: 'snort', vendor: 'snort', host, facility: FACILITY.local7, program: 'snort', pid: rand.int(1000, 200000), gid: 1, proto: 'tcp' });
+        const dpid = rand.int(1000, 200000); // one snort process per sensor
+        const base = () => ({ srcType: 'snort', vendor: 'snort', host, facility: FACILITY.local7, program: 'snort', pid: dpid, gid: 1, proto: 'tcp' });
         const evs = [];
         // Priority-3 noise: no threatSig, so it renders without raising an alert.
         for (let i = 0, n = rand.int(2, 3); i < n; i++) {
@@ -825,9 +826,10 @@
       label: 'HAProxy', category: 'appliance',
       build() {
         const host = rand.pick(['lb-edge-01', 'haproxy-02']);
+        const dpid = rand.int(1000, 30000); // one haproxy process per LB
         const base = () => ({
           srcType: 'haproxy', vendor: 'haproxy', host, facility: FACILITY.local0, program: 'haproxy',
-          pid: rand.int(1000, 30000), frontend: 'http-in', reqHeaders: 'shop.example.com', proto: 'tcp',
+          pid: dpid, frontend: 'http-in', reqHeaders: 'shop.example.com', proto: 'tcp',
           dstIp: '10.0.0.80', dstPort: 443,
         });
         const evs = [];
@@ -866,7 +868,8 @@
       build() {
         const host = 'dns-01';
         const handle = () => rand.int(0x10000000, 0x7fffffff).toString(16);
-        const base = () => ({ srcType: 'bind', vendor: 'bind', host, facility: FACILITY.daemon, program: 'named', pid: rand.int(500, 9000), proto: 'udp' });
+        const dpid = rand.int(500, 9000); // one named process per resolver
+        const base = () => ({ srcType: 'bind', vendor: 'bind', host, facility: FACILITY.daemon, program: 'named', pid: dpid, proto: 'udp' });
         const evs = [];
         for (let i = 0, n = rand.int(3, 5); i < n; i++) {
           evs.push(Object.assign(base(), {
@@ -924,6 +927,94 @@
             message: `mail rejected from ${badIp} (${rej[2]})`,
           }));
         }
+        return evs;
+      },
+    },
+    snare: {
+      // Not native syslog — Windows needs a Snare/NXLog agent to relay the
+      // Event Log, so this source declares transport 'agent'.
+      label: 'Windows Event Log (Snare)', category: 'appliance', transport: 'agent',
+      build() {
+        const h = rand.pick(HOSTS.windows);
+        let counter = rand.int(8000, 60000);
+        const base = () => ({
+          srcType: 'snare', vendor: 'snare', host: h.name, hostIp: h.ip,
+          facility: FACILITY.local7, program: 'MSWinEventLog', logName: 'Security',
+          sourceName: 'Microsoft-Windows-Security-Auditing', sidType: 'N/A',
+          snareCounter: counter++,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 4); i < n; i++) {
+          const user = rand.pick(USERS);
+          evs.push(Object.assign(base(), {
+            severity: 6, criticality: 1, eventId: 4624, logType: 'Success Audit',
+            categoryStr: 'Logon', user,
+            message: `An account was successfully logged on. Account Name: ${user} Logon Type: 3 Source Network Address: ${rand.internalIp()}`,
+          }));
+        }
+        evs.push(Object.assign(base(), {
+          severity: 6, criticality: 1, eventId: 4688, logType: 'Success Audit',
+          categoryStr: 'Process Creation', user: rand.pick(USERS),
+          message: 'A new process has been created. New Process Name: C:\\Windows\\System32\\notepad.exe',
+        }));
+        // 4625 burst from one address for one account — the existing
+        // windows-threat rule correlates it (>=8 / 60s) and alerts once.
+        const badSrc = rand.pick(THREAT_INTEL.ips), target = rand.pick(BAD_USERS);
+        for (let i = 0; i < rand.int(9, 12); i++) {
+          evs.push(Object.assign(base(), {
+            severity: 4, criticality: 4, eventId: 4625, logType: 'Failure Audit',
+            categoryStr: 'Logon', user: target, srcIp: badSrc,
+            message: `An account failed to log on. Account Name: ${target} Logon Type: 3 Failure Reason: Unknown user name or bad password. Source Network Address: ${badSrc} Status: 0xC000006D`,
+          }));
+        }
+        return evs;
+      },
+    },
+    auditd: {
+      // Not native syslog — auditd reaches a collector via the audisp-syslog
+      // plugin, so this source declares transport 'agent'.
+      label: 'Linux auditd', category: 'appliance', transport: 'agent',
+      build() {
+        const h = rand.pick(HOSTS.ssh);
+        // audispd is a single relay process, so its pid is constant per host.
+        const relayPid = rand.int(600, 4000);
+        const base = () => ({
+          srcType: 'auditd', vendor: 'auditd', host: h.name, hostIp: h.ip,
+          facility: FACILITY.user, program: 'audispd', pid: relayPid,
+        });
+        const evs = [];
+        // Benign: an unprivileged user running an ordinary command. Each event is a
+        // SYSCALL + EXECVE pair sharing one audit(ts:serial) — same stamp, same serial.
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          const serial = rand.int(1000, 9999);
+          const at = Date.now() - rand.int(0, 4000);
+          const cmd = rand.pick([['cat', '/etc/hostname'], ['ls', '-la'], ['grep', 'error']]);
+          const pid = rand.int(10000, 30000);
+          evs.push(Object.assign(base(), {
+            severity: 5, auditType: 'SYSCALL', auditSerial: serial, auditTs: at, auid: 1000, uid: 1000, comm: cmd[0],
+            auditBody: `arch=c000003e syscall=59 success=yes exit=0 ppid=${rand.int(1000, 9999)} pid=${pid} auid=1000 uid=1000 gid=1000 euid=1000 tty=pts1 ses=3 comm="${cmd[0]}" exe="/usr/bin/${cmd[0]}" key="procmon"`,
+            message: `SYSCALL execve comm="${cmd[0]}" auid=1000 uid=1000`,
+          }));
+          evs.push(Object.assign(base(), {
+            severity: 5, auditType: 'EXECVE', auditSerial: serial, auditTs: at,
+            auditBody: `argc=2 a0="${cmd[0]}" a1="${cmd[1]}"`,
+            message: `EXECVE ${cmd[0]} ${cmd[1]}`,
+          }));
+        }
+        // auid is the original login identity and survives su/sudo. auid=1000 with
+        // uid=0 means an unprivileged login is now executing as root.
+        const serial = rand.int(1000, 9999), pid = rand.int(10000, 30000);
+        const at = Date.now();
+        evs.push(Object.assign(base(), {
+          severity: 3, auditType: 'SYSCALL', auditSerial: serial, auditTs: at, auid: 1000, uid: 0, comm: 'bash',
+          auditBody: `arch=c000003e syscall=59 success=yes exit=0 ppid=${rand.int(1000, 9999)} pid=${pid} auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 tty=pts1 ses=3 comm="bash" exe="/bin/bash" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key="rootshell"`,
+          message: 'SYSCALL execve comm="bash" auid=1000 uid=0 key="rootshell"',
+        }));
+        evs.push(Object.assign(base(), {
+          severity: 3, auditType: 'EXECVE', auditSerial: serial, auditTs: at,
+          auditBody: 'argc=3 a0="bash" a1="-i" a2="-p"',
+          message: 'EXECVE bash -i -p',
+        }));
         return evs;
       },
     },

@@ -79,13 +79,19 @@ event drives the appliance-threat rule.
 - No external dependencies anywhere — keep it that way (browser + Node core only).
 - Match the surrounding style: terse, comment-light, `const`/arrow functions,
   template literals. Each module is a single IIFE.
-- Counts are load-bearing in the docs: there are **26 attacks** and **18 appliance
-  formats**. If you add or remove one, update the counts and tables in `README.md`
-  (§Attack scenarios / §Appliance log formats) **and** `DOCUMENTATION.md` (§5 / §6).
-- Appliance entries may declare `transport: 'agent' | 'api'` when the product does
-  not speak syslog natively (Windows via Snare/NXLog, auditd, AWS, Okta). Default
-  is `'native'`; the UI surfaces it on the button's hover title. Don't present an
-  agent/API source as native syslog.
+- Counts are load-bearing in the docs: there are **26 attacks** and **20 appliance
+  formats** (18 native syslog + 2 agent-relayed). If you add or remove one, update
+  the counts and tables in `README.md` (§Attack scenarios / §Appliance log formats)
+  **and** `DOCUMENTATION.md` (§5 / §6).
+- Appliance entries declare `transport: 'agent' | 'api'` when the product does not
+  speak syslog natively (`snare`, `auditd` today; AWS/Okta would be `'api'`).
+  Default is `'native'`; the UI badges non-native sources and reports transport on
+  the button's hover title. Don't present an agent/API source as native syslog.
+- Reuse a rule rather than cloning it when a new source carries the same telemetry:
+  `snare` is Windows Event Log over an agent, so it feeds the existing
+  `windows-threat` rule. Check `makeRules()` before adding a near-duplicate.
+- A burst should raise **one** alert, not one per line. Either tag only the final
+  event with `threatSig`, or let a stateful rule correlate the burst.
 - The RFC 3164 / 5424 toggle affects only the generic sources; appliance events
   always use their native vendor format.
 

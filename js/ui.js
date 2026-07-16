@@ -34,6 +34,8 @@
     haproxy:    { color: '#63b32e', label: 'haproxy' },
     bind:       { color: '#d4a017', label: 'bind dns' },
     postfix:    { color: '#d19bf0', label: 'postfix' },
+    snare:      { color: '#7db8f7', label: 'snare/win' },
+    auditd:     { color: '#f59e0b', label: 'auditd' },
     cef:        { color: '#7c9cff', label: 'cef' },
     leef:       { color: '#22c1a6', label: 'leef' },
     mail:       { color: '#c084fc', label: 'mail' },
@@ -125,6 +127,11 @@
       b.title = isAppliance
         ? `Emit ${s.label} logs — ${TRANSPORT_NOTE[s.transport] || s.transport}`
         : 'Inject this scenario — marks it as selected';
+      // Mark sources that only reach a collector via an agent or an API connector,
+      // so they don't read as native syslog devices.
+      if (isAppliance && s.transport !== 'native') {
+        b.appendChild(el('span', 'scn-transport', s.transport));
+      }
       b.addEventListener('click', () => {
         // Fire the scenario and mark this button as selected so it's clear
         // which attacks / appliance logs have been chosen. Clear via the

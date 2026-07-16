@@ -31,7 +31,7 @@ has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 18 native appliance formats, at a configurable rate, with 26 injectable attack scenarios and file replay. |
+| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 20 appliance formats (18 native syslog + 2 agent-relayed), at a configurable rate, with 26 injectable attack scenarios and file replay. |
 | **Jedi**      | Miniature SIEM — parses every event, keeps rolling stats, and runs a stateful, MITRE ATT&CK-tagged detection-rule engine. |
 
 Everything renders in the browser. The optional `server.js` backend serves the
@@ -188,19 +188,27 @@ threat-intel matches.
 
 ## 6. Appliance log formats
 
-**18** sources live under the **Appliance logs ›** menu. Each burst mixes benign
+**20** sources live under the **Appliance logs ›** menu. Each burst mixes benign
 events with malicious ones, and every event is rendered in the vendor's **real
 wire format** (still wrapped in a syslog `<PRI>` header) by the matching formatter
 in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424 toggle does **not**
 apply — real appliances have fixed formats. The **ID** column is the internal key
 the `Appliance logs ›` buttons pass to `injectScenario(id)`.
 
-Every source is **native syslog**: the device emits that format itself, with no
-agent or API connector in the path. `Syslogger.scenarioList()` exposes a
-`transport` field (`native` | `agent` | `api`, defaulting to `native`) that the UI
-surfaces as the button's hover title — so a future agent-based source (Windows via
-Snare/NXLog, Linux auditd) or API-based source (AWS, Okta) can declare that it is
-**not** truly native syslog rather than implying it is.
+`Syslogger.scenarioList()` exposes a **`transport`** field (`native` | `agent` |
+`api`, defaulting to `native`). 18 of the 20 sources are `native` — the device
+speaks syslog itself. Two are **`agent`** and say so with a badge on their button
+and in the hover title:
+
+- **`snare`** — Windows has no native syslog at all; a Snare or NXLog agent reads
+  the Event Log and relays it.
+- **`auditd`** — the kernel audit daemon writes to its own socket; the
+  `audisp-syslog` plugin is what puts it on the wire.
+
+The distinction is deliberate: this is a tool for learning log ingestion, so a
+source that cannot actually reach a collector without an agent must not be
+presented as though it could. An `api` source (AWS, Okta, CrowdStrike — polled by
+a connector and re-emitted) would declare `transport: 'api'` the same way.
 
 Three detection paths cover the malicious events in each burst:
 
@@ -212,8 +220,13 @@ Three detection paths cover the malicious events in each burst:
   pfSense, Juniper) route their malicious event through the generic
   **`c2-beacon`** rule instead (internal host → threat-intel IP).
 - **Correlation-driven** sources carry no signature at all and rely on a stateful
-  rule counting a burst: Cisco ISE (`radius-brute`) and BIND 9 (`dns-tunneling`).
-  These deliberately alert **once** per burst rather than once per line.
+  rule counting a burst: Cisco ISE (`radius-brute`), BIND 9 (`dns-tunneling`) and
+  Snare (`windows-threat`). These deliberately alert **once** per burst rather than
+  once per line.
+- **Reused rules.** `snare` is the same Windows Event Log as the `windows` baseline
+  source — same event IDs, different transport and wire format — so it feeds the
+  existing **`windows-threat`** rule instead of a cloned one. `auditd` gets its own
+  **`auditd-rootshell`** rule.
 
 | ID | Appliance | Format | Detection | Malicious signature / trigger |
 |----|-----------|--------|-----------|-------------------------------|
@@ -233,6 +246,8 @@ Three detection paths cover the malicious events in each burst:
 | `haproxy` | HAProxy | positional + timers/flags | `appliance-threat` | 4× `PR--` 403-denied probes (`/.env`, `/wp-admin/`, …) from one bad IP |
 | `bind` | BIND 9 (DNS) | `named` query log | `dns-tunneling` | 42–56-char DGA label under `tunnel.badnet.ru` (TXT) + a threat-intel domain |
 | `postfix` | Postfix (mail) | prose + `key=<value>` | `appliance-threat` | Spamhaus Blocklist Hit (554), Invalid Sender Domain (550) |
+| `snare` | Windows Event Log (Snare) — **agent** | TAB-delimited `MSWinEventLog` | `windows-threat` | 9–12 × **4625** failed logons for one account from one bad IP (+ benign 4624/4688) |
+| `auditd` | Linux auditd — **agent** | `type=… msg=audit(ts:serial)` | `auditd-rootshell` | `SYSCALL` with `auid=1000 uid=0 key="rootshell"` + its `EXECVE` |
 | `cef` | CEF (generic ArcSight) | `CEF:0\|…` | `appliance-threat` | Brute Force Attack, Malware Communication, Data Exfiltration Attempt |
 | `leef` | LEEF (generic QRadar) | `LEEF:2.0\|…` | `appliance-threat` | Port Scan, Suspect Data Loss, Botnet C2 Communication |
 
@@ -310,6 +325,27 @@ a backend, and the timers are `-1`):
 <20>Jul 16 22:05:01 mail-gw-01 postfix/smtpd[11030]: NOQUEUE: reject: RCPT from unknown[91.219.236.19]: 550 Sender address rejected: Domain not found; from=<bnev0un1@mail.dark-pool.su> to=<www-data@corp.local> proto=SMTP helo=<Static-IP-9121923619>
 ```
 
+**Windows Event Log via Snare** — failed logon (`4625`). The fields are
+**TAB-separated** (shown here as real tabs), starting with the literal
+`MSWinEventLog` marker. Windows emits no syslog itself: a Snare or NXLog agent
+produces this line, which is why the source is badged `agent`:
+
+```
+<188>Jul 16 22:44:11 WIN-DC01 MSWinEventLog	4	Security	47258	Thu Jul 16 22:44:11 2026	4625	Microsoft-Windows-Security-Auditing	ftpuser	N/A	Failure Audit	WIN-DC01	Logon		An account failed to log on. Account Name: ftpuser Logon Type: 3 Failure Reason: Unknown user name or bad password. Source Network Address: 91.219.236.19 Status: 0xC000006D	47258
+```
+
+**Linux auditd** — a root shell from an unprivileged login, relayed by
+`audisp-syslog`. Note that both records carry the **identical**
+`audit(1784234651.263:6581)` stamp: that shared epoch-and-serial is the join key a
+collector uses to stitch the `SYSCALL` and `EXECVE` records back into one event.
+`auid=1000` (the login identity, which survives `su`/`sudo`) together with `uid=0`
+is the signal — `key="rootshell"` is the local audit rule that flagged it:
+
+```
+<11>Jul 16 22:44:11 srv-app-02 audispd[2225]: type=SYSCALL msg=audit(1784234651.263:6581): arch=c000003e syscall=59 success=yes exit=0 ppid=5331 pid=15491 auid=1000 uid=0 gid=0 euid=0 suid=0 fsuid=0 tty=pts1 ses=3 comm="bash" exe="/bin/bash" subj=unconfined_u:unconfined_r:unconfined_t:s0-s0:c0.c1023 key="rootshell"
+<11>Jul 16 22:44:11 srv-app-02 audispd[2225]: type=EXECVE msg=audit(1784234651.263:6581): argc=3 a0="bash" a1="-i" a2="-p"
+```
+
 Click any appliance event in the live stream to open the drawer and see its full
 raw wire line alongside the parsed fields.
 
@@ -359,9 +395,10 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `priv-esc` | Privilege Escalation | `sudo … USER=root` / Win 4672 | T1068 |
 | `ids-malware` | IDS Malware Signature | Suricata/ET trojan/exploit | T1204 |
 | `radius-brute` | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` failures / MAC / 60 s | T1110 |
+| `auditd-rootshell` | Root Shell From Unprivileged Login | auditd `SYSCALL`, `auid` set & ≠0, `uid=0`, `key="rootshell"` | T1548 |
 | `appliance-threat` | Appliance IPS / WAF Signature | any `threatSig` present | T1190 (by signature) |
 | `web-exploit` | Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA | T1190·T1059·T1083·T1505.003·T1595 |
-| `windows-threat` | Windows Security Event | 4625 brute/spray, 4769 RC4, 4662 repl, 4732/4720, 1102, 4624 PtH | T1110·T1558.003·T1003.006·T1136·T1070.001·T1550.002 |
+| `windows-threat` | Windows Security Event | 4625 brute/spray, 4769 RC4, 4662 repl, 4732/4720, 1102, 4624 PtH (`windows` + `snare` sources) | T1110·T1558.003·T1003.006·T1136·T1070.001·T1550.002 |
 | `reverse-shell` | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | `susp-powershell` | Suspicious PowerShell | `-enc` / `FromBase64String` / hidden window | T1059.001 |
 | `cryptomining` | Cryptomining | `stratum+tcp` / known pool | T1496 |
