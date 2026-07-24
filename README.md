@@ -34,16 +34,16 @@ node --version
 
 ```bash
 # Option A — clone with git
-git clone https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger.git
-cd apex-jedisyslogger
+git clone https://github.com/alfredonacino/APEX-Jedi-Syslogger.git
+cd APEX-Jedi-Syslogger
 
 # Option B — download a tarball (no git required)
 curl -L -o apex.tar.gz \
-  "https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger/-/archive/main/apex-jedisyslogger-main.tar.gz"
-tar xzf apex.tar.gz && cd apex-jedisyslogger-main
+  "https://github.com/alfredonacino/APEX-Jedi-Syslogger/archive/refs/heads/main.tar.gz"
+tar xzf apex.tar.gz && cd APEX-Jedi-Syslogger-main
 ```
 
-*(Or on GitLab: **Code ▾ → Download source code → zip/tar.gz**, then unpack it.)*
+*(Or on GitHub: **Code ▾ → Download ZIP**, then unpack it.)*
 
 **3. Start it** and open the dashboard in a browser:
 

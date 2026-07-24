@@ -518,8 +518,8 @@ target: Node.js** (no `npm install`).
 **Option A — clone with git:**
 
 ```bash
-git clone https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger.git
-cd apex-jedisyslogger
+git clone https://github.com/alfredonacino/APEX-Jedi-Syslogger.git
+cd APEX-Jedi-Syslogger
 ```
 
 **Option B — download an archive (no git required):**
@@ -527,12 +527,12 @@ cd apex-jedisyslogger
 ```bash
 # tarball of the main branch
 curl -L -o apex.tar.gz \
-  "https://gitlab.supportlab.cloud/alfreddgreat/apex-jedisyslogger/-/archive/main/apex-jedisyslogger-main.tar.gz"
+  "https://github.com/alfredonacino/APEX-Jedi-Syslogger/archive/refs/heads/main.tar.gz"
 tar xzf apex.tar.gz
-cd apex-jedisyslogger-main
+cd APEX-Jedi-Syslogger-main
 ```
 
-Or from the GitLab web UI: **Code ▾ → Download source code → zip / tar.gz**, then
+Or from the GitHub web UI: **Code ▾ → Download ZIP**, then
 unpack it. Either way you end up with `index.html`, `server.js`, and the `js/`,
 `css/`, `samples/` folders — start it with `node server.js` (see below).
 
