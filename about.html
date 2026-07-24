@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>About — APEX JediSyslogger</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>" />
+  <style>
+    /* ── About / docs prose (scoped; reuses theme vars from styles.css) ── */
+    .doc { max-width: 900px; margin: 0 auto; }
+    .doc section { margin: 26px 0; }
+    .doc h2 {
+      font-size: 18px; margin: 30px 0 12px; padding-bottom: 6px;
+      border-bottom: 1px solid var(--border); color: var(--text);
+    }
+    .doc h2 .num { color: var(--saber); font-weight: 700; margin-right: 8px; }
+    .doc h3 { font-size: 14px; margin: 18px 0 8px; color: var(--saber-2); letter-spacing: .3px; }
+    .doc p { color: var(--text-dim); margin: 10px 0; }
+    .doc ul, .doc ol { color: var(--text-dim); padding-left: 22px; margin: 10px 0; }
+    .doc li { margin: 6px 0; }
+    .doc a { color: var(--saber-2); text-decoration: none; }
+    .doc a:hover { text-decoration: underline; }
+    .doc strong { color: var(--text); }
+    .doc code {
+      font-family: var(--mono); font-size: 12.5px;
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: 5px; padding: 1px 5px; color: #cde7ff;
+    }
+    .doc pre {
+      font-family: var(--mono); font-size: 12.5px; line-height: 1.55;
+      background: var(--bg-2); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 14px 16px; margin: 12px 0;
+      overflow-x: auto; color: var(--text);
+    }
+    .doc pre code { background: none; border: none; padding: 0; color: inherit; }
+    .doc pre .cm { color: var(--text-mute); }
+    .doc table {
+      width: 100%; border-collapse: collapse; margin: 14px 0; font-size: 13px;
+      display: block; overflow-x: auto;
+    }
+    .doc th, .doc td {
+      text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .doc th { color: var(--text); font-weight: 600; background: var(--panel); white-space: nowrap; }
+    .doc td { color: var(--text-dim); }
+    .doc td code, .doc th code { white-space: nowrap; }
+    .doc .callout {
+      border-left: 3px solid var(--saber-2); background: rgba(56,189,248,.06);
+      border-radius: 0 8px 8px 0; padding: 10px 14px; margin: 14px 0; color: var(--text-dim);
+    }
+    .doc .callout.warn { border-left-color: var(--medium); background: rgba(255,176,32,.06); }
+    .doc .lead { font-size: 15px; color: var(--text); }
+    .doc .tag {
+      display: inline-block; font-family: var(--mono); font-size: 11px;
+      color: var(--saber); border: 1px solid var(--border-2); border-radius: 5px;
+      padding: 1px 6px; margin-left: 6px;
+    }
+    .back-link { text-decoration: none; }
+  </style>
+</head>
+<body>
+  <!-- ── Header ─────────────────────────────────────────────────────── -->
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">⚔️</span>
+      <div>
+        <h1><span class="brand-apex">APEX</span> Jedi<span class="brand-accent">Syslogger</span></h1>
+        <p class="brand-sub">About &amp; Instructions</p>
+      </div>
+    </div>
+    <div class="controls">
+      <a class="btn btn-primary back-link" href="index.html">← Back to dashboard</a>
+    </div>
+  </header>
+
+  <main class="doc">
+    <section>
+      <p class="lead">A browser-based <strong>SIEM log-ingestion simulator</strong> for
+      security / detection-engineering practice. It has two halves:</p>
+      <table>
+        <thead><tr><th>Component</th><th>Role</th></tr></thead>
+        <tbody>
+          <tr>
+            <td><strong>Syslogger</strong></td>
+            <td>A synthetic log source. Emits realistic <strong>RFC 3164</strong> and
+            <strong>RFC 5424</strong> syslog plus <strong>20 appliance formats</strong>
+            (Palo Alto, FortiGate, Cisco ASA, Cisco FTD, Cisco ISE, Check Point, Sophos,
+            pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, Snort 3, HAProxy,
+            BIND 9, Postfix, Windows Event Log via Snare, Linux auditd, and generic
+            CEF/LEEF) from simulated infrastructure at a configurable
+            <em>events-per-second</em>, injects <strong>26 attack scenarios</strong> on
+            demand, and can replay a log file in a loop.</td>
+          </tr>
+          <tr>
+            <td><strong>Jedi</strong></td>
+            <td>A miniature SIEM engine. Ingests every event, keeps rolling statistics,
+            and runs a <strong>stateful detection-rule engine</strong> that raises
+            <strong>MITRE ATT&amp;CK-tagged</strong> alerts.</td>
+          </tr>
+        </tbody>
+      </table>
+      <p>The dashboard runs entirely in the browser. An optional <strong>zero-dependency
+      Node backend</strong> (<code>server.js</code>) lets it forward the generated logs
+      as <strong>real UDP/TCP syslog</strong> to an actual collector and test
+      connectivity to it.</p>
+      <div class="callout">📖 <strong>Full technical reference:</strong>
+      <code>DOCUMENTATION.md</code> — architecture, every scenario &amp; detection rule,
+      the HTTP API, log formats, and deployment.</div>
+    </section>
+
+    <section>
+      <h2><span class="num">1</span>Install on a new machine</h2>
+      <p>The app is a static web front-end plus an optional <strong>zero-dependency Node
+      backend</strong>. The only thing the target machine needs is <strong>Node.js</strong>
+      — there is no <code>npm install</code> and no build step.</p>
+
+      <p><strong>1. Install Node.js</strong> — version 14 or newer (any current LTS). From
+      your package manager or <a href="https://nodejs.org" target="_blank" rel="noopener">nodejs.org</a>. Verify:</p>
+      <pre><code>node --version</code></pre>
+
+      <p><strong>2. Get the code</strong> — clone it, or download an archive if you don't
+      have git:</p>
+      <pre><code><span class="cm"># Option A — clone with git</span>
+git clone https://github.com/alfredonacino/APEX-Jedi-Syslogger.git
+cd APEX-Jedi-Syslogger
+
+<span class="cm"># Option B — download a tarball (no git required)</span>
+curl -L -o apex.tar.gz \
+  "https://github.com/alfredonacino/APEX-Jedi-Syslogger/archive/refs/heads/main.tar.gz"
+tar xzf apex.tar.gz &amp;&amp; cd APEX-Jedi-Syslogger-main</code></pre>
+      <p><em>(Or on GitHub: <strong>Code ▾ → Download ZIP</strong>, then unpack it.)</em></p>
+
+      <p><strong>3. Start it</strong> and open the dashboard in a browser:</p>
+      <pre><code>node server.js                 <span class="cm"># serves the app on http://localhost:8099</span></code></pre>
+      <p>That's the entire install.</p>
+    </section>
+
+    <section>
+      <h2><span class="num">2</span>Run it</h2>
+      <pre><code><span class="cm"># Recommended — serves the app AND enables live forwarding + the connectivity test</span>
+node server.js                 <span class="cm"># then browse to http://localhost:8099</span>
+PORT=9000 node server.js       <span class="cm"># custom port</span>
+
+<span class="cm"># Static-only (no forwarding / no connectivity test)</span>
+python3 -m http.server 8080    <span class="cm"># then browse to http://localhost:8080</span>
+xdg-open index.html            <span class="cm"># or just open the file (file://)</span></code></pre>
+      <div class="callout"><strong>Forwarding to a real IP requires <code>node server.js</code>.</strong>
+      A browser page cannot open raw UDP/TCP sockets, so it can never send syslog on its
+      own — the Node process is what actually emits the packets.</div>
+    </section>
+
+    <section>
+      <h2><span class="num">3</span>Deploy to a server</h2>
+      <pre><code><span class="cm"># from the project directory, copy to the target host</span>
+rsync -av --exclude '.git' --exclude 'apex.log' \
+  ./ user@your-server:/home/user/APEX_JediSyslogger/
+
+<span class="cm"># on the server</span>
+cd /home/user/APEX_JediSyslogger
+node server.js                                    <span class="cm"># foreground</span>
+setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="cm"># detached</span></code></pre>
+      <p>Requires <strong>Node.js</strong> on the target (no npm install — zero
+      dependencies). Then browse to <code>http://&lt;server-ip&gt;:8099</code>.</p>
+      <div class="callout warn"><strong>Use <code>setsid</code>, not <code>nohup</code>,
+      when starting it over SSH</strong> — a plain <code>nohup … &amp;</code> keeps the
+      session's stdout attached and hangs the SSH channel.</div>
+      <p>Updating an existing deployment is just the <code>rsync</code>: static files are
+      served from disk, so a UI/rule change needs <strong>no restart</strong>. Only a
+      change to <code>server.js</code> itself does.</p>
+    </section>
+
+    <section>
+      <h2><span class="num">4</span>Using it</h2>
+      <ol>
+        <li><strong>Start Ingestion</strong> — begins benign baseline traffic. Drag the
+        <strong>Rate</strong> slider (0–60 eps) to change volume.</li>
+        <li><strong>Attack ›</strong> — inject a burst of malicious activity and watch
+        <strong>Detections</strong> correlate it. <strong>Appliance logs ›</strong> — emit
+        any of the 20 sources in its real wire format, from firewalls (Palo Alto,
+        FortiGate, Cisco ASA/FTD) to an IDS (Snort), a load balancer (HAProxy), DNS
+        (BIND 9), mail (Postfix), and agent-relayed hosts (Windows via Snare, Linux
+        auditd).</li>
+        <li>Toggle <strong>RFC 3164 / RFC 5424</strong> for the generic sources. Click any
+        event to see the <strong>raw line + parsed fields</strong> (appliance events keep
+        their vendor format).</li>
+        <li><strong>Filter</strong> the live stream, <strong>pause</strong> it, or
+        <strong>Reset</strong> all state.</li>
+      </ol>
+
+      <h3>Source &amp; delivery configuration</h3>
+      <table>
+        <thead><tr><th>Control</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Log collector (receiver)</strong></td><td>Destination
+          <code>IP : port</code> + protocol (<strong>UDP/TCP</strong>) that logs are
+          forwarded/tested against.</td></tr>
+          <tr><td><strong>Test</strong></td><td>Probes reachability of that IP:port.
+          TCP = real connect (open / refused / timeout). UDP = ICMP probe (detects
+          "nothing listening"; open ports are inconclusive by nature).</td></tr>
+          <tr><td><strong>Forward live</strong></td><td>Relays every generated log line to
+          the collector as real syslog via the Node backend. The status line shows a live
+          count; UDP is <em>sent</em> (fire-and-forget, no delivery ack), TCP is
+          <em>delivered</em>.</td></tr>
+          <tr><td><strong>Volume limit</strong></td><td><strong>Unlimited</strong>, or cap
+          the total number of logs to an integer — ingestion auto-stops at the cap.</td></tr>
+          <tr><td><strong>File replay</strong></td><td>Load a <code>.log</code>/<code>.txt</code>/<code>.csv</code>
+          file; enable <strong>use as source</strong> to replay its lines (each parsed into
+          an event), <strong>loop</strong> to repeat endlessly. See
+          <code>samples/sample.log</code>.</td></tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section>
+      <h2><span class="num">5</span>Live forwarding &amp; troubleshooting</h2>
+      <p><code>Forward live</code> → the browser posts batches to <code>POST /forward</code>,
+      and the backend emits them to your collector. Because <strong>UDP is
+      fire-and-forget</strong>, a rising "sent" count means packets <em>left your
+      machine</em> — not that the SIEM received them. If your SIEM shows nothing:</p>
+      <ol>
+        <li><strong>Click Test</strong> (or switch to <strong>TCP</strong>). TCP gives a
+        definitive answer: <em>connect succeeded</em> (reachable + listening),
+        <em>connection refused</em> (nothing on that port), or <em>timeout</em>
+        (firewall/routing).</li>
+        <li><strong>Watch the <code>node server.js</code> console</strong> — it logs every
+        forward: <code>→ forwarded N line(s) to &lt;IP&gt;:&lt;port&gt;/udp</code>.</li>
+        <li><strong><code>sudo tcpdump -n -i any port 514</code> on the collector.</strong>
+        Packets seen but not ingested → the SIEM's syslog input isn't configured for that
+        port/proto. No packets → a firewall between the hosts (port 514 also needs root on
+        the receiver).</li>
+      </ol>
+    </section>
+
+    <section>
+      <h2><span class="num">6</span>Detection rules</h2>
+      <table>
+        <thead><tr><th>Rule</th><th>Trigger</th><th>ATT&amp;CK</th></tr></thead>
+        <tbody>
+          <tr><td>SSH Brute-Force</td><td>≥ 8 failed <code>sshd</code> logins from one IP / 60s</td><td>T1110</td></tr>
+          <tr><td>Login After Brute Force</td><td><code>Accepted password</code> following a failure burst</td><td>T1078</td></tr>
+          <tr><td>Horizontal Port Scan</td><td>≥ 15 distinct denied dst ports from one IP / 30s</td><td>T1046</td></tr>
+          <tr><td>SQL Injection</td><td>SQLi patterns in an HTTP request</td><td>T1190</td></tr>
+          <tr><td>C2 / Known-Bad Destination</td><td>Internal host → threat-intel IP</td><td>T1071</td></tr>
+          <tr><td>Large Outbound Transfer</td><td>Outbound flow &gt; 100 MB</td><td>T1048</td></tr>
+          <tr><td>DNS Tunneling</td><td>Very long DNS label / known-bad domain</td><td>T1071.004</td></tr>
+          <tr><td>Privilege Escalation</td><td><code>sudo … USER=root</code> / Windows EventID 4672</td><td>T1068</td></tr>
+          <tr><td>IDS Malware Signature</td><td>Suricata/ET trojan / exploit hit</td><td>T1204</td></tr>
+          <tr><td>Web Application Attack</td><td>Log4Shell / XSS / traversal / web shell / scanner UA</td><td>T1190 · T1059 · T1083 · T1505.003 · T1595</td></tr>
+          <tr><td>Windows Security Event</td><td>RDP brute / spray / Kerberoasting / DCSync / new admin / log-clear / PtH</td><td>T1110 · T1558.003 · T1003.006 · T1136 · T1070.001 · T1550.002</td></tr>
+          <tr><td>Reverse Shell</td><td><code>/dev/tcp/</code>, <code>nc -e</code>, <code>bash -i &gt;&amp;</code></td><td>T1059</td></tr>
+          <tr><td>Suspicious PowerShell</td><td><code>powershell -enc</code> / <code>FromBase64String</code> / hidden window</td><td>T1059.001</td></tr>
+          <tr><td>Cryptomining</td><td><code>stratum+tcp</code> / known mining pool</td><td>T1496</td></tr>
+          <tr><td>Ransomware</td><td>shadow-copy deletion / mass <code>.locked</code> rename</td><td>T1486</td></tr>
+          <tr><td>DoS / Flood</td><td>SYN-flood markers or a volumetric block burst to one host</td><td>T1498</td></tr>
+          <tr><td>Phishing Email</td><td>SPF/DKIM/DMARC fail + risky attachment</td><td>T1566</td></tr>
+          <tr><td>RADIUS / 802.1X Brute Force</td><td>≥ 6 Cisco ISE <code>5400</code> auth failures from one MAC / 60s</td><td>T1110</td></tr>
+          <tr><td>Root Shell From Unprivileged Login</td><td>auditd <code>SYSCALL</code>, <code>auid</code> set &amp; ≠0, <code>uid=0</code>, <code>key="rootshell"</code></td><td>T1548</td></tr>
+          <tr><td>Appliance IPS / WAF Signature</td><td>any appliance threat/violation signature</td><td>T1190 (mapped by signature)</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Scenarios</strong> — 26 attacks (<code>Attack ›</code>) and 20 appliance
+      formats (<code>Appliance logs ›</code>). Every scenario is wired to a detection, so
+      each button demonstrably lights up the dashboard. The <strong>Threat Level</strong>
+      meter aggregates recent alerts (last 2 min) weighted by severity, DEFCON-style:
+      <code>GUARDED → ELEVATED → HIGH → SEVERE → CRITICAL</code>.</p>
+    </section>
+
+    <section>
+      <h2><span class="num">7</span>Attack scenarios <span class="tag">26</span></h2>
+      <p>Injected from the <strong>Attack ›</strong> menu; each button fires a burst built
+      to trip a detection.</p>
+      <ul>
+        <li><strong>Network / recon</strong> — Port Scan · SYN Flood (DDoS) · C2 Beacon · DNS Tunneling · Data Exfiltration · Cryptomining</li>
+        <li><strong>Web application</strong> — SQL Injection · Log4Shell RCE · XSS Injection · Path Traversal / LFI · Web Shell · Vuln Scan</li>
+        <li><strong>Credential / identity</strong> — SSH Brute Force · RDP Brute Force · Password Spray · Kerberoasting · DCSync · Pass-the-Hash</li>
+        <li><strong>Endpoint / execution</strong> — Reverse Shell · Malicious PowerShell · Privilege Escalation · Malware / IDS Hit · Ransomware</li>
+        <li><strong>Windows persistence / evasion</strong> — New Admin Account · Audit Log Cleared</li>
+        <li><strong>Email</strong> — Phishing Email</li>
+      </ul>
+    </section>
+
+    <section>
+      <h2><span class="num">8</span>Appliance log formats <span class="tag">20</span></h2>
+      <p>Injected from the <strong>Appliance logs ›</strong> menu — each event is rendered
+      in the vendor's real wire format (syslog <code>&lt;PRI&gt;</code> + native payload).</p>
+      <table>
+        <thead><tr><th>Appliance</th><th>Format</th><th>Detection</th></tr></thead>
+        <tbody>
+          <tr><td>Palo Alto (PAN-OS)</td><td>CSV</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>FortiGate (FortiOS)</td><td><code>key=value</code></td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Cisco ASA</td><td><code>%ASA-lvl-id</code></td><td><code>c2-beacon</code></td></tr>
+          <tr><td>Check Point</td><td><code>key=value;</code></td><td><code>c2-beacon</code></td></tr>
+          <tr><td>Sophos XG</td><td><code>key=value</code></td><td><code>appliance-threat</code></td></tr>
+          <tr><td>pfSense</td><td>filterlog CSV</td><td><code>c2-beacon</code></td></tr>
+          <tr><td>Juniper SRX</td><td>RT_FLOW</td><td><code>c2-beacon</code></td></tr>
+          <tr><td>SonicWall</td><td><code>id/sn key=value</code></td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Zscaler ZIA</td><td>NSS <code>key=value</code></td><td><code>appliance-threat</code></td></tr>
+          <tr><td>F5 BIG-IP ASM</td><td><code>key=value</code> (WAF)</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Cisco FTD (Firepower)</td><td><code>%FTD-lvl-id</code> + <code>Key: Value</code></td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Cisco ISE (RADIUS)</td><td>segmented + <code>key=value</code></td><td><code>radius-brute</code></td></tr>
+          <tr><td>Snort 3 (IDS)</td><td><code>[gid:sid:rev]</code> tokens</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>HAProxy</td><td>positional + termination flags</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>BIND 9 (DNS)</td><td><code>named</code> query log</td><td><code>dns-tunneling</code></td></tr>
+          <tr><td>Postfix (mail)</td><td>prose + <code>key=&lt;value&gt;</code></td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Windows Event Log (Snare) <span class="tag">agent</span></td><td>TAB-delimited <code>MSWinEventLog</code></td><td><code>windows-threat</code></td></tr>
+          <tr><td>Linux auditd <span class="tag">agent</span></td><td><code>type=… msg=audit(ts:serial)</code></td><td><code>auditd-rootshell</code></td></tr>
+          <tr><td>CEF (generic)</td><td>ArcSight CEF</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>LEEF (generic)</td><td>QRadar LEEF</td><td><code>appliance-threat</code></td></tr>
+        </tbody>
+      </table>
+      <p>Appliances carrying an IPS/WAF signature fire <code>appliance-threat</code>; the
+      pure firewalls (Cisco ASA, Check Point, pfSense, Juniper) route their malicious event
+      through <code>c2-beacon</code> (internal host → threat-intel IP) instead. Four sources
+      are <strong>correlation-driven</strong> rather than signature-driven — the burst
+      <em>is</em> the signal, so they alert <strong>once</strong> rather than once per line:
+      <strong>Cisco ISE</strong>, <strong>Snare</strong>, <strong>auditd</strong>, and
+      <strong>BIND 9</strong>.</p>
+      <div class="callout"><strong>Transport matters.</strong> Most sources are
+      <strong>native syslog</strong>. Two are not: Windows has no syslog (a
+      <strong>Snare</strong>/NXLog agent relays the Event Log) and <strong>auditd</strong>
+      needs the <code>audisp-syslog</code> plugin. Those carry an <code>agent</code> badge
+      on their button. Every button reports its transport on hover.</div>
+    </section>
+
+    <section>
+      <h2><span class="num">9</span>Project layout</h2>
+      <pre><code>index.html          markup + panel scaffold
+about.html          this page — instructions
+css/styles.css      dark SIEM theme
+js/data.js          data pools, RNG, RFC 3164/5424 + vendor line formatting
+js/syslogger.js     log generator, appliance sources, scenarios, file replay, forwarding
+js/jedi.js          SIEM engine: parsing, correlation, detection rules
+js/ui.js            dashboard rendering + wiring
+server.js           optional Node backend: static host + /forward relay + /test probe
+samples/sample.log  example mixed-format log for the file-replay demo</code></pre>
+    </section>
+
+    <section>
+      <h2><span class="num">10</span>Extending it</h2>
+      <ul>
+        <li><strong>Add a log source</strong>: add a builder to <code>BASELINE</code> in
+        <code>syslogger.js</code> and a <code>SOURCE_META</code> entry in <code>ui.js</code>.</li>
+        <li><strong>Add an appliance format</strong>: add a formatter to
+        <code>VENDOR_FORMATTERS</code> in <code>data.js</code> and an entry to
+        <code>APPLIANCE</code> in <code>syslogger.js</code>. If the product doesn't speak
+        syslog natively, set <code>transport: 'agent'</code> or <code>'api'</code>.</li>
+        <li><strong>Add a detection</strong>: push a rule object into <code>makeRules()</code>
+        in <code>jedi.js</code>. Use <code>ctx.window()</code> / <code>ctx.windowSet()</code>
+        / <code>ctx.cooldown()</code> for stateful correlation. Reuse a rule when a source
+        carries telemetry another already reads (Snare reuses <code>windows-threat</code>).</li>
+        <li><strong>Add a scenario</strong>: add an entry to <code>SCENARIOS</code> in
+        <code>syslogger.js</code>. Make a burst raise <strong>one</strong> alert, not one
+        per line: tag only its final event with <code>threatSig</code>, or let a stateful
+        rule correlate it.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer class="app-footer">
+    <span>All traffic is synthetic — generated locally for SIEM / detection-engineering
+    practice. Enable “Forward live” (with <code>node server.js</code>) to relay it as real
+    UDP/TCP syslog to a collector.</span>
+    <span class="app-credit">Created By: <strong>Alfredo Nacino</strong> ·
+    <a href="https://www.alfredonacino.com" target="_blank" rel="noopener">www.alfredonacino.com</a> ·
+    <a href="mailto:alfredo@nacino.net">alfredo@nacino.net</a></span>
+  </footer>
+</body>
+</html>
