@@ -31,7 +31,7 @@ has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 20 appliance formats (18 native syslog + 2 agent-relayed), at a configurable rate, with 26 injectable attack scenarios and file replay. |
+| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 24 appliance formats (18 native syslog + 4 agent-relayed + 2 API-relayed), at a configurable rate, with 42 injectable attack scenarios and file replay. |
 | **Jedi**      | Miniature SIEM — parses every event, keeps rolling stats, and runs a stateful, MITRE ATT&CK-tagged detection-rule engine. |
 
 Everything renders in the browser. The optional `server.js` backend serves the
@@ -76,10 +76,17 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `js/ui.js` | Dashboard rendering, charts, config wiring, drawer |
 | `server.js` | Optional backend: static host + `/forward` relay + `/test` probe |
 | `samples/sample.log` | Example mixed-format log for the file-replay demo |
+| `jsconfig.json` | Editor typecheck settings — read by the editor, never shipped |
+| `types/globals.d.ts` | Ambient declarations for `window.JS` and Node globals |
 
 The three engine modules are plain IIFEs that attach to a global `JS` namespace —
 no build step, no bundler, no npm dependencies. Load order is data → syslogger →
 jedi → ui.
+
+`jsconfig.json` and `types/globals.d.ts` are editor-only: VS Code's bundled
+TypeScript service reads them to typecheck the JavaScript in place, so no
+`npm install` is required and nothing is added to what the browser loads. To run
+the same check from a terminal: `npx -p typescript tsc -p jsconfig.json`.
 
 ---
 
@@ -92,7 +99,7 @@ sees it. Common fields:
 |-------|---------|
 | `id` | Random unique id |
 | `ts` | Epoch ms timestamp |
-| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 20 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `auditd`, …), or `file` |
+| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 24 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `sysmon`, `zeek`, `cloudtrail`, `okta`, …), or `file` |
 | `host` / `hostIp` | Device name / management IP |
 | `facility` / `severity` | Syslog numeric facility (0–23) and severity (0–7) |
 | `program` / `pid` | Process / tag |
@@ -124,6 +131,13 @@ some sources add their own. The ones a detection rule reads:
 | `auditType` / `auditSerial` / `auditTs` / `auditBody` | `auditd` | Record type (`SYSCALL`/`EXECVE`), and the shared `audit(epoch:serial)` join key — **identical across every record of one event** |
 | `auid` / `uid` / `comm` | `auditd` | Login identity (survives `su`/`sudo`), effective uid, command |
 | `pfAction` / `smtpCode` / `pfReason` | `postfix` | `reject`/`sent`, SMTP reply code, reason text |
+| `sysmonType` / `processGuid` / `processId` / `image` | `sysmon` | Event-ID name, the GUID that survives PID reuse, and the process image path |
+| `sysmonFields` | `sysmon` | Per-event-ID fields, pre-rendered as `key="value"` strings — every Sysmon event ID has a different schema, so the formatter only supplies the common header |
+| `zeekPath` / `uid` / `zeekFields` | `zeek` | Log path (`conn`/`dns`/`ssl`), the connection uid that joins them, and the path's positional field list |
+| `eventName` / `eventSource` / `requestParameters` | `cloudtrail` | The API call, its service, and its arguments — `cloud-threat` branches on the name and inspects the parameters |
+| `identityType` / `arn` / `accountId` / `region` | `cloudtrail` | `userIdentity` block: who made the call, in which account and region |
+| `oktaEventType` / `outcome` / `outcomeReason` / `factor` | `okta` | Event type, `SUCCESS`/`FAILURE`, the reason text, and the MFA factor used |
+| `country` / `city` / `lat` / `lon` / `isProxy` | `okta` | `client.geographicalContext` — what makes impossible travel detectable at all |
 
 ---
 
@@ -156,7 +170,7 @@ appliance events always use their native vendor format.
 
 ## 5. Attack scenarios
 
-**26** scenarios live under the **Attack ›** menu. Each scenario's `build()`
+**42** scenarios live under the **Attack ›** menu. Each scenario's `build()`
 returns a *burst* of event partials crafted to trip a specific detection rule, so
 every button demonstrably lights up the dashboard. A burst can be injected even
 while the baseline generator is stopped, and its events are spread 30–90 ms apart
@@ -164,7 +178,7 @@ so the correlation windows see them as live traffic.
 
 Scenarios are defined in `js/syslogger.js` in two objects that are merged into a
 single `SCENARIOS` map: the original eight in `SCENARIOS` and the additional
-eighteen in `MORE_ATTACKS`. The **ID** column below is the internal key passed to
+thirty-four in `MORE_ATTACKS`. The **ID** column below is the internal key passed to
 `injectScenario(id)`; it is what the `Attack ›` buttons call.
 
 | ID | Scenario | What the burst emits | Fires rule | ATT&CK |
@@ -195,6 +209,27 @@ eighteen in `MORE_ATTACKS`. The **ID** column below is the internal key passed t
 | `cryptomining` | Cryptomining | DNS query to a mining pool **plus** a firewall flow to `stratum+tcp://<pool>:3333` | `cryptomining` | T1496 |
 | `ddos-synflood` | SYN Flood (DDoS) | 8–12 firewall **DENY** SYN-flood events to one target from spoofed IPs | `dos-flood` | T1498 |
 | `phishing` | Phishing Email | one postfix event, `spf=fail dkim=fail dmarc=fail` + a risky attachment (`.exe/.iso/.js/.docm`) | `phishing` | T1566 |
+| `lsass-dump` | LSASS Credential Dump | Sysmon **1** `rundll32 comsvcs.dll, MiniDump` + Sysmon **10** handle into `lsass.exe`, `GrantedAccess 0x1410` | `cred-dumping` | T1003.001 |
+| `sched-task-persist` | Scheduled Task Persistence | Sysmon **1** `schtasks /create … /sc minute /ru SYSTEM` + Windows **4698** | `persistence-mech` | T1053.005 |
+| `runkey-persist` | Run-Key Persistence | Sysmon **11** drop into `C:\Users\Public\Libraries` + Sysmon **13** write under `CurrentVersion\Run` | `persistence-mech` | T1547.001 |
+| `lolbin-download` | LOLBin Download (certutil) | Sysmon **1** `certutil -urlcache -split -f`, **3** the fetch itself, **1** `certutil -decode` | `lolbin-abuse` | T1105 |
+| `defender-disabled` | Defender Disabled | Sysmon **1** `Set-MpPreference -DisableRealtimeMonitoring $true` + Windows **4688** `Add-MpPreference -ExclusionPath` | `security-tooling-disabled` | T1562.001 |
+| `bloodhound` | BloodHound AD Recon | Sysmon **1** `SharpHound.exe --CollectionMethods All` + 11–15 Windows **4662** directory-object reads | `ad-recon` | T1087.002 |
+| `psexec-lateral` | PsExec Lateral Movement | Windows **4624** LogonType 3 (NTLM) + **5140** `ADMIN$` + **7045** `PSEXESVC` service install | `windows-threat` | T1021.002 |
+| `golden-ticket` | Golden Ticket | Windows **4769** with a blank `Account Domain: -` and an AES256 ticket outside policy | `windows-threat` | T1558.001 |
+| `asrep-roast` | AS-REP Roasting | 3–4 Windows **4768** with `Pre-Authentication Type: 0` and an RC4 (`0x17`) ticket | `windows-threat` | T1558.004 |
+| `cloud-logging-disabled` | Cloud Logging Disabled | CloudTrail `StopLogging` + `DeleteTrail` + GuardDuty `DeleteDetector` from a threat-intel IP | `cloud-threat` | T1562.008 |
+| `cloud-iam-backdoor` | Cloud IAM Backdoor | CloudTrail `CreateUser` + `CreateAccessKey` + `CreateLoginProfile` for a new principal | `cloud-threat` | T1098.001 |
+| `cloud-privesc` | Cloud Privilege Escalation | CloudTrail `AttachUserPolicy` (`AdministratorAccess`) + `PutUserPolicy` with `"Action":"*"` | `cloud-threat` | T1098.003 |
+| `s3-exposure` | S3 Bucket Exposed | CloudTrail `PutPublicAccessBlock` (off) + `PutBucketAcl` `public-read`/`AllUsers` + `PutBucketPolicy` `Principal:*` | `cloud-threat` | T1530 |
+| `impossible-travel` | Impossible Travel | two Okta `user.session.start` **successes** minutes apart from Sydney and Moscow / Lagos / Shenzhen | `identity-threat` | T1078.004 |
+| `mfa-fatigue` | MFA Fatigue (Push Bombing) | 8–12 Okta `auth_via_mfa` **FAILURE** (`FAILED_PUSH_VERIFY_REJECTED`) then one **SUCCESS** — the user gives in | `mfa-fatigue` (twice) | T1621 |
+| `ssrf-metadata` | SSRF → Cloud Metadata | 1–2 web requests proxying to `http://169.254.169.254/latest/meta-data/iam/security-credentials/` | `web-exploit` | T1552.005 |
+
+Most bursts raise exactly **one** alert. `mfa-fatigue` deliberately raises two — the
+push-bombing burst, then the approval that follows it — the same shape as
+`ssh-bruteforce` → `brute-success`. The web scenarios alert per request, because
+each request is independently an attack.
 
 The known-bad IPs and domains used above come from `THREAT_INTEL` in `js/data.js`
 (e.g. `185.220.101.44`, `kx7z2q-c2.badnet.ru`); the Jedi engine treats them as
@@ -204,29 +239,51 @@ threat-intel matches.
 
 ## 6. Appliance log formats
 
-**20** sources live under the **Appliance logs ›** menu. Each burst mixes benign
+**24** sources live under the **Appliance logs ›** menu. Each burst mixes benign
 events with malicious ones, and every event is rendered in the vendor's **real
 wire format** (still wrapped in a syslog `<PRI>` header) by the matching formatter
 in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424 toggle does **not**
 apply — real appliances have fixed formats. The **ID** column is the internal key
 the `Appliance logs ›` buttons pass to `injectScenario(id)`.
 
+Selecting an appliance also **scopes the live stream** to it. `setApplianceSources(ids)`
+holds the selected ids; while the list is non-empty `_emitBaseline()` defers to
+`_emitAppliance()`, which drips one selected appliance's burst out an event at a
+time (so the EPS setting still holds) instead of drawing from the generic
+`BASELINE` mix. Streamed bursts carry only their leading routine traffic, with a
+whole burst — malicious tail included — let through every ~30 s, so a sustained
+feed doesn't flood **Detections**. A file replay still takes precedence, and
+clicking a selected appliance again (or **clear** / **Reset**) restores the mix.
+
 `Syslogger.scenarioList()` exposes a **`transport`** field (`native` | `agent` |
-`api`, defaulting to `native`). 18 of the 20 sources are `native` — the device
-speaks syslog itself. Two are **`agent`** and say so with a badge on their button
-and in the hover title:
+`api`, defaulting to `native`). 18 of the 24 sources are `native` — the device
+speaks syslog itself. Six are not, and say so with a badge on their button and in
+the hover title.
+
+**`agent`** — the telemetry exists locally but something else has to put it on the
+wire:
 
 - **`snare`** — Windows has no native syslog at all; a Snare or NXLog agent reads
   the Event Log and relays it.
+- **`sysmon`** — Sysmon writes to its own channel
+  (`Microsoft-Windows-Sysmon/Operational`), so it rides the same agent as the
+  Security channel; the payload here is NXLog's `key=value` rendering.
 - **`auditd`** — the kernel audit daemon writes to its own socket; the
   `audisp-syslog` plugin is what puts it on the wire.
+- **`zeek`** — Zeek writes log *files* under `/opt/zeek/logs/current`, one per
+  path; Filebeat or `rsyslog imfile` ships them.
+
+**`api`** — the product emits nothing at all on a socket; a connector polls it and
+re-emits the JSON:
+
+- **`cloudtrail`** — records are delivered to S3 or EventBridge, not syslog.
+- **`okta`** — the System Log is read from `GET /api/v1/logs`.
 
 The distinction is deliberate: this is a tool for learning log ingestion, so a
-source that cannot actually reach a collector without an agent must not be
-presented as though it could. An `api` source (AWS, Okta, CrowdStrike — polled by
-a connector and re-emitted) would declare `transport: 'api'` the same way.
+source that cannot actually reach a collector without an agent or a connector must
+not be presented as though it could.
 
-Three detection paths cover the malicious events in each burst:
+Five detection paths cover the malicious events in each burst:
 
 - Appliances that carry an IPS/WAF **`threatSig`** field (Palo Alto, FortiGate,
   Sophos, SonicWall, Zscaler, F5, Cisco FTD, Snort, HAProxy, Postfix, CEF, LEEF)
@@ -234,11 +291,15 @@ Three detection paths cover the malicious events in each burst:
   technique.
 - Pure firewall appliances with no signature field (Cisco ASA, Check Point,
   pfSense, Juniper) route their malicious event through the generic
-  **`c2-beacon`** rule instead (internal host → threat-intel IP).
+  **`c2-beacon`** rule instead (internal host → threat-intel IP). **Zeek** lands
+  here too: its `conn.log` beacon to a known-bad IP is the same evidence.
 - **Correlation-driven** sources carry no signature at all and rely on a stateful
-  rule counting a burst: Cisco ISE (`radius-brute`), BIND 9 (`dns-tunneling`) and
-  Snare (`windows-threat`). These deliberately alert **once** per burst rather than
-  once per line.
+  rule counting a burst: Cisco ISE (`radius-brute`), BIND 9 (`dns-tunneling`),
+  Snare (`windows-threat`) and Okta (`mfa-fatigue`). These deliberately alert
+  **once** per burst rather than once per line.
+- **Behavioural** sources are judged on what the telemetry *describes* rather than
+  on a vendor verdict: Sysmon's handle request into `lsass.exe` fires
+  **`cred-dumping`**, and CloudTrail's control-plane call fires **`cloud-threat`**.
 - **Reused rules.** `snare` is the same Windows Event Log as the `windows` baseline
   source — same event IDs, different transport and wire format — so it feeds the
   existing **`windows-threat`** rule instead of a cloned one. `auditd` gets its own
@@ -263,7 +324,11 @@ Three detection paths cover the malicious events in each burst:
 | `bind` | BIND 9 (DNS) | `named` query log | `dns-tunneling` | 42–56-char DGA label under `tunnel.badnet.ru` (TXT) + a threat-intel domain |
 | `postfix` | Postfix (mail) | prose + `key=<value>` | `appliance-threat` | Spamhaus Blocklist Hit (554), Invalid Sender Domain (550) |
 | `snare` | Windows Event Log (Snare) — **agent** | TAB-delimited `MSWinEventLog` | `windows-threat` | 9–12 × **4625** failed logons for one account from one bad IP (+ benign 4624/4688) |
+| `sysmon` | Sysmon (Windows) — **agent** | NXLog `key=value` | `cred-dumping` | **10** `ProcessAccess` into `lsass.exe`, `GrantedAccess 0x1438` (+ benign 1/3/11) |
 | `auditd` | Linux auditd — **agent** | `type=… msg=audit(ts:serial)` | `auditd-rootshell` | `SYSCALL` with `auid=1000 uid=0 key="rootshell"` + its `EXECVE` |
+| `zeek` | Zeek (NSM) — **agent** | TAB-separated `conn` / `dns` / `ssl` | `c2-beacon` | 4–6 `conn.log` flows to one known-bad IP at a 60 s cadence with near-identical byte counts, plus the `ssl.log` line carrying Cobalt Strike's default JA3 |
+| `cloudtrail` | AWS CloudTrail — **api** | JSON record | `cloud-threat` | one of `StopLogging`, `CreateAccessKey`, `PutBucketAcl public-read`, `AttachUserPolicy AdministratorAccess` (+ benign Describe/List calls) |
+| `okta` | Okta System Log — **api** | JSON record | `mfa-fatigue` | 7–10 × `auth_via_mfa` `FAILED_PUSH_VERIFY_REJECTED` for one user from one bad IP — no signature, correlated |
 | `cef` | CEF (generic ArcSight) | `CEF:0\|…` | `appliance-threat` | Brute Force Attack, Malware Communication, Data Exfiltration Attempt |
 | `leef` | LEEF (generic QRadar) | `LEEF:2.0\|…` | `appliance-threat` | Port Scan, Suspect Data Loss, Botnet C2 Communication |
 
@@ -362,6 +427,47 @@ is the signal — `key="rootshell"` is the local audit rule that flagged it:
 <11>Jul 16 22:44:11 srv-app-02 audispd[2225]: type=EXECVE msg=audit(1784234651.263:6581): argc=3 a0="bash" a1="-i" a2="-p"
 ```
 
+**Sysmon** — a handle request into LSASS (`EventID 10`), relayed by NXLog's
+`key=value` output. The header fields are common to every Sysmon record; everything
+from `SourceImage` on is specific to event ID 10. `GrantedAccess` is the whole
+story: `0x1410` is `VM_READ | QUERY_INFORMATION`, exactly what a memory dump needs
+and nothing a normal process asks of LSASS:
+
+```
+<186>Aug 13 14:22:09 WIN-DC01 Sysmon[2618]: EventID=10 EventType="Process accessed" UtcTime="2026-08-13T12:22:09.325Z" Computer="WIN-DC01" ProcessGuid="{c4519883-ad88-42ef-8677-b6bf96815264}" ProcessId=4902 Image="C:\Windows\System32\rundll32.exe" User="CORP\jdoe" SourceImage="C:\Windows\System32\rundll32.exe" TargetImage="C:\Windows\System32\lsass.exe" GrantedAccess="0x1410" CallTrace="UNKNOWN(00007FF9C0D2A1B4)|dbgcore.dll+7A1C|comsvcs.dll+6B4E"
+```
+
+**Zeek** — `conn.log` and `ssl.log` data lines, **TAB-separated** (shown here as
+real tabs) with no header block: each path has a fixed positional field list, which
+is why the syslog tag carries the path (`zeek_conn`, `zeek_ssl`). Field order for
+`conn` is `ts uid orig_h orig_p resp_h resp_p proto service duration orig_bytes
+resp_bytes conn_state local_orig local_resp missed_bytes history orig_pkts
+orig_ip_bytes resp_pkts resp_ip_bytes`. The two lines share a `uid`, which is how
+Zeek links a connection to its protocol analysis — here a 60 s beacon cadence with
+near-identical byte counts, and Cobalt Strike's default JA3 on the TLS handshake:
+
+```
+<156>Aug 13 14:23:02 zeek-sensor-01 zeek_conn: 1786623782.862000	Cj85uhmftumpi	10.32.159.147	54606	91.219.236.19	443	tcp	ssl	60.113000	284	1147	SF	T	F	0	ShADadFf	9	644	9	1507
+<156>Aug 13 14:23:02 zeek-sensor-01 zeek_ssl: 1786623782.862000	Cj85uhmftumpi	10.32.159.147	54606	91.219.236.19	443	TLSv12	TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384	beacon.malware-cdn.top	T	a0e9f5d64349fb13191bc781f81f42e1	ae4edc6faf64d08308082ad26be60767
+```
+
+**AWS CloudTrail** — a JSON record, re-emitted by a connector. AWS writes these to
+S3 or EventBridge and never to a socket, which is why the source is badged `api`.
+`userIdentity` plus `eventName` is the whole detection surface — `DeleteTrail` on
+the audit trail itself is an attacker clearing the tape:
+
+```
+<179>Aug 13 14:22:22 aws-connector-01 aws_cloudtrail: {"eventVersion":"1.09","userIdentity":{"type":"IAMUser","principalId":"AIDA3679D50BFC0C10E66","arn":"arn:aws:iam::210987654321:user/ci-runner","accountId":"210987654321","userName":"ci-runner"},"eventTime":"2026-08-13T12:22:22Z","eventSource":"cloudtrail.amazonaws.com","eventName":"DeleteTrail","awsRegion":"us-east-1","sourceIPAddress":"193.36.119.7","userAgent":"aws-cli/2.15.30 Python/3.11.6","requestParameters":{"name":"arn:aws:cloudtrail:us-east-1:210987654321:trail/org-audit-trail"},"responseElements":null,"eventID":"c0553b75-715d-45af-a8d6-699083169b91","eventType":"AwsApiCall","readOnly":false,"managementEvent":true,"recipientAccountId":"210987654321"}
+```
+
+**Okta System Log** — a JSON record polled from `GET /api/v1/logs`. The
+`client.geographicalContext` block is what makes impossible travel detectable at
+all, and `outcome.reason` distinguishes a rejected MFA push from an expired one:
+
+```
+<180>Aug 13 14:22:28 okta-connector-01 okta_systemlog: {"uuid":"4059a24f-fdba-453a-a664-01414a20a1b5","published":"2026-08-13T12:22:28.851Z","eventType":"user.authentication.auth_via_mfa","version":"0","severity":"WARN","displayMessage":"Authentication of user via MFA","actor":{"id":"00u3e4f4h4a","type":"User","alternateId":"mchen@corp.local","displayName":"mchen"},"client":{"userAgent":{"rawUserAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64)","os":"Windows 10","browser":"CHROME"},"zone":"null","device":"Computer","ipAddress":"193.36.119.7","geographicalContext":{"city":"Shenzhen","country":"China","geolocation":{"lat":22.54,"lon":114.06}}},"outcome":{"result":"FAILURE","reason":"FAILED_PUSH_VERIFY_REJECTED"},"authenticationContext":{"authenticationProvider":"OKTA_AUTHENTICATION_PROVIDER","credentialType":"OTP"},"securityContext":{"asNumber":4134,"isProxy":true},"target":null}
+```
+
 Click any appliance event in the live stream to open the drawer and see its full
 raw wire line alongside the parsed fields.
 
@@ -413,8 +519,16 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `radius-brute` | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` failures / MAC / 60 s | T1110 |
 | `auditd-rootshell` | Root Shell From Unprivileged Login | auditd `SYSCALL`, `auid` set & ≠0, `uid=0`, `key="rootshell"` | T1548 |
 | `appliance-threat` | Appliance IPS / WAF Signature | any `threatSig` present | T1190 (by signature) |
-| `web-exploit` | Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA | T1190·T1059·T1083·T1505.003·T1595 |
-| `windows-threat` | Windows Security Event | 4625 brute/spray, 4769 RC4, 4662 repl, 4732/4720, 1102, 4624 PtH (`windows` + `snare` sources) | T1110·T1558.003·T1003.006·T1136·T1070.001·T1550.002 |
+| `web-exploit` | Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA / `169.254.169.254` metadata SSRF | T1190·T1059·T1083·T1505.003·T1595·T1552.005 |
+| `windows-threat` | Windows Security Event | 4625 brute/spray, 4768 no-preauth RC4, 4769 RC4 or blank domain, 4662 repl, 4732/4720, 1102, 4624 PtH, 7045 PsExec (`windows` + `snare` sources) | T1110·T1558.001·T1558.003·T1558.004·T1003.006·T1136·T1070.001·T1550.002·T1021.002 |
+| `cred-dumping` | Credential Dumping (LSASS) | Sysmon **10** into `lsass.exe` with `0x1010/0x1410/0x1438/0x143a`, or `comsvcs MiniDump` / procdump / mimikatz on a command line | T1003.001 |
+| `persistence-mech` | Persistence Mechanism Created | `CurrentVersion\Run` write, `schtasks /create` or 4698, `sc create` or 7045 (PsExec-style names excluded) | T1547.001·T1053.005·T1543.003 |
+| `lolbin-abuse` | LOLBin Download / Proxy Execution | `certutil -urlcache/-decode`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` | T1105·T1218 |
+| `security-tooling-disabled` | Security Tooling Disabled | `DisableRealtimeMonitoring`, `-ExclusionPath`, AMSI patch markers, `net stop windefend` | T1562.001 |
+| `ad-recon` | Active Directory Enumeration | SharpHound / BloodHound / AdFind / `Get-Domain*` on a command line, or ≥ 10 × 4662 directory reads / account / 60 s | T1087.002 |
+| `cloud-threat` | Cloud Control-Plane Abuse | CloudTrail `eventName`: trail/detector deletion, IAM credential creation, admin policy attach, public bucket, root console login | T1562.008·T1098.001·T1098.003·T1530·T1078.004 |
+| `identity-threat` | Identity Provider Threat | Okta `user.session.start` successes from ≥ 2 countries / hour, or an MFA-factor / policy / privilege change | T1078.004·T1098.003 |
+| `mfa-fatigue` | MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, then a **critical** follow-up if one is finally approved | T1621 |
 | `reverse-shell` | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | `susp-powershell` | Suspicious PowerShell | `-enc` / `FromBase64String` / hidden window | T1059.001 |
 | `cryptomining` | Cryptomining | `stratum+tcp` / known pool | T1496 |
@@ -627,7 +741,8 @@ Four conventions worth keeping:
 2. **Reuse a rule instead of cloning it.** If a new source carries telemetry an
    existing rule already reads, widen that rule's `srcType` gate. `snare` is
    Windows Event Log over an agent, so it feeds `windows-threat`; `bind` feeds
-   `dns-tunneling`. A near-duplicate rule means two alerts for one event.
+   `dns-tunneling`; `zeek`'s beacon flows need no gate at all and fall straight
+   into `c2-beacon`. A near-duplicate rule means two alerts for one event.
 3. **One burst, one alert.** Rules have no global cooldown, so a burst where every
    line carries `threatSig` raises an alert per line. Either tag only the final
    event, or let a stateful rule correlate the burst (`radius-brute`).

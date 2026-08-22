@@ -6,7 +6,12 @@
   'use strict';
   const { Syslogger, Jedi, SEVERITY, rand } = global.JS;
 
-  const $ = (sel) => document.querySelector(sel);
+  // `any` returns on purpose: these resolve to canvases, inputs and plain
+  // elements alike, and every call site knows which it asked for.
+  /** @type {(sel: string, root?: ParentNode) => any} */
+  const $ = (sel, root = document) => root.querySelector(sel);
+  /** @type {(sel: string, root?: ParentNode) => any[]} */
+  const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
   const el = (tag, cls, text) => { const n = document.createElement(tag); if (cls) n.className = cls; if (text != null) n.textContent = text; return n; };
 
   const SEV_ABBR = ['EMER', 'ALRT', 'CRIT', 'ERR', 'WARN', 'NOTE', 'INFO', 'DBG'];
@@ -36,6 +41,19 @@
     postfix:    { color: '#d19bf0', label: 'postfix' },
     snare:      { color: '#7db8f7', label: 'snare/win' },
     auditd:     { color: '#f59e0b', label: 'auditd' },
+    sysmon:     { color: '#ff8ac9', label: 'sysmon' },
+    zeek:       { color: '#7fd1ae', label: 'zeek' },
+    cloudtrail: { color: '#ff9900', label: 'cloudtrail' },
+    okta:       { color: '#6366f1', label: 'okta' },
+    ciscoios:   { color: '#5aa9dd', label: 'cisco ios' },
+    meraki:     { color: '#67c9a8', label: 'meraki' },
+    citrix:     { color: '#b0204a', label: 'netscaler' },
+    squid:      { color: '#9aa8c7', label: 'squid' },
+    esxi:       { color: '#8bc34a', label: 'esxi' },
+    suricata:   { color: '#e05c2b', label: 'suricata' },
+    entra:      { color: '#3b7fd4', label: 'entra id' },
+    crowdstrike:{ color: '#fc0032', label: 'crowdstrike' },
+    k8saudit:   { color: '#326ce5', label: 'k8s audit' },
     cef:        { color: '#7c9cff', label: 'cef' },
     leef:       { color: '#22c1a6', label: 'leef' },
     mail:       { color: '#c084fc', label: 'mail' },
@@ -89,8 +107,8 @@
       $('#eps-value').textContent = slider.value;
     });
 
-    document.querySelectorAll('.fmt').forEach((b) => b.addEventListener('click', () => {
-      document.querySelectorAll('.fmt').forEach((x) => x.classList.remove('active'));
+    $$('.fmt').forEach((b) => b.addEventListener('click', () => {
+      $$('.fmt').forEach((x) => x.classList.remove('active'));
       b.classList.add('active');
       syslogger.setFormat(b.dataset.fmt);
     }));
@@ -125,7 +143,7 @@
       b.dataset.id = s.id;
       b.setAttribute('aria-pressed', 'false');
       b.title = isAppliance
-        ? `Emit ${s.label} logs — ${TRANSPORT_NOTE[s.transport] || s.transport}`
+        ? `Emit ${s.label} logs and limit the live stream to this source — ${TRANSPORT_NOTE[s.transport] || s.transport}`
         : 'Inject this scenario — marks it as selected';
       // Mark sources that only reach a collector via an agent or an API connector,
       // so they don't read as native syslog devices.
@@ -133,12 +151,14 @@
         b.appendChild(el('span', 'scn-transport', s.transport));
       }
       b.addEventListener('click', () => {
-        // Fire the scenario and mark this button as selected so it's clear
-        // which attacks / appliance logs have been chosen. Clear via the
-        // per-group "clear" link or a global Reset.
-        syslogger.injectScenario(s.id);
-        b.classList.add('selected');
-        b.setAttribute('aria-pressed', 'true');
+        // Attacks fire once per click. Appliances toggle: while any are selected
+        // the live stream carries only those sources (see updateSelectedCounts),
+        // so a second click hands the stream back. Clear via the per-group
+        // "clear" link or a global Reset.
+        const on = isAppliance ? !b.classList.contains('selected') : true;
+        if (on) syslogger.injectScenario(s.id);
+        b.classList.toggle('selected', on);
+        b.setAttribute('aria-pressed', String(on));
         updateSelectedCounts();
         b.animate([{ transform: 'scale(1)' }, { transform: 'scale(.92)' }, { transform: 'scale(1)' }], { duration: 180 });
       });
@@ -150,14 +170,14 @@
 
   // Collapse/expand each scenario group and clear its selection marks.
   function wireScenarioGroups() {
-    document.querySelectorAll('.scenario-title').forEach((title) => {
+    $$('.scenario-title').forEach((title) => {
       title.addEventListener('click', () => {
         const line = title.closest('.scn-line');
         const collapsed = line.classList.toggle('collapsed');
         title.setAttribute('aria-expanded', String(!collapsed));
       });
     });
-    document.querySelectorAll('.scn-clear').forEach((clear) => {
+    $$('.scn-clear').forEach((clear) => {
       clear.addEventListener('click', () => clearSelection(clear.dataset.for));
     });
   }
@@ -165,21 +185,28 @@
   function groupWrap(key) { return key === 'appliance' ? $('#appliance-buttons') : $('#scenario-buttons'); }
 
   function clearSelection(key) {
-    groupWrap(key).querySelectorAll('.scn-btn.selected').forEach((b) => {
+    $$('.scn-btn.selected', groupWrap(key)).forEach((b) => {
       b.classList.remove('selected');
       b.setAttribute('aria-pressed', 'false');
     });
     updateSelectedCounts();
   }
 
-  // Refresh the "N selected" badge + show/hide the clear link for each group.
+  // Refresh the "N selected" badge + show/hide the clear link for each group,
+  // and point the live stream at the selected appliances (none = baseline mix).
   function updateSelectedCounts() {
     ['attack', 'appliance'].forEach((key) => {
-      const n = groupWrap(key).querySelectorAll('.scn-btn.selected').length;
-      const badge = document.querySelector(`.scn-selected[data-for="${key}"]`);
-      const clear = document.querySelector(`.scn-clear[data-for="${key}"]`);
-      if (badge) { badge.textContent = n ? `${n} selected` : ''; badge.hidden = n === 0; }
+      const sel = $$('.scn-btn.selected', groupWrap(key));
+      const n = sel.length;
+      const badge = $(`.scn-selected[data-for="${key}"]`);
+      const clear = $(`.scn-clear[data-for="${key}"]`);
+      if (badge) {
+        badge.textContent = n ? (key === 'appliance' ? `${n} selected · stream only` : `${n} selected`) : '';
+        badge.title = n && key === 'appliance' ? 'the live stream carries only these sources' : '';
+        badge.hidden = n === 0;
+      }
       if (clear) clear.hidden = n === 0;
+      if (key === 'appliance') syslogger.setApplianceSources(sel.map((b) => b.dataset.id));
     });
   }
 
@@ -357,12 +384,12 @@
   function renderSeverity() {
     const counts = jedi.bySeverity;
     const max = Math.max(1, ...counts);
-    document.querySelectorAll('#severity-bars .bar-row').forEach((row) => {
+    $$('#severity-bars .bar-row').forEach((row) => {
       const code = +row.dataset.sev;
       // "crit" row aggregates emerg/alert/crit (0-2).
       const val = code === 2 ? counts[0] + counts[1] + counts[2] : counts[code];
-      row.querySelector('.bar-fill').style.width = `${(val / max) * 100}%`;
-      row.querySelector('.bar-val').textContent = val.toLocaleString();
+      $('.bar-fill', row).style.width = `${(val / max) * 100}%`;
+      $('.bar-val', row).textContent = val.toLocaleString();
     });
   }
 
@@ -375,7 +402,7 @@
     const seen = new Set();
     entries.forEach(([src, val]) => {
       seen.add(src);
-      let row = wrap.querySelector(`[data-src="${src}"]`);
+      let row = $(`[data-src="${src}"]`, wrap);
       if (!row) {
         row = el('div', 'bar-row'); row.dataset.src = src;
         const meta = SOURCE_META[src] || { color: '#8a97b4', label: src };
@@ -384,14 +411,14 @@
           <span class="bar-val">0</span>`;
         wrap.appendChild(row);
       }
-      row.querySelector('.bar-fill').style.width = `${(val / max) * 100}%`;
-      row.querySelector('.bar-val').textContent = val.toLocaleString();
+      $('.bar-fill', row).style.width = `${(val / max) * 100}%`;
+      $('.bar-val', row).textContent = val.toLocaleString();
     });
-    wrap.querySelectorAll('.bar-row').forEach((r) => { if (!seen.has(r.dataset.src)) r.remove(); });
-    if (!entries.length && !wrap.querySelector('.empty-state')) {
+    $$('.bar-row', wrap).forEach((r) => { if (!seen.has(r.dataset.src)) r.remove(); });
+    if (!entries.length && !$('.empty-state', wrap)) {
       wrap.appendChild(el('div', 'empty-state', 'No events yet — press Start.'));
     } else if (entries.length) {
-      const empty = wrap.querySelector('.empty-state'); if (empty) empty.remove();
+      const empty = $('.empty-state', wrap); if (empty) empty.remove();
     }
   }
 
@@ -496,14 +523,14 @@
     const list = $('#alerts-list');
     $('#alerts-count').textContent = jedi.alerts.length;
     if (!jedi.alerts.length) {
-      if (!list.querySelector('.empty-state')) {
+      if (!$('.empty-state', list)) {
         list.innerHTML = '';
         list.appendChild(el('div', 'empty-state', '🛡️ No detections yet.\nInject a scenario to trigger the rules.'));
         renderedAlertIds = new Set();
       }
       return;
     }
-    const empty = list.querySelector('.empty-state'); if (empty) empty.remove();
+    const empty = $('.empty-state', list); if (empty) empty.remove();
 
     // Prepend any newly-raised alerts.
     const toAdd = [];

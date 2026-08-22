@@ -13,6 +13,9 @@
     pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; },
     chance(p) { return Math.random() < p; },
     id() { return Math.random().toString(36).slice(2, 10); },
+    hex(n) { let s = ''; for (let i = 0; i < n; i++) s += '0123456789abcdef'[rand.int(0, 15)]; return s; },
+    // RFC 4122 v4 shape — CloudTrail eventID, Okta uuid, Sysmon ProcessGuid.
+    uuid() { return `${rand.hex(8)}-${rand.hex(4)}-4${rand.hex(3)}-${'89ab'[rand.int(0, 3)]}${rand.hex(3)}-${rand.hex(12)}`; },
     ip() { return `${rand.int(1, 223)}.${rand.int(0, 255)}.${rand.int(0, 255)}.${rand.int(1, 254)}`; },
     internalIp() {
       return rand.pick([
@@ -112,6 +115,31 @@
   // Cisco FTD header clock: "Apr 14 2019 12:52:31"
   function ftdTimestamp(d) {
     return `${MONTHS[d.getMonth()]} ${pad(d.getDate())} ${d.getFullYear()} ` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  }
+
+  // Cloud/SaaS API clocks are UTC ISO-8601 with a trailing Z. CloudTrail drops
+  // the milliseconds; the Okta System Log keeps them.
+  function utcTimestamp(d, ms) {
+    const s = d.toISOString();
+    return ms ? s : s.replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  // Zeek writes epoch seconds with microsecond precision.
+  function zeekTimestamp(d) { return (d.getTime() / 1000).toFixed(6); }
+
+  // Suricata EVE: ISO-8601 with microseconds and a colon-less offset.
+  function eveTimestamp(d) {
+    const tz = -d.getTimezoneOffset();
+    const sign = tz >= 0 ? '+' : '-';
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T` +
+      `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}000` +
+      `${sign}${pad(Math.floor(Math.abs(tz) / 60))}${pad(Math.abs(tz) % 60)}`;
+  }
+
+  // NetScaler payload clock: "08/13/2026:14:22:41"
+  function citrixTimestamp(d) {
+    return `${pad(d.getMonth() + 1)}/${pad(d.getDate())}/${d.getFullYear()}:` +
       `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
   }
 
@@ -351,6 +379,209 @@
       const stamp = `audit(${(ev.auditTs / 1000).toFixed(3)}:${ev.auditSerial})`;
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} audispd[${ev.pid}]: type=${ev.auditType} msg=${stamp}: ${ev.auditBody}`;
     },
+    // Cisco IOS / IOS-XE — the syslog daemon's RFC 3164 header, then the device's
+    // own sequence number and uptime clock, then %FACILITY-SEVERITY-MNEMONIC.
+    // The mnemonic is the join key: %SYS-5-CONFIG_I is a config change wherever
+    // it appears, on any IOS platform.
+    ciscoios(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} ${pad(ev.seq, 6)}: *${bsdTimestamp(d)}.${pad(d.getMilliseconds(), 3)}: ` +
+        `%${ev.iosFacility}-${ev.severity}-${ev.mnemonic}: ${ev.message}`;
+    },
+    // Cisco Meraki — RFC 5424 version digit, then a high-precision epoch instead
+    // of a date, the device name, and a message type that decides the field list.
+    meraki(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      return `<${pri}>1 ${(ev.ts / 1000).toFixed(9)} ${ev.host} ${ev.merakiType} ${(ev.merakiFields || []).join(' ')}`;
+    },
+    // Citrix NetScaler (ADC / Gateway) — RFC 3164 header, then NetScaler's own
+    // clock, node id, and "MODULE EVENT msgid 0 : body" quadruple.
+    citrix(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.hostIp} ${citrixTimestamp(d)} ns 0-PPE-0 : ` +
+        `default ${ev.nsModule} ${ev.nsEvent} ${ev.nsMsgId} 0 : ${ev.message}`;
+    },
+    // Squid — the native access.log line, relayed over syslog. Positional:
+    // time elapsed client code/status bytes method URL user peerstatus/peerhost type.
+    squid(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const f = [
+        (ev.ts / 1000).toFixed(3), String(ev.elapsed).padStart(6), ev.srcIp,
+        `${ev.squidCode}/${ev.status}`, ev.bytes, ev.method, ev.url,
+        ev.user || '-', `${ev.peerStatus || 'NONE'}/${ev.peerHost || '-'}`, ev.contentType || '-',
+      ];
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} squid[${ev.pid}]: ${f.join(' ')}`;
+    },
+    // VMware ESXi — ISO-8601 UTC, then the daemon, level, and a bracketed
+    // Originator block carrying the subsystem, operation id and acting user.
+    esxi(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      return `<${pri}>${utcTimestamp(d, true)} ${ev.host} ${ev.daemon}: ${ev.esxLevel} ${ev.daemon.toLowerCase()}[${ev.pid}] ` +
+        `[Originator@6876 sub=${ev.esxSub} opID=${ev.opId} user=${ev.user}] ${ev.message}`;
+    },
+    // Suricata EVE — JSON, one object per event. Suricata can write EVE straight
+    // to syslog (`filetype: syslog`), which is what this models; the alert object
+    // is only present on event_type "alert".
+    suricata(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        timestamp: eveTimestamp(d), flow_id: ev.flowId, in_iface: ev.iface || 'eth0',
+        event_type: ev.eveType, src_ip: ev.srcIp, src_port: ev.srcPort,
+        dest_ip: ev.dstIp, dest_port: ev.dstPort, proto: (ev.proto || 'TCP').toUpperCase(),
+        alert: ev.eveType === 'alert' ? {
+          action: ev.action, gid: ev.gid, signature_id: ev.sid, rev: ev.rev,
+          signature: ev.sigName, category: ev.classification, severity: ev.priority,
+        } : undefined,
+        app_proto: ev.appProto,
+        flow: ev.eveType === 'flow' ? { pkts_toserver: ev.pktsOut, pkts_toclient: ev.pktsIn, bytes_toserver: ev.bytesOut, bytes_toclient: ev.bytesIn, state: ev.flowState } : undefined,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} suricata[${ev.pid}]: ${JSON.stringify(rec)}`;
+    },
+    // Sysmon, relayed by NXLog's key=value output. Sysmon writes to its own
+    // Windows channel (Microsoft-Windows-Sysmon/Operational), so an agent is what
+    // puts it on the wire. Field sets differ per event ID, so the per-ID fields
+    // ride along pre-rendered in `sysmonFields` and the formatter only supplies
+    // the header fields every Sysmon record carries.
+    sysmon(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const kv = [
+        `EventID=${ev.eventId}`, `EventType="${ev.sysmonType}"`, `UtcTime="${utcTimestamp(d, true)}"`,
+        `Computer="${ev.host}"`, `ProcessGuid="{${ev.processGuid}}"`, `ProcessId=${ev.processId}`,
+        `Image="${ev.image}"`, `User="${ev.userDomain}"`,
+      ].concat(ev.sysmonFields || []);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} Sysmon[${ev.pid}]: ${kv.join(' ')}`;
+    },
+    // Zeek — TAB-separated data lines. Zeek writes log files rather than syslog,
+    // so a shipper (Filebeat / rsyslog imfile) is what puts them on the wire. Each
+    // log path has its own positional field list, so the tag carries the path and
+    // the generator supplies the already-ordered fields.
+    zeek(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} zeek_${ev.zeekPath}: ` +
+        [zeekTimestamp(d), ev.uid].concat(ev.zeekFields || []).join('\t');
+    },
+    // AWS CloudTrail — JSON record. AWS emits no syslog at all: CloudTrail writes
+    // records to S3 / EventBridge and a connector re-emits them, so the payload is
+    // the verbatim JSON a collector would receive. Undefined fields are dropped by
+    // JSON.stringify, which is also how CloudTrail omits inapplicable keys.
+    cloudtrail(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        eventVersion: '1.09',
+        userIdentity: {
+          type: ev.identityType, principalId: ev.principalId, arn: ev.arn,
+          accountId: ev.accountId, userName: ev.user,
+        },
+        eventTime: utcTimestamp(d), eventSource: ev.eventSource, eventName: ev.eventName,
+        awsRegion: ev.region, sourceIPAddress: ev.srcIp, userAgent: ev.userAgent,
+        requestParameters: ev.requestParameters || null,
+        responseElements: ev.responseElements || null,
+        errorCode: ev.errorCode, errorMessage: ev.errorMessage,
+        eventID: ev.eventUuid, eventType: 'AwsApiCall', readOnly: !!ev.readOnly,
+        managementEvent: true, recipientAccountId: ev.accountId,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} aws_cloudtrail: ${JSON.stringify(rec)}`;
+    },
+    // Okta System Log — JSON, polled from /api/v1/logs by a connector and
+    // re-emitted; Okta ships nothing over syslog itself.
+    okta(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        uuid: ev.eventUuid, published: utcTimestamp(d, true), eventType: ev.oktaEventType,
+        version: '0', severity: ev.oktaSeverity, displayMessage: ev.displayMessage,
+        actor: { id: ev.actorId, type: 'User', alternateId: ev.user, displayName: ev.displayName },
+        client: {
+          userAgent: { rawUserAgent: ev.userAgent, os: ev.clientOs, browser: ev.browser },
+          zone: 'null', device: 'Computer', ipAddress: ev.srcIp,
+          geographicalContext: { city: ev.city, country: ev.country, geolocation: { lat: ev.lat, lon: ev.lon } },
+        },
+        outcome: { result: ev.outcome, reason: ev.outcomeReason },
+        authenticationContext: { authenticationProvider: 'OKTA_AUTHENTICATION_PROVIDER', credentialType: ev.credType || 'PASSWORD' },
+        securityContext: { asNumber: ev.asn || 0, isProxy: !!ev.isProxy },
+        target: ev.oktaTarget || null,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} okta_systemlog: ${JSON.stringify(rec)}`;
+    },
+    // Microsoft Entra ID sign-in log — the SigninLogs schema, pulled through
+    // Graph or an Event Hub by a connector. `status.errorCode` 0 is a success;
+    // `clientAppUsed` is what exposes legacy protocols that bypass MFA.
+    entra(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        time: utcTimestamp(d, true), resourceId: `/tenants/${ev.tenantId}/providers/Microsoft.aadiam`,
+        operationName: 'Sign-in activity', category: 'SignInLogs', tenantId: ev.tenantId,
+        resultType: String(ev.errorCode), resultDescription: ev.resultDescription,
+        properties: {
+          id: ev.eventUuid, createdDateTime: utcTimestamp(d, true),
+          userPrincipalName: ev.user, userDisplayName: ev.displayName, userId: ev.actorId,
+          appDisplayName: ev.appName, appId: ev.appId, clientAppUsed: ev.clientApp,
+          ipAddress: ev.srcIp, isInteractive: ev.interactive !== false,
+          conditionalAccessStatus: ev.caStatus, riskLevelAggregated: ev.riskLevel,
+          riskDetail: ev.riskDetail, riskState: ev.riskState,
+          authenticationRequirement: ev.authRequirement,
+          location: { city: ev.city, countryOrRegion: ev.countryCode, geoCoordinates: { latitude: ev.lat, longitude: ev.lon } },
+          deviceDetail: { operatingSystem: ev.clientOs, browser: ev.browser, isCompliant: !!ev.compliant },
+          status: { errorCode: ev.errorCode, failureReason: ev.failureReason },
+        },
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} entra_signin: ${JSON.stringify(rec)}`;
+    },
+    // CrowdStrike Falcon — a DetectionSummaryEvent from the Falcon SIEM Connector /
+    // Event Streams API. Unlike raw telemetry this is a *verdict*: the sensor has
+    // already named the tactic, technique and what it did about it.
+    crowdstrike(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        metadata: {
+          customerIDString: ev.customerId, offset: ev.offset, eventType: 'DetectionSummaryEvent',
+          eventCreationTime: ev.ts, version: '1.0',
+        },
+        event: {
+          DetectName: ev.detectName, DetectDescription: ev.detectDesc,
+          Severity: ev.csSeverity, SeverityName: ev.csSeverityName,
+          Tactic: ev.csTactic, Technique: ev.csTechnique, Objective: ev.csObjective,
+          ComputerName: ev.host, UserName: ev.user, SensorId: ev.sensorId,
+          FileName: ev.fileName, FilePath: ev.filePath, CommandLine: ev.cmdLine,
+          SHA256String: ev.sha256, ParentImageFileName: ev.parentImage,
+          LocalIP: ev.hostIp, PatternDispositionDescription: ev.disposition,
+          FalconHostLink: `https://falcon.crowdstrike.com/activity/detections/detail/${ev.sensorId}`,
+        },
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} falcon_siem: ${JSON.stringify(rec)}`;
+    },
+    // Kubernetes API-server audit event (audit.k8s.io/v1). The whole detection
+    // surface is `verb` + `objectRef` + `user.username`, with the RBAC verdict in
+    // annotations — a request can be logged and still have been denied.
+    k8saudit(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        kind: 'Event', apiVersion: 'audit.k8s.io/v1', level: ev.auditLevel || 'RequestResponse',
+        auditID: ev.eventUuid, stage: 'ResponseComplete',
+        requestURI: ev.requestUri, verb: ev.verb,
+        user: { username: ev.user, groups: ev.groups || ['system:authenticated'] },
+        sourceIPs: [ev.srcIp], userAgent: ev.userAgent,
+        objectRef: { resource: ev.k8sResource, namespace: ev.namespace, name: ev.objectName, apiVersion: 'v1' },
+        responseStatus: { code: ev.status },
+        requestReceivedTimestamp: utcTimestamp(d, true), stageTimestamp: utcTimestamp(d, true),
+        annotations: {
+          'authorization.k8s.io/decision': ev.rbacDecision || 'allow',
+          'authorization.k8s.io/reason': ev.rbacReason || '',
+        },
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} kube-apiserver: ${JSON.stringify(rec)}`;
+    },
     // Generic CEF (ArcSight Common Event Format).
     cef(ev) {
       const pri = ev.facility * 8 + ev.severity;
@@ -390,6 +621,6 @@
 
   global.JS = {
     rand, SEVERITY, FACILITY, HOSTS, USERS, BAD_USERS, URLS, AGENTS,
-    DOMAINS, THREAT_INTEL, formatSyslog, isoTimestamp, bsdTimestamp, VENDOR_FORMATTERS,
+    DOMAINS, THREAT_INTEL, formatSyslog, isoTimestamp, bsdTimestamp, utcTimestamp, VENDOR_FORMATTERS,
   };
 })(window);

@@ -5,7 +5,7 @@ practice. It has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **20 appliance formats** (Palo Alto, FortiGate, Cisco ASA, Cisco FTD, Cisco ISE, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, Snort 3, HAProxy, BIND 9, Postfix, Windows Event Log via Snare, Linux auditd, and generic CEF/LEEF) from simulated infrastructure at a configurable *events-per-second*, injects **26 attack scenarios** on demand, and can replay a log file in a loop. |
+| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **24 appliance formats** (Palo Alto, FortiGate, Cisco ASA, Cisco FTD, Cisco ISE, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, Snort 3, HAProxy, BIND 9, Postfix, Zeek, Windows Event Log via Snare, Sysmon, Linux auditd, AWS CloudTrail, Okta, and generic CEF/LEEF) from simulated infrastructure at a configurable *events-per-second*, injects **42 attack scenarios** on demand, and can replay a log file in a loop. |
 | **Jedi**      | A miniature SIEM engine. Ingests every event, keeps rolling statistics, and runs a **stateful detection-rule engine** that raises **MITRE ATT&CK-tagged** alerts. |
 
 The dashboard runs entirely in the browser. An optional **zero-dependency Node
@@ -100,10 +100,14 @@ itself does.
 1. **Start Ingestion** — begins benign baseline traffic. Drag the **Rate** slider
    (0–60 eps) to change volume.
 2. **Attack ›** — inject a burst of malicious activity and watch **Detections**
-   correlate it. **Appliance logs ›** — emit any of the 20 sources in its real
+   correlate it. **Appliance logs ›** — emit any of the 24 sources in its real
    wire format, from firewalls (Palo Alto, FortiGate, Cisco ASA/FTD) to an IDS
-   (Snort), a load balancer (HAProxy), DNS (BIND 9), mail (Postfix), and
-   agent-relayed hosts (Windows via Snare, Linux auditd).
+   (Snort), network monitoring (Zeek), a load balancer (HAProxy), DNS (BIND 9),
+   mail (Postfix), agent-relayed hosts (Windows via Snare, Sysmon, Linux auditd)
+   and API-relayed cloud/SaaS (AWS CloudTrail, Okta). An appliance button stays
+   **selected** and takes over the live stream: while any appliance is selected,
+   ingestion emits **only** those sources — no generic firewall/web/DNS noise.
+   Click it again (or **clear**) to hand the stream back to the baseline mix.
 3. Toggle **RFC 3164 / RFC 5424** for the generic sources. Click any event to see
    the **raw line + parsed fields** (appliance events keep their vendor format).
 4. **Filter** the live stream, **pause** it, or **Reset** all state.
@@ -147,8 +151,16 @@ If your SIEM shows nothing:
 | DNS Tunneling | Very long DNS label / known-bad domain | T1071.004 |
 | Privilege Escalation | `sudo … USER=root` / Windows EventID 4672 | T1068 |
 | IDS Malware Signature | Suricata/ET trojan / exploit hit | T1204 |
-| Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA | T1190 · T1059 · T1083 · T1505.003 · T1595 |
-| Windows Security Event | RDP brute / spray / Kerberoasting / DCSync / new admin / log-clear / PtH | T1110 · T1558.003 · T1003.006 · T1136 · T1070.001 · T1550.002 |
+| Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA / metadata SSRF | T1190 · T1059 · T1083 · T1505.003 · T1595 · T1552.005 |
+| Windows Security Event | RDP brute / spray / Kerberoasting / AS-REP roast / Golden Ticket / DCSync / new admin / log-clear / PtH / PsExec | T1110 · T1558.001 · T1558.003 · T1558.004 · T1003.006 · T1136 · T1070.001 · T1550.002 · T1021.002 |
+| Credential Dumping (LSASS) | Sysmon 10 handle into `lsass.exe` with dump rights, or a known dumper | T1003.001 |
+| Persistence Mechanism Created | `CurrentVersion\Run` write, scheduled task, or service install | T1547.001 · T1053.005 · T1543.003 |
+| LOLBin Download / Proxy Execution | `certutil -urlcache`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` | T1105 · T1218 |
+| Security Tooling Disabled | Defender real-time protection off, AMSI patched, exclusion added | T1562.001 |
+| Active Directory Enumeration | SharpHound / AdFind on disk, or ≥ 10 LDAP object reads / account / 60s | T1087.002 |
+| Cloud Control-Plane Abuse | CloudTrail `StopLogging`, IAM key/admin-policy creation, public S3 | T1562.008 · T1098.001 · T1098.003 · T1530 · T1078.004 |
+| Identity Provider Threat | Okta sign-ins from 2 countries / hour, MFA factor or policy change | T1078.004 · T1098.003 |
+| MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, and the approval that follows | T1621 |
 | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | Suspicious PowerShell | `powershell -enc` / `FromBase64String` / hidden window | T1059.001 |
 | Cryptomining | `stratum+tcp` / known mining pool | T1496 |
@@ -159,25 +171,28 @@ If your SIEM shows nothing:
 | Root Shell From Unprivileged Login | auditd `SYSCALL`, `auid` set & ≠0, `uid=0`, `key="rootshell"` | T1548 |
 | Appliance IPS / WAF Signature | any appliance threat/violation signature | T1190 (mapped by signature) |
 
-**Scenarios** — 26 attacks (`Attack ›`) and 20 appliance formats (`Appliance logs ›`).
+**Scenarios** — 42 attacks (`Attack ›`) and 24 appliance formats (`Appliance logs ›`).
 Every scenario is wired to a detection, so each button demonstrably lights up the
 dashboard. The **Threat Level** meter aggregates recent alerts (last 2 min) weighted
 by severity, DEFCON-style: `GUARDED → ELEVATED → HIGH → SEVERE → CRITICAL`.
 
-## Attack scenarios (26)
+## Attack scenarios (42)
 
 Injected from the **Attack ›** menu; each button fires a burst built to trip a
 detection. Full detail — burst sizes, payloads, and the rule each one fires — is
 in [DOCUMENTATION.md §5](DOCUMENTATION.md#5-attack-scenarios).
 
 - **Network / recon** — Port Scan · SYN Flood (DDoS) · C2 Beacon · DNS Tunneling · Data Exfiltration · Cryptomining
-- **Web application** — SQL Injection · Log4Shell RCE · XSS Injection · Path Traversal / LFI · Web Shell · Vuln Scan
-- **Credential / identity** — SSH Brute Force · RDP Brute Force · Password Spray · Kerberoasting · DCSync · Pass-the-Hash
-- **Endpoint / execution** — Reverse Shell · Malicious PowerShell · Privilege Escalation · Malware / IDS Hit · Ransomware
-- **Windows persistence / evasion** — New Admin Account · Audit Log Cleared
+- **Web application** — SQL Injection · Log4Shell RCE · XSS Injection · Path Traversal / LFI · Web Shell · Vuln Scan · SSRF → Cloud Metadata
+- **Credential / identity** — SSH Brute Force · RDP Brute Force · Password Spray · Kerberoasting · AS-REP Roasting · Golden Ticket · DCSync · Pass-the-Hash · LSASS Credential Dump
+- **Endpoint / execution** — Reverse Shell · Malicious PowerShell · Privilege Escalation · Malware / IDS Hit · Ransomware · LOLBin Download (certutil)
+- **Persistence / evasion** — New Admin Account · Audit Log Cleared · Scheduled Task Persistence · Run-Key Persistence · Defender Disabled
+- **Discovery / lateral movement** — BloodHound AD Recon · PsExec Lateral Movement
+- **Cloud control plane** — Cloud Logging Disabled · Cloud IAM Backdoor · Cloud Privilege Escalation · S3 Bucket Exposed
+- **Identity provider** — Impossible Travel · MFA Fatigue (Push Bombing)
 - **Email** — Phishing Email
 
-## Appliance log formats (20)
+## Appliance log formats (24)
 
 Injected from the **Appliance logs ›** menu — each event is rendered in the
 vendor's real wire format (syslog `<PRI>` + native payload). Full example lines
@@ -202,24 +217,38 @@ and detection mapping: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-appliance-log-f
 | BIND 9 (DNS) | `named` query log | `dns-tunneling` |
 | Postfix (mail) | prose + `key=<value>` | `appliance-threat` |
 | Windows Event Log (Snare) `agent` | TAB-delimited `MSWinEventLog` | `windows-threat` |
+| Sysmon (Windows) `agent` | NXLog `key=value` | `cred-dumping` |
 | Linux auditd `agent` | `type=… msg=audit(ts:serial)` | `auditd-rootshell` |
+| Zeek (NSM) `agent` | TAB-separated `conn` / `dns` / `ssl` | `c2-beacon` |
+| AWS CloudTrail `api` | JSON record | `cloud-threat` |
+| Okta System Log `api` | JSON record | `mfa-fatigue` |
 | CEF (generic) | ArcSight CEF | `appliance-threat` |
 | LEEF (generic) | QRadar LEEF | `appliance-threat` |
 
 Appliances carrying an IPS/WAF signature fire **`appliance-threat`**; the pure
 firewalls (Cisco ASA, Check Point, pfSense, Juniper) route their malicious event
-through **`c2-beacon`** (internal host → threat-intel IP) instead. Four sources are
-**correlation-driven** rather than signature-driven — the burst *is* the signal, so
-they carry no signature and alert **once** rather than once per line: **Cisco ISE**
+through **`c2-beacon`** (internal host → threat-intel IP) instead — as does **Zeek**,
+whose `conn.log` beacon to a known-bad IP is the same shape of evidence. Six sources
+are **correlation-driven** rather than signature-driven — the burst *is* the signal,
+so they carry no signature and alert **once** rather than once per line: **Cisco ISE**
 (a burst of RADIUS rejects counted by `radius-brute`), **Snare** (a 4625 burst
-counted by `windows-threat`), **auditd** (`auditd-rootshell`), and **BIND 9**
-(DGA-length and known-bad queries caught by `dns-tunneling`).
+counted by `windows-threat`), **Okta** (rejected push prompts counted by
+`mfa-fatigue`), **auditd** (`auditd-rootshell`), **Sysmon** (a handle request into
+LSASS caught by `cred-dumping`), and **BIND 9** (DGA-length and known-bad queries
+caught by `dns-tunneling`).
 
-**Transport matters.** Most sources are **native syslog** — the device emits the
-format itself. Two are not: Windows has no syslog (a **Snare**/NXLog agent relays
-the Event Log) and **auditd** needs the `audisp-syslog` plugin. Those carry an
-`agent` badge on their button, because presenting them as native syslog devices
-would teach something false. Every button reports its transport on hover.
+**Transport matters.** 18 sources are **native syslog** — the device emits the format
+itself. Six are not, and say so with a badge on their button:
+
+- `agent` — **Snare** (Windows has no syslog; the agent relays the Event Log),
+  **Sysmon** (its own Windows channel, relayed by NXLog), **auditd** (needs the
+  `audisp-syslog` plugin), and **Zeek** (writes log *files*; Filebeat ships them).
+- `api` — **AWS CloudTrail** (records land in S3/EventBridge) and **Okta** (the
+  System Log is polled from `/api/v1/logs`). Neither speaks syslog at all; a
+  connector re-emits their JSON.
+
+Presenting these as native syslog devices would teach something false, so the
+dashboard badges them and every button reports its transport on hover.
 
 Snare is Windows Event Log over a different wire format, so it reuses the existing
 `windows-threat` rule — same event IDs (4624/4625/4688), no duplicate rule.
@@ -235,6 +264,8 @@ js/jedi.js        SIEM engine: parsing, correlation, detection rules
 js/ui.js          dashboard rendering + wiring
 server.js         optional Node backend: static host + /forward relay + /test probe
 samples/sample.log  example mixed-format log for the file-replay demo
+jsconfig.json     editor typecheck settings (no install needed, ships nothing)
+types/globals.d.ts  ambient declarations for window.JS and Node globals
 ```
 
 ## Extending it

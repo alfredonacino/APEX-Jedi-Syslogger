@@ -85,13 +85,14 @@
           <tr>
             <td><strong>Syslogger</strong></td>
             <td>A synthetic log source. Emits realistic <strong>RFC 3164</strong> and
-            <strong>RFC 5424</strong> syslog plus <strong>20 appliance formats</strong>
+            <strong>RFC 5424</strong> syslog plus <strong>24 appliance formats</strong>
             (Palo Alto, FortiGate, Cisco ASA, Cisco FTD, Cisco ISE, Check Point, Sophos,
             pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, Snort 3, HAProxy,
-            BIND 9, Postfix, Windows Event Log via Snare, Linux auditd, and generic
-            CEF/LEEF) from simulated infrastructure at a configurable
-            <em>events-per-second</em>, injects <strong>26 attack scenarios</strong> on
-            demand, and can replay a log file in a loop.</td>
+            BIND 9, Postfix, Zeek, Windows Event Log via Snare, Sysmon, Linux auditd,
+            AWS CloudTrail, Okta, and generic CEF/LEEF) from simulated infrastructure at
+            a configurable <em>events-per-second</em>, injects
+            <strong>42 attack scenarios</strong> on demand, and can replay a log file in
+            a loop.</td>
           </tr>
           <tr>
             <td><strong>Jedi</strong></td>
@@ -178,10 +179,11 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
         <strong>Rate</strong> slider (0–60 eps) to change volume.</li>
         <li><strong>Attack ›</strong> — inject a burst of malicious activity and watch
         <strong>Detections</strong> correlate it. <strong>Appliance logs ›</strong> — emit
-        any of the 20 sources in its real wire format, from firewalls (Palo Alto,
-        FortiGate, Cisco ASA/FTD) to an IDS (Snort), a load balancer (HAProxy), DNS
-        (BIND 9), mail (Postfix), and agent-relayed hosts (Windows via Snare, Linux
-        auditd).</li>
+        any of the 24 sources in its real wire format, from firewalls (Palo Alto,
+        FortiGate, Cisco ASA/FTD) to an IDS (Snort), network monitoring (Zeek), a load
+        balancer (HAProxy), DNS (BIND 9), mail (Postfix), agent-relayed hosts (Windows
+        via Snare, Sysmon, Linux auditd) and API-relayed cloud/SaaS (AWS CloudTrail,
+        Okta).</li>
         <li>Toggle <strong>RFC 3164 / RFC 5424</strong> for the generic sources. Click any
         event to see the <strong>raw line + parsed fields</strong> (appliance events keep
         their vendor format).</li>
@@ -258,9 +260,17 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
           <tr><td>RADIUS / 802.1X Brute Force</td><td>≥ 6 Cisco ISE <code>5400</code> auth failures from one MAC / 60s</td><td>T1110</td></tr>
           <tr><td>Root Shell From Unprivileged Login</td><td>auditd <code>SYSCALL</code>, <code>auid</code> set &amp; ≠0, <code>uid=0</code>, <code>key="rootshell"</code></td><td>T1548</td></tr>
           <tr><td>Appliance IPS / WAF Signature</td><td>any appliance threat/violation signature</td><td>T1190 (mapped by signature)</td></tr>
+          <tr><td>Credential Dumping (LSASS)</td><td>Sysmon <code>10</code> handle into <code>lsass.exe</code> with dump rights, or a known dumper</td><td>T1003.001</td></tr>
+          <tr><td>Persistence Mechanism Created</td><td><code>CurrentVersion\Run</code> write, scheduled task, or service install</td><td>T1547.001 · T1053.005 · T1543.003</td></tr>
+          <tr><td>LOLBin Download / Proxy Execution</td><td><code>certutil -urlcache</code>, <code>bitsadmin /transfer</code>, <code>mshta http…</code></td><td>T1105 · T1218</td></tr>
+          <tr><td>Security Tooling Disabled</td><td>Defender real-time protection off, AMSI patched, exclusion added</td><td>T1562.001</td></tr>
+          <tr><td>Active Directory Enumeration</td><td>SharpHound / AdFind on disk, or ≥ 10 LDAP object reads / account / 60s</td><td>T1087.002</td></tr>
+          <tr><td>Cloud Control-Plane Abuse</td><td>CloudTrail <code>StopLogging</code>, IAM key/admin-policy creation, public S3</td><td>T1562.008 · T1098 · T1530 · T1078.004</td></tr>
+          <tr><td>Identity Provider Threat</td><td>Okta sign-ins from 2 countries / hour, MFA factor or policy change</td><td>T1078.004 · T1098.003</td></tr>
+          <tr><td>MFA Push Bombing</td><td>≥ 6 rejected Okta push prompts / user / 5 min, and the approval that follows</td><td>T1621</td></tr>
         </tbody>
       </table>
-      <p><strong>Scenarios</strong> — 26 attacks (<code>Attack ›</code>) and 20 appliance
+      <p><strong>Scenarios</strong> — 42 attacks (<code>Attack ›</code>) and 24 appliance
       formats (<code>Appliance logs ›</code>). Every scenario is wired to a detection, so
       each button demonstrably lights up the dashboard. The <strong>Threat Level</strong>
       meter aggregates recent alerts (last 2 min) weighted by severity, DEFCON-style:
@@ -268,21 +278,24 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">7</span>Attack scenarios <span class="tag">26</span></h2>
+      <h2><span class="num">7</span>Attack scenarios <span class="tag">42</span></h2>
       <p>Injected from the <strong>Attack ›</strong> menu; each button fires a burst built
       to trip a detection.</p>
       <ul>
         <li><strong>Network / recon</strong> — Port Scan · SYN Flood (DDoS) · C2 Beacon · DNS Tunneling · Data Exfiltration · Cryptomining</li>
-        <li><strong>Web application</strong> — SQL Injection · Log4Shell RCE · XSS Injection · Path Traversal / LFI · Web Shell · Vuln Scan</li>
-        <li><strong>Credential / identity</strong> — SSH Brute Force · RDP Brute Force · Password Spray · Kerberoasting · DCSync · Pass-the-Hash</li>
-        <li><strong>Endpoint / execution</strong> — Reverse Shell · Malicious PowerShell · Privilege Escalation · Malware / IDS Hit · Ransomware</li>
-        <li><strong>Windows persistence / evasion</strong> — New Admin Account · Audit Log Cleared</li>
+        <li><strong>Web application</strong> — SQL Injection · Log4Shell RCE · XSS Injection · Path Traversal / LFI · Web Shell · Vuln Scan · SSRF → Cloud Metadata</li>
+        <li><strong>Credential / identity</strong> — SSH Brute Force · RDP Brute Force · Password Spray · Kerberoasting · AS-REP Roasting · Golden Ticket · DCSync · Pass-the-Hash · LSASS Credential Dump</li>
+        <li><strong>Endpoint / execution</strong> — Reverse Shell · Malicious PowerShell · Privilege Escalation · Malware / IDS Hit · Ransomware · LOLBin Download (certutil)</li>
+        <li><strong>Persistence / evasion</strong> — New Admin Account · Audit Log Cleared · Scheduled Task Persistence · Run-Key Persistence · Defender Disabled</li>
+        <li><strong>Discovery / lateral movement</strong> — BloodHound AD Recon · PsExec Lateral Movement</li>
+        <li><strong>Cloud control plane</strong> — Cloud Logging Disabled · Cloud IAM Backdoor · Cloud Privilege Escalation · S3 Bucket Exposed</li>
+        <li><strong>Identity provider</strong> — Impossible Travel · MFA Fatigue (Push Bombing)</li>
         <li><strong>Email</strong> — Phishing Email</li>
       </ul>
     </section>
 
     <section>
-      <h2><span class="num">8</span>Appliance log formats <span class="tag">20</span></h2>
+      <h2><span class="num">8</span>Appliance log formats <span class="tag">24</span></h2>
       <p>Injected from the <strong>Appliance logs ›</strong> menu — each event is rendered
       in the vendor's real wire format (syslog <code>&lt;PRI&gt;</code> + native payload).</p>
       <table>
@@ -305,23 +318,33 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
           <tr><td>BIND 9 (DNS)</td><td><code>named</code> query log</td><td><code>dns-tunneling</code></td></tr>
           <tr><td>Postfix (mail)</td><td>prose + <code>key=&lt;value&gt;</code></td><td><code>appliance-threat</code></td></tr>
           <tr><td>Windows Event Log (Snare) <span class="tag">agent</span></td><td>TAB-delimited <code>MSWinEventLog</code></td><td><code>windows-threat</code></td></tr>
+          <tr><td>Sysmon (Windows) <span class="tag">agent</span></td><td>NXLog <code>key=value</code></td><td><code>cred-dumping</code></td></tr>
           <tr><td>Linux auditd <span class="tag">agent</span></td><td><code>type=… msg=audit(ts:serial)</code></td><td><code>auditd-rootshell</code></td></tr>
+          <tr><td>Zeek (NSM) <span class="tag">agent</span></td><td>TAB-separated <code>conn</code> / <code>dns</code> / <code>ssl</code></td><td><code>c2-beacon</code></td></tr>
+          <tr><td>AWS CloudTrail <span class="tag">api</span></td><td>JSON record</td><td><code>cloud-threat</code></td></tr>
+          <tr><td>Okta System Log <span class="tag">api</span></td><td>JSON record</td><td><code>mfa-fatigue</code></td></tr>
           <tr><td>CEF (generic)</td><td>ArcSight CEF</td><td><code>appliance-threat</code></td></tr>
           <tr><td>LEEF (generic)</td><td>QRadar LEEF</td><td><code>appliance-threat</code></td></tr>
         </tbody>
       </table>
       <p>Appliances carrying an IPS/WAF signature fire <code>appliance-threat</code>; the
       pure firewalls (Cisco ASA, Check Point, pfSense, Juniper) route their malicious event
-      through <code>c2-beacon</code> (internal host → threat-intel IP) instead. Four sources
-      are <strong>correlation-driven</strong> rather than signature-driven — the burst
-      <em>is</em> the signal, so they alert <strong>once</strong> rather than once per line:
-      <strong>Cisco ISE</strong>, <strong>Snare</strong>, <strong>auditd</strong>, and
-      <strong>BIND 9</strong>.</p>
-      <div class="callout"><strong>Transport matters.</strong> Most sources are
-      <strong>native syslog</strong>. Two are not: Windows has no syslog (a
-      <strong>Snare</strong>/NXLog agent relays the Event Log) and <strong>auditd</strong>
-      needs the <code>audisp-syslog</code> plugin. Those carry an <code>agent</code> badge
-      on their button. Every button reports its transport on hover.</div>
+      through <code>c2-beacon</code> (internal host → threat-intel IP) instead — as does
+      <strong>Zeek</strong>, whose <code>conn.log</code> beacon to a known-bad IP is the
+      same shape of evidence. Six sources are <strong>correlation-driven</strong> rather
+      than signature-driven — the burst <em>is</em> the signal, so they alert
+      <strong>once</strong> rather than once per line: <strong>Cisco ISE</strong>,
+      <strong>Snare</strong>, <strong>Okta</strong>, <strong>auditd</strong>,
+      <strong>Sysmon</strong>, and <strong>BIND 9</strong>.</p>
+      <div class="callout"><strong>Transport matters.</strong> 18 sources are
+      <strong>native syslog</strong>; six are not. <code>agent</code> — <strong>Snare</strong>
+      (Windows has no syslog at all), <strong>Sysmon</strong> (its own Windows channel,
+      relayed by NXLog), <strong>auditd</strong> (needs the <code>audisp-syslog</code>
+      plugin) and <strong>Zeek</strong> (writes log <em>files</em>; Filebeat ships them).
+      <code>api</code> — <strong>AWS CloudTrail</strong> (records land in S3/EventBridge)
+      and <strong>Okta</strong> (the System Log is polled from <code>/api/v1/logs</code>).
+      Those carry a badge on their button, and every button reports its transport on
+      hover.</div>
     </section>
 
     <section>

