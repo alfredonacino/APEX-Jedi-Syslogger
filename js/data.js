@@ -467,6 +467,74 @@
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} zeek_${ev.zeekPath}: ` +
         [zeekTimestamp(d), ev.uid].concat(ev.zeekFields || []).join('\t');
     },
+    // Cisco Secure Email Gateway (ESA) — consolidated log event in CEF. From
+    // AsyncOS 13 the whole mail pipeline (injection → verdicts → delivery) lands
+    // on one line keyed by MID/ICID/DCID instead of a dozen correlated entries.
+    ciscoesa(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const ext = [
+        `deviceExternalId=${ev.serial}`, `ESAMID=${ev.mid}`, `ESAICID=${ev.icid}`, `ESADCID=${ev.dcid}`,
+        `src=${ev.srcIp}`, `suser=${ev.mailFrom}`, `duser=${ev.rcptTo}`,
+        `ESAFriendlyFrom="${ev.friendlyFrom}"`, `ESASubject="${ev.subject}"`,
+        `ESASPFVerdict=${ev.spf}`, `ESADMARCVerdict=${ev.dmarc}`,
+        `ESAASVerdict=${ev.asVerdict}`, `ESAAVVerdict=${ev.avVerdict}`, `ESAAMPVerdict=${ev.ampVerdict}`,
+        `ESAFinalActionTaken=${ev.finalAction}`,
+      ];
+      if (ev.attachment) ext.push(`fname="${ev.attachment}"`);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} esa-sll: CEF:0|Cisco|C600V Email Security Virtual Appliance|15.5.1|` +
+        `ESA_CONSOLIDATED_LOG_EVENT|Consolidated Log Event|${ev.cefSev != null ? ev.cefSev : 5}|${ext.join(' ')}`;
+    },
+    // CyberArk Vault (EPV) — the vault writes XML audit records; an XSL translator
+    // converts them to CEF before they reach syslog, so the cs<n>Label pairs are
+    // fixed by that translator, not chosen per event.
+    cyberark(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const ext = [
+        `act="${ev.act}"`, `suser=${ev.user}`, `fname=${ev.fname || ''}`, `dvc=${ev.hostIp}`,
+        `shost=${ev.srcIp}`, `dhost=${ev.targetHost || ''}`, `duser=${ev.targetUser || ''}`,
+        `externalId=${ev.recordId}`, `app=${ev.app || ''}`, `reason=${ev.reason || ''}`,
+        `cs1Label="Affected User Name" cs1=${ev.targetUser || ''}`,
+        `cs2Label="Safe Name" cs2="${ev.safe}"`,
+        `cs3Label="Device Type" cs3=${ev.deviceType || ''}`,
+        `cs4Label="Database" cs4=`, `cs5Label="Other info" cs5="${ev.otherInfo || ''}"`,
+        `cn1Label="Request Id" cn1=`, `cn2Label="Ticket Id" cn2=`, `msg=${ev.message}`,
+      ];
+      return `<${pri}>${bsdTimestamp(d)} ${ev.hostIp} CEF:0|Cyber-Ark|Vault|12.6|${ev.actionCode}|${ev.act}|` +
+        `${ev.cefSev != null ? ev.cefSev : 5}|${ext.join(' ')}`;
+    },
+    // Ivanti Connect Secure (ex-Pulse Connect Secure) — the appliance's own log
+    // shape: an event code (AUT…/VPN…) followed by the message, prefixed by the
+    // source address and the user's realm and roles.
+    ivanti(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+        `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      const who = ev.user ? `${ev.user}(${ev.realm})[${ev.roles || ''}]` : '-';
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} ics: ${stamp} - ${ev.host} - [${ev.srcIp}] ${who} - ` +
+        `${ev.icsCode}: ${ev.message}`;
+    },
+    // Infoblox NIOS — the grid member runs stock ISC daemons, so DNS lands as a
+    // named query line and DHCP as a dhcpd lease line. Both are plain BSD syslog.
+    infoblox(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const body = ev.program === 'named'
+        ? `client @0x${ev.clientHandle} ${ev.srcIp}#${ev.srcPort} (${ev.domain}): query: ${ev.domain} IN ${ev.qtype} ${ev.qflags} (${ev.hostIp})`
+        : ev.message;
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} ${ev.program}[${ev.pid}]: ${body}`;
+    },
+    // Veeam Backup & Replication — every Windows event log entry is mirrored to
+    // syslog as RFC 5424 with the event id carried in structured data.
+    veeam(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const sd = `[origin enterpriseId="31023"][categoryId="${ev.categoryId}" instanceId="${ev.instanceId}" ` +
+        `OibID="${ev.oibId || ''}" RepositoryID="${ev.repoId || ''}" Description="${ev.message}"]`;
+      return `<${pri}>1 ${isoTimestamp(d)} ${ev.host} Veeam_MP - - ${sd} ${ev.message}`;
+    },
     // AWS CloudTrail — JSON record. AWS emits no syslog at all: CloudTrail writes
     // records to S3 / EventBridge and a connector re-emits them, so the payload is
     // the verbatim JSON a collector would receive. Undefined fields are dropped by
@@ -583,6 +651,56 @@
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} kube-apiserver: ${JSON.stringify(rec)}`;
     },
     // Generic CEF (ArcSight Common Event Format).
+    // Cisco Umbrella — DNS resolver logs delivered as CSV to a managed S3 bucket
+    // (or pulled from the Reporting API); nothing is emitted over syslog, so this
+    // is what a connector re-emits, quoted field for quoted field.
+    umbrella(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const stamp = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())} ` +
+        `${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())}:${pad(d.getUTCSeconds())}`;
+      const f = [
+        stamp, ev.identity, ev.identities, ev.srcIp, ev.externalIp, ev.action,
+        ev.queryType, ev.responseCode, `${ev.domain}.`, ev.categories,
+        ev.identityType, ev.identityTypes, ev.blockedCategories || '',
+      ];
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} umbrella_dns: ${f.map((v) => `"${v}"`).join(',')}`;
+    },
+    // Azure Activity Log — the subscription control plane, read through an Event
+    // Hub or the Monitor API. `operationName` is the RBAC action in upper case.
+    azure(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        time: utcTimestamp(d, true), resourceId: ev.resourceId,
+        operationName: ev.operationName, category: 'Administrative',
+        resultType: ev.resultType, resultSignature: ev.resultSignature,
+        durationMs: ev.durationMs, callerIpAddress: ev.srcIp, correlationId: ev.correlationId,
+        identity: {
+          authorization: { scope: ev.scope, action: ev.action, evidence: { role: ev.role } },
+          claims: { name: ev.user, ipaddr: ev.srcIp },
+        },
+        level: ev.level, location: ev.region, tenantId: ev.tenantId,
+        properties: ev.azProperties || null,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} azure_activity: ${JSON.stringify(rec)}`;
+    },
+    // Microsoft 365 unified audit log — one AuditData record per activity, pulled
+    // from the Office 365 Management Activity API. Which key carries the address
+    // depends on the workload, so ClientIP and ActorIpAddress both appear.
+    m365(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        CreationTime: utcTimestamp(d).replace(/Z$/, ''), Id: ev.eventUuid,
+        Operation: ev.operation, OrganizationId: ev.tenantId, RecordType: ev.recordType,
+        ResultStatus: ev.resultStatus, UserKey: ev.userKey, UserType: 0, Version: 1,
+        Workload: ev.workload, ClientIP: ev.srcIp, ActorIpAddress: ev.srcIp,
+        UserId: ev.user, ObjectId: ev.objectId, Parameters: ev.parameters || null,
+        MailboxOwnerUPN: ev.mailboxOwner, ClientAppId: ev.appId,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} o365_audit: ${JSON.stringify(rec)}`;
+    },
     cef(ev) {
       const pri = ev.facility * 8 + ev.severity;
       const d = new Date(ev.ts);

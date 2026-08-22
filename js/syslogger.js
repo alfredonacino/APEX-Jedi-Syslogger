@@ -284,6 +284,7 @@
   // AWS CloudTrail record. The corporate account id is fixed so bursts from one
   // "tenant" correlate; the rule keys its cooldowns on it.
   const AWS_ACCOUNT = '210987654321';
+  const AZURE_SUB = 'b41e7d90-2a6c-4f18-8e5b-77c0d3a91f42';
   const aws = (fields) => Object.assign({
     srcType: 'cloudtrail', vendor: 'cloudtrail', host: 'aws-connector-01', facility: FACILITY.local6,
     program: 'aws_cloudtrail', severity: 3, region: 'us-east-1', accountId: AWS_ACCOUNT,
@@ -2298,6 +2299,322 @@
           srcIp: a, user: 'system:anonymous', groups: ['system:unauthenticated'], status: 101,
           requestUri: `/api/v1/namespaces/${ns}/pods/debug-shell/exec?command=%2Fbin%2Fsh&stdin=true&tty=true`,
           message: `create pods/exec into debug-shell in ${ns} — /bin/sh, by system:anonymous`,
+        }));
+        return evs;
+      },
+    },
+    ciscoesa: {
+      label: 'Cisco Secure Email (ESA)', category: 'appliance',
+      build() {
+        const host = rand.pick(['esa-01', 'esa-mx-02']);
+        const serial = `${rand.hex(12).toUpperCase()}-${rand.hex(6).toUpperCase()}`;
+        const base = () => ({
+          srcType: 'ciscoesa', vendor: 'ciscoesa', host, serial, facility: FACILITY.mail,
+          program: 'esa-sll', proto: 'tcp', dstPort: 25,
+          spf: 'Pass', dmarc: 'Pass', asVerdict: 'NEGATIVE', avVerdict: 'CLEAN', ampVerdict: 'CLEAN',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const from = `${rand.pick(USERS)}@${rand.pick(['partner.io', 'supplier.example', 'news.example'])}`;
+          const mid = rand.int(100000000, 999999999);
+          const to = `${rand.pick(USERS)}@corp.example`;
+          evs.push(Object.assign(base(), {
+            severity: 6, mid, icid: rand.int(10000000, 99999999),
+            dcid: rand.int(1000000, 9999999), srcIp: rand.ip(), mailFrom: from, friendlyFrom: from,
+            rcptTo: to, subject: rand.pick(['Q3 invoice', 'Meeting notes', 'Renewal reminder']),
+            finalAction: 'DELIVERED',
+            message: `MID ${mid} delivered from ${from} to ${to}`,
+          }));
+        }
+        // Credential-phish with a weaponised attachment closes the burst — the
+        // gateway's own verdicts are what the phishing rule reads.
+        const lure = rand.pick([
+          ['Payment remittance advice', 'remittance_advice.iso'],
+          ['Your mailbox will be deactivated', 'mailbox-verify.docm'],
+          ['DocuSign: contract awaiting signature', 'contract_docusign.lnk'],
+        ]);
+        const spoofed = `billing@${rand.pick(['corp-example.co', 'micros0ft-billing.top', 'docusign-secure.top'])}`;
+        evs.push(Object.assign(base(), {
+          severity: 3, cefSev: 8, mid: rand.int(100000000, 999999999), icid: rand.int(10000000, 99999999),
+          dcid: 0, srcIp: rand.pick(THREAT_INTEL.ips), mailFrom: spoofed, friendlyFrom: 'Accounts Payable',
+          rcptTo: `${rand.pick(USERS)}@corp.example`, subject: lure[0], attachment: lure[1],
+          spf: 'Fail', dmarc: 'Fail', asVerdict: 'POSITIVE', avVerdict: 'CLEAN', ampVerdict: 'MALICIOUS',
+          finalAction: 'QUARANTINED', phish: true, threatSev: 'high',
+          message: `phishing quarantined from ${spoofed} spf=fail dmarc=fail attachment="${lure[1]}"`,
+        }));
+        return evs;
+      },
+    },
+    cyberark: {
+      label: 'CyberArk Vault (EPV)', category: 'appliance',
+      build() {
+        const host = 'cyberark-vault-01', hostIp = '10.10.4.20';
+        const base = () => ({
+          srcType: 'cyberark', vendor: 'cyberark', host, hostIp, facility: FACILITY.local1,
+          program: 'CyberArk', proto: 'tcp', recordId: rand.int(100000, 999999),
+        });
+        const evs = [];
+        const routine = [
+          [295, 'Logon', 'signed in to the vault'],
+          [7, 'Retrieve password', 'retrieved a password'],
+          [302, 'CPM Verify Password', 'verified the account password'],
+          [8, 'Add File Category', 'updated an account property'],
+        ];
+        const safes = ['WIN-DOMAIN-ADMINS', 'UNIX-ROOT', 'DB-ORACLE-SYS', 'NET-CISCO-ENABLE', 'ESX-ROOT', 'AWS-BREAKGLASS'];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const r = rand.pick(routine);
+          const u = rand.pick(USERS);
+          evs.push(Object.assign(base(), {
+            severity: 6, actionCode: r[0], act: r[1], user: u, srcIp: rand.internalIp(),
+            safe: rand.pick(safes), targetUser: 'svc_sql', targetHost: 'srv-db-01', deviceType: 'Operating System',
+            fname: `Root\\${rand.int(100, 999)}\\${u}.xml`, app: 'PVWA',
+            message: `${u} ${r[2]}`,
+          }));
+        }
+        // One account holder pulling every privileged safe in a row is the shape
+        // that matters — the burst correlates into a single alert.
+        const who = rand.pick(BAD_USERS.concat(['contractor_temp']));
+        const src = rand.pick(THREAT_INTEL.ips);
+        safes.forEach((safe) => {
+          evs.push(Object.assign(base(), {
+            severity: 3, cefSev: 8, actionCode: 7, act: 'Retrieve password', user: who, srcIp: src,
+            safe, targetUser: `adm_${safe.toLowerCase().split('-')[0]}`, targetHost: 'multiple',
+            deviceType: 'Operating System', app: 'PACLI', otherInfo: 'no ticket id supplied',
+            message: `${who} retrieved the privileged password in safe ${safe} via PACLI`,
+          }));
+        });
+        return evs;
+      },
+    },
+    ivanti: {
+      label: 'Ivanti Connect Secure (VPN)', category: 'appliance',
+      build() {
+        const host = rand.pick(['ics-vpn-01', 'ics-vpn-dr']);
+        const base = () => ({
+          srcType: 'ivanti', vendor: 'ivanti', host, facility: FACILITY.local0,
+          program: 'ics', proto: 'tcp', realm: 'Users', roles: 'Employees',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const u = rand.pick(USERS), a = rand.ip();
+          evs.push(Object.assign(base(), {
+            severity: 6, icsCode: 'AUT24414', user: u, srcIp: a, sessionId: rand.hex(8),
+            message: `Primary authentication successful for ${u}/AD-Auth from ${a}`,
+          }));
+          if (rand.chance(0.5)) evs.push(Object.assign(base(), {
+            severity: 6, icsCode: 'AUT22673', user: u, srcIp: a,
+            message: `Logout from ${a} (session:${rand.hex(8)})`,
+          }));
+        }
+        // A dumped credential list replayed against the gateway: one address,
+        // many accounts. vpn-brute correlates the set rather than each failure.
+        const src = rand.pick(THREAT_INTEL.ips);
+        BAD_USERS.concat(rand.pick(USERS), 'helpdesk').forEach((u) => {
+          evs.push(Object.assign(base(), {
+            severity: 4, icsCode: 'AUT23457', user: u, srcIp: src, roles: '', nsEvent: 'LOGIN_FAILED',
+            message: `Login failed using auth server AD-Auth (Active Directory). Reason: Failed`,
+          }));
+        });
+        return evs;
+      },
+    },
+    infoblox: {
+      label: 'Infoblox NIOS (DDI)', category: 'appliance',
+      build() {
+        const host = 'ib-grid-01', hostIp = '10.10.0.53';
+        const base = () => ({
+          srcType: 'infoblox', vendor: 'infoblox', host, hostIp, facility: FACILITY.daemon,
+          program: 'named', pid: rand.int(1500, 9000), proto: 'udp',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 4); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 6, clientHandle: rand.hex(12), srcIp: rand.internalIp(), srcPort: rand.int(1024, 65535),
+            domain: rand.pick(DOMAINS), qtype: rand.pick(['A', 'AAAA', 'MX']), qflags: '+E(0)',
+            message: 'dns query',
+          }));
+        }
+        // The DHCP half of DDI — the lease is what ties an address to a machine.
+        const mac = Array.from({ length: 6 }, () => rand.hex(2)).join(':');
+        const leased = `10.${rand.int(10, 40)}.${rand.int(0, 255)}.${rand.int(2, 250)}`;
+        const client = rand.pick(['DESKTOP-4KJ21', 'LT-FINANCE-07', 'WS-HR-12']);
+        evs.push(Object.assign(base(), {
+          severity: 6, program: 'dhcpd', pid: rand.int(1500, 9000),
+          message: `DHCPREQUEST for ${leased} from ${mac} via eth2`,
+        }));
+        evs.push(Object.assign(base(), {
+          severity: 6, program: 'dhcpd', pid: rand.int(1500, 9000),
+          message: `DHCPACK on ${leased} to ${mac} (${client}) via eth2 relay eth2 lease-duration 1800 (RENEW) uid 01:${mac}`,
+        }));
+        // Oversized encoded label to a look-alike zone — the tunnelling shape.
+        const payload = Array.from({ length: rand.int(44, 58) }, () => 'abcdefghijklmnopqrstuvwxyz0123456789'[rand.int(0, 35)]).join('');
+        evs.push(Object.assign(base(), {
+          severity: 4, clientHandle: rand.hex(12), srcIp: rand.internalIp(), srcPort: rand.int(1024, 65535),
+          domain: `${payload}.tun.${rand.pick(THREAT_INTEL.domains)}`, qtype: 'TXT', qflags: '+E(0)',
+          message: 'oversized TXT query — possible tunnel',
+        }));
+        return evs;
+      },
+    },
+    veeam: {
+      label: 'Veeam Backup & Replication', category: 'appliance',
+      build() {
+        const host = 'veeam-bkp-01';
+        const base = () => ({
+          srcType: 'veeam', vendor: 'veeam', host, hostIp: '10.10.4.40', facility: FACILITY.local4,
+          program: 'Veeam_MP', proto: 'tcp', categoryId: 4,
+        });
+        const evs = [];
+        const jobs = ['SQL-Daily', 'FileServer-Hourly', 'VMware-Prod-Nightly', 'M365-Mailboxes'];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const job = rand.pick(jobs);
+          evs.push(Object.assign(base(), {
+            severity: 6, instanceId: 41100, oibId: rand.uuid(), user: 'VEEAM\\svc_backup',
+            message: `Backup job "${job}" has finished with Success (${rand.int(4, 900)} GB transferred)`,
+          }));
+        }
+        // Wiping the restore points before encrypting is the standard opening
+        // move, and it is the one thing backup telemetry sees before the ransom.
+        const who = rand.pick(BAD_USERS.concat(['VEEAM\\svc_backup']));
+        const wipe = rand.pick([
+          [28200, `Backup repository "Immutable-Repo-01" has been deleted by ${who}`],
+          [23090, `Backup job "VMware-Prod-Nightly" has been deleted by ${who}`],
+          [24030, `Immutability has been disabled on repository "Immutable-Repo-01" by ${who}`],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 2, categoryId: 2, instanceId: wipe[0], repoId: rand.uuid(), user: who,
+          message: wipe[1],
+        }));
+        return evs;
+      },
+    },
+    umbrella: {
+      // Umbrella resolvers never speak syslog: logs are dropped as CSV into a
+      // managed S3 bucket (or pulled from the Reporting API) and re-emitted.
+      label: 'Cisco Umbrella (DNS)', category: 'appliance', transport: 'api',
+      build() {
+        const host = 'umbrella-connector-01';
+        const egress = `${rand.int(64, 99)}.${rand.int(0, 255)}.${rand.int(0, 255)}.${rand.int(1, 254)}`;
+        const base = () => ({
+          srcType: 'umbrella', vendor: 'umbrella', host, facility: FACILITY.local6,
+          program: 'umbrella_dns', proto: 'udp', externalIp: egress,
+          identityType: 'AD Users', identityTypes: 'AD Users,AD Site,Network',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const u = rand.pick(USERS);
+          evs.push(Object.assign(base(), {
+            severity: 6, identity: u, identities: `${u},HQ-Site,Corp-Network`, user: u,
+            srcIp: rand.internalIp(), action: 'Allowed', queryType: rand.pick(['1 (A)', '28 (AAAA)']),
+            responseCode: 'NOERROR', domain: rand.pick(DOMAINS),
+            categories: rand.pick(['Business Services', 'Software/Technology', 'Search Engines']),
+            message: 'dns request allowed',
+          }));
+        }
+        // A blocked security category is Umbrella's own verdict on the domain.
+        const u = rand.pick(USERS), bad = rand.pick(THREAT_INTEL.domains);
+        evs.push(Object.assign(base(), {
+          severity: 3, identity: u, identities: `${u},HQ-Site,Corp-Network`, user: u,
+          srcIp: rand.internalIp(), action: 'Blocked', queryType: '1 (A)', responseCode: 'NXDOMAIN',
+          domain: bad, categories: 'Command and Control,Malware',
+          blockedCategories: 'Command and Control', threatSev: 'high',
+          message: `dns request blocked — ${bad} (Command and Control)`,
+        }));
+        return evs;
+      },
+    },
+    azure: {
+      // The Azure control plane is read from an Event Hub or the Monitor API,
+      // never syslog — the same relay story as CloudTrail on the AWS side.
+      label: 'Azure Activity Log', category: 'appliance', transport: 'api',
+      build() {
+        const host = 'azure-connector-01';
+        const user = `${rand.pick(USERS)}@corp.example`;
+        const rg = rand.pick(['rg-prod-app', 'rg-shared-svc', 'rg-data']);
+        const base = () => ({
+          srcType: 'azure', vendor: 'azure', host, facility: FACILITY.local6,
+          program: 'azure_activity', proto: 'tcp', tenantId: ENTRA_TENANT, region: 'westeurope',
+          correlationId: rand.uuid(), resultType: 'Success', resultSignature: 'Succeeded',
+          durationMs: rand.int(20, 900), user, role: 'Contributor',
+          scope: `/subscriptions/${AZURE_SUB}/resourceGroups/${rg}`,
+        });
+        const evs = [];
+        const benign = [
+          ['MICROSOFT.COMPUTE/VIRTUALMACHINES/READ', 'virtualMachines/vm-app-01'],
+          ['MICROSOFT.STORAGE/STORAGEACCOUNTS/READ', 'storageAccounts/stprodapp'],
+          ['MICROSOFT.NETWORK/NETWORKSECURITYGROUPS/READ', 'networkSecurityGroups/nsg-app'],
+          ['MICROSOFT.RESOURCES/DEPLOYMENTS/WRITE', 'deployments/app-release'],
+        ];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const b = rand.pick(benign);
+          evs.push(Object.assign(base(), {
+            severity: 6, level: 'Informational', operationName: b[0], action: b[0],
+            srcIp: rand.internalIp(),
+            resourceId: `/SUBSCRIPTIONS/${AZURE_SUB}/RESOURCEGROUPS/${rg.toUpperCase()}/PROVIDERS/${b[1].toUpperCase()}`,
+            message: `${b[0]} on ${b[1]} by ${user}`,
+          }));
+        }
+        // One control-plane abuse closes the burst, so cloud-threat alerts once.
+        const bad = rand.pick([
+          ['MICROSOFT.INSIGHTS/DIAGNOSTICSETTINGS/DELETE', 'microsoft.insights/diagnosticSettings/subscription-audit',
+            { entity: 'diagnosticSettings/subscription-audit' }],
+          ['MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/WRITE', 'Microsoft.Authorization/roleAssignments/8a11c2',
+            { roleDefinition: 'Owner', principal: 'svc-deploy' }],
+          ['MICROSOFT.STORAGE/STORAGEACCOUNTS/LISTKEYS/ACTION', 'storageAccounts/stprodapp/listKeys',
+            { keyName: 'key1' }],
+          ['MICROSOFT.KEYVAULT/VAULTS/WRITE', 'vaults/kv-prod-secrets',
+            { accessPolicy: 'add', permissions: 'get,list' }],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 3, level: 'Warning', operationName: bad[0], action: bad[0],
+          srcIp: rand.pick(THREAT_INTEL.ips),
+          resourceId: `/SUBSCRIPTIONS/${AZURE_SUB}/RESOURCEGROUPS/${rg.toUpperCase()}/PROVIDERS/${bad[1].toUpperCase()}`,
+          azProperties: bad[2],
+          message: `${bad[0]} on ${bad[1]} by ${user}`,
+        }));
+        return evs;
+      },
+    },
+    m365: {
+      // Pulled from the Office 365 Management Activity API by a connector; the
+      // service publishes no syslog of its own.
+      label: 'Microsoft 365 audit', category: 'appliance', transport: 'api',
+      build() {
+        const host = 'o365-connector-01';
+        const user = `${rand.pick(USERS)}@corp.example`;
+        const base = () => ({
+          srcType: 'm365', vendor: 'm365', host, facility: FACILITY.local6,
+          program: 'o365_audit', proto: 'tcp', tenantId: ENTRA_TENANT,
+          eventUuid: rand.uuid(), resultStatus: 'Succeeded', userKey: rand.hex(24).toUpperCase(),
+          user, mailboxOwner: user, appId: rand.uuid(),
+        });
+        const evs = [];
+        const benign = [
+          ['FileAccessed', 'SharePoint', 6, 'Shared Documents/Q3-plan.xlsx'],
+          ['UserLoggedIn', 'AzureActiveDirectory', 15, ''],
+          ['MailItemsAccessed', 'Exchange', 2, 'Inbox'],
+          ['FileUploaded', 'OneDrive', 6, 'Documents/notes.docx'],
+        ];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const b = rand.pick(benign);
+          evs.push(Object.assign(base(), {
+            severity: 6, operation: b[0], workload: b[1], recordType: b[2], objectId: b[3],
+            srcIp: rand.internalIp(), message: `${b[0]} (${b[1]}) by ${user}`,
+          }));
+        }
+        // A hidden forwarding rule is how mailbox access is kept after the
+        // password is reset — Collection that survives remediation.
+        const drop = `${rand.pick(['secure-archive', 'mailbox-backup', 'inbox-sync'])}@${rand.pick(['proton.me', 'mail.ru', 'outlook.com'])}`;
+        evs.push(Object.assign(base(), {
+          severity: 3, operation: 'New-InboxRule', workload: 'Exchange', recordType: 1,
+          objectId: `${user}\\Inbox\\Rule`, srcIp: rand.pick(THREAT_INTEL.ips),
+          parameters: [
+            { Name: 'Name', Value: '.' },
+            { Name: 'ForwardTo', Value: drop },
+            { Name: 'DeleteMessage', Value: 'True' },
+            { Name: 'StopProcessingRules', Value: 'True' },
+          ],
+          message: `New-InboxRule "." on ${user} — ForwardTo ${drop}, DeleteMessage True`,
         }));
         return evs;
       },

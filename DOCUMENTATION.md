@@ -31,7 +31,7 @@ has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 24 appliance formats (18 native syslog + 4 agent-relayed + 2 API-relayed), at a configurable rate, with 42 injectable attack scenarios and file replay. |
+| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 41 appliance formats (29 native syslog + 4 agent-relayed + 8 API-relayed), at a configurable rate, with 60 injectable attack scenarios and file replay. |
 | **Jedi**      | Miniature SIEM — parses every event, keeps rolling stats, and runs a stateful, MITRE ATT&CK-tagged detection-rule engine. |
 
 Everything renders in the browser. The optional `server.js` backend serves the
@@ -99,7 +99,7 @@ sees it. Common fields:
 |-------|---------|
 | `id` | Random unique id |
 | `ts` | Epoch ms timestamp |
-| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 24 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `sysmon`, `zeek`, `cloudtrail`, `okta`, …), or `file` |
+| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 41 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `sysmon`, `zeek`, `cloudtrail`, `okta`, `ciscoesa`, `cyberark`, `ivanti`, `infoblox`, `veeam`, `umbrella`, `azure`, `m365`, …), or `file` |
 | `host` / `hostIp` | Device name / management IP |
 | `facility` / `severity` | Syslog numeric facility (0–23) and severity (0–7) |
 | `program` / `pid` | Process / tag |
@@ -170,15 +170,15 @@ appliance events always use their native vendor format.
 
 ## 5. Attack scenarios
 
-**42** scenarios live under the **Attack ›** menu. Each scenario's `build()`
+**60** scenarios live under the **Attack ›** menu. Each scenario's `build()`
 returns a *burst* of event partials crafted to trip a specific detection rule, so
 every button demonstrably lights up the dashboard. A burst can be injected even
 while the baseline generator is stopped, and its events are spread 30–90 ms apart
 so the correlation windows see them as live traffic.
 
 Scenarios are defined in `js/syslogger.js` in two objects that are merged into a
-single `SCENARIOS` map: the original eight in `SCENARIOS` and the additional
-thirty-four in `MORE_ATTACKS`. The **ID** column below is the internal key passed to
+single `SCENARIOS` map: the original set in `SCENARIOS` and the rest in
+`MORE_ATTACKS`. The **ID** column below is the internal key passed to
 `injectScenario(id)`; it is what the `Attack ›` buttons call.
 
 | ID | Scenario | What the burst emits | Fires rule | ATT&CK |
@@ -225,6 +225,24 @@ thirty-four in `MORE_ATTACKS`. The **ID** column below is the internal key passe
 | `impossible-travel` | Impossible Travel | two Okta `user.session.start` **successes** minutes apart from Sydney and Moscow / Lagos / Shenzhen | `identity-threat` | T1078.004 |
 | `mfa-fatigue` | MFA Fatigue (Push Bombing) | 8–12 Okta `auth_via_mfa` **FAILURE** (`FAILED_PUSH_VERIFY_REJECTED`) then one **SUCCESS** — the user gives in | `mfa-fatigue` (twice) | T1621 |
 | `ssrf-metadata` | SSRF → Cloud Metadata | 1–2 web requests proxying to `http://169.254.169.254/latest/meta-data/iam/security-credentials/` | `web-exploit` | T1552.005 |
+| `process-injection` | Process Injection | Sysmon **10** `ProcessAccess` with `CreateRemoteThread`-shaped `GrantedAccess` into a live process | `process-injection` | T1055 |
+| `browser-cred-theft` | Browser Credential Theft | Sysmon **11** file-create pair reading Chrome `Login Data` **and** `Local State` — the DB plus the key that decrypts it | `password-store-theft` | T1555.003 |
+| `masquerading` | Masquerading (fake svchost) | Sysmon **1** `svchost.exe` running from a user-writable path instead of `System32` | `masquerading` | T1036.005 |
+| `remote-access-tool` | Remote Access Tool Install | Sysmon **3** outbound connect from an unmanaged remote-support binary (AnyDesk / ScreenConnect class) | `remote-access-tool` | T1219 |
+| `sandbox-evasion` | Sandbox / VM Evasion | Sysmon **1** sequence probing for VM artefacts before the payload runs | `sandbox-evasion` | T1497 |
+| `tor-egress` | Tor Egress | Squid `TCP_TUNNEL` `CONNECT` to Tor ORPort/DirPort (9001 / 9051) | `covert-c2` | T1090.003 |
+| `saas-c2` | C2 over Trusted SaaS | Squid `GET` loop pulling task files from a raw GitHub / paste endpoint on a fixed cadence | `covert-c2` | T1102.002 |
+| `cloud-exfil` | Exfil to Cloud Storage | one Squid `PUT` of ~1 GB to Dropbox / Mega / transfer.sh | `cloud-exfil` | T1567.002 |
+| `net-config-tamper` | Network Config Tampering | Cisco IOS `%SYS-5-CONFIG_I` removing `logging host` / an ACL from vty | `net-config-change` | T1562.004 |
+| `citrix-exploit` | Citrix Gateway Exploit | NetScaler `SSLVPN` session reuse from a known-bad IP against an admin context | `appliance-threat` | T1190 |
+| `vpn-cred-stuffing` | VPN Credential Stuffing | 8–10 NetScaler `AAA LOGIN_FAILED` for distinct users from one IP | `vpn-brute` | T1110.004 |
+| `esxi-ransomware` | ESXi Ransomware Prep | ESXi `vpxa` shell events mass-killing VMs (`esxcli vm process kill`) before encryption | `hypervisor-threat` | T1562.001 |
+| `k8s-container-escape` | Container Escape (K8s) | audit records creating a privileged / `hostPID` pod and `exec`-ing into it | `k8s-threat` | T1611 |
+| `legacy-auth-bypass` | Legacy Auth MFA Bypass | Entra sign-in succeeding over IMAP4 / POP3 with Conditional Access `notApplied` | `identity-threat` | T1078.004 |
+| `oauth-consent-phish` | OAuth Consent Phishing | Entra consent grant to a third-party app requesting mail and file scopes | `identity-threat` | T1528 |
+| `gpo-modification` | GPO Modification | Windows **5136** modifying a `groupPolicyContainer` object | `windows-threat` | T1484.001 |
+| `adcs-esc1` | ADCS Certificate Theft (ESC1) | Windows **4887** issuing a certificate whose subject is a different (privileged) account | `windows-threat` | T1649 |
+| `wmi-lateral` | WMI Lateral Movement | Sysmon **3** connect to 135/DCOM followed by the remote process create | `lateral-exec` | T1047 |
 
 Most bursts raise exactly **one** alert. `mfa-fatigue` deliberately raises two — the
 push-bombing burst, then the approval that follows it — the same shape as
@@ -239,7 +257,7 @@ threat-intel matches.
 
 ## 6. Appliance log formats
 
-**24** sources live under the **Appliance logs ›** menu. Each burst mixes benign
+**41** sources live under the **Appliance logs ›** menu. Each burst mixes benign
 events with malicious ones, and every event is rendered in the vendor's **real
 wire format** (still wrapped in a syslog `<PRI>` header) by the matching formatter
 in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424 toggle does **not**
@@ -256,9 +274,9 @@ feed doesn't flood **Detections**. A file replay still takes precedence, and
 clicking a selected appliance again (or **clear** / **Reset**) restores the mix.
 
 `Syslogger.scenarioList()` exposes a **`transport`** field (`native` | `agent` |
-`api`, defaulting to `native`). 18 of the 24 sources are `native` — the device
-speaks syslog itself. Six are not, and say so with a badge on their button and in
-the hover title.
+`api`, defaulting to `native`). 29 of the 41 sources are `native` — the device
+speaks syslog itself. Twelve are not, and say so with a badge on their button and
+in the hover title.
 
 **`agent`** — the telemetry exists locally but something else has to put it on the
 wire:
@@ -278,6 +296,14 @@ re-emits the JSON:
 
 - **`cloudtrail`** — records are delivered to S3 or EventBridge, not syslog.
 - **`okta`** — the System Log is read from `GET /api/v1/logs`.
+- **`entra`** — `SigninLogs` come out through Graph or an Event Hub.
+- **`crowdstrike`** — the Falcon SIEM Connector polls the Event Streams API.
+- **`k8saudit`** — the API server writes an audit *file* or webhook, not syslog.
+- **`umbrella`** — resolver logs are dropped as CSV into a managed S3 bucket (or
+  pulled from the Reporting API).
+- **`azure`** — the Activity Log is read from an Event Hub or the Monitor API.
+- **`m365`** — the unified audit log comes from the Office 365 Management
+  Activity API.
 
 The distinction is deliberate: this is a tool for learning log ingestion, so a
 source that cannot actually reach a collector without an agent or a connector must
@@ -299,11 +325,18 @@ Five detection paths cover the malicious events in each burst:
   **once** per burst rather than once per line.
 - **Behavioural** sources are judged on what the telemetry *describes* rather than
   on a vendor verdict: Sysmon's handle request into `lsass.exe` fires
-  **`cred-dumping`**, and CloudTrail's control-plane call fires **`cloud-threat`**.
+  **`cred-dumping`**, CloudTrail's control-plane call fires **`cloud-threat`**, and
+  Veeam's repository deletion fires **`ransomware`** (as T1490, the prelude rather
+  than the encryption itself).
 - **Reused rules.** `snare` is the same Windows Event Log as the `windows` baseline
   source — same event IDs, different transport and wire format — so it feeds the
   existing **`windows-threat`** rule instead of a cloned one. `auditd` gets its own
-  **`auditd-rootshell`** rule.
+  **`auditd-rootshell`** rule. The same reasoning extends each rule to a second
+  schema rather than cloning it: `ciscoesa` joins the `mail` baseline on
+  **`phishing`**, `ivanti` joins NetScaler on **`vpn-brute`**, `infoblox` and
+  `umbrella` join BIND on **`dns-tunneling`**, `cyberark` adds a vault branch to
+  **`password-store-theft`**, and `azure` and `m365` join CloudTrail on
+  **`cloud-threat`** — three control planes, one rule.
 
 | ID | Appliance | Format | Detection | Malicious signature / trigger |
 |----|-----------|--------|-----------|-------------------------------|
@@ -331,6 +364,23 @@ Five detection paths cover the malicious events in each burst:
 | `okta` | Okta System Log — **api** | JSON record | `mfa-fatigue` | 7–10 × `auth_via_mfa` `FAILED_PUSH_VERIFY_REJECTED` for one user from one bad IP — no signature, correlated |
 | `cef` | CEF (generic ArcSight) | `CEF:0\|…` | `appliance-threat` | Brute Force Attack, Malware Communication, Data Exfiltration Attempt |
 | `leef` | LEEF (generic QRadar) | `LEEF:2.0\|…` | `appliance-threat` | Port Scan, Suspect Data Loss, Botnet C2 Communication |
+| `ciscoios` | Cisco IOS (switch/router) | `seq: *time: %FAC-sev-MNEM` | `net-config-change` | `%SYS-5-CONFIG_I` from vty removing `logging host` or an inbound ACL |
+| `meraki` | Cisco Meraki (MX) | epoch + `security_event` `key=value` | `appliance-threat` | `ids_alerted` signature hit (Log4j `1:58722`) with `dhost` / `direction` |
+| `citrix` | Citrix NetScaler (Gateway) | `date ns 0-PPE-0 : module EVENT` | `vpn-brute` | 8–10 `AAA LOGIN_FAILED` for distinct users from one IP against the VPN vserver |
+| `squid` | Squid (proxy) | native access log | `covert-c2` | `TCP_TUNNEL` `CONNECT` to Tor ports 9001 / 9051 (+ benign `TCP_MISS` GETs) |
+| `esxi` | VMware ESXi | `Hostd`/`Vpxa` `[Originator@6876 …]` | `hypervisor-threat` | lockdown mode disabled, SSH enabled, or `esxcli vm process kill` |
+| `suricata` | Suricata (EVE JSON) | EVE JSON per line | `appliance-threat` | `event_type: alert` — ET signature for Log4j / Cobalt Strike / SQLi |
+| `entra` | Microsoft Entra ID — **api** | `SigninLogs` JSON | `identity-threat` | legacy-auth sign-in with Conditional Access `notApplied`, or an OAuth consent grant |
+| `crowdstrike` | CrowdStrike Falcon — **api** | `DetectionSummaryEvent` JSON | `appliance-threat` | sensor verdict — the tactic, technique and `PatternDispositionDescription` are already named |
+| `k8saudit` | Kubernetes audit — **api** | `audit.k8s.io/v1` JSON | `k8s-threat` | privileged / `hostPID` pod create and `pods/exec` by `system:anonymous` |
+| `ciscoesa` | Cisco Secure Email (ESA) | CEF consolidated log event | `phishing` | `ESAASVerdict=POSITIVE` + `ESAAMPVerdict=MALICIOUS`, spf/dmarc `Fail`, weaponised attachment quarantined |
+| `cyberark` | CyberArk Vault (EPV) | CEF (XSL-translated audit XML) | `password-store-theft` | one holder running `Retrieve password` across every privileged safe via PACLI |
+| `ivanti` | Ivanti Connect Secure (VPN) | `- ics - [ip] user(realm)[roles] - CODE:` | `vpn-brute` | 10–12 `AUT23457` login failures for distinct accounts from one IP (+ benign `AUT24414` / `AUT22673`) |
+| `infoblox` | Infoblox NIOS (DDI) | ISC `named` / `dhcpd` lines | `dns-tunneling` | 44–58-char encoded label under a known-bad zone (TXT), alongside `DHCPREQUEST`/`DHCPACK` leases |
+| `veeam` | Veeam Backup & Replication | RFC 5424 + `[origin …][categoryId …]` SD | `ransomware` | instance `28200` / `23090` / `24030` — repository or job deleted, immutability disabled |
+| `umbrella` | Cisco Umbrella (DNS) — **api** | quoted CSV | `dns-tunneling` | `Blocked` verdict on a threat-intel domain with `blockedCategories` *Command and Control* |
+| `azure` | Azure Activity Log — **api** | Activity Log JSON | `cloud-threat` | one of diagnostic-settings delete, `roleAssignments/write` Owner, `listKeys`, key-vault policy write |
+| `m365` | Microsoft 365 audit — **api** | unified-audit `AuditData` JSON | `cloud-threat` | `New-InboxRule` forwarding externally with `DeleteMessage True` |
 
 ### Example wire lines
 
@@ -513,7 +563,7 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `sql-injection` | SQL Injection | SQLi regex in an HTTP request | T1190 |
 | `c2-beacon` | C2 / Known-Bad Destination | internal host → threat-intel IP | T1071 |
 | `data-exfil` | Large Outbound Transfer | outbound flow > 100 MB | T1048 |
-| `dns-tunneling` | DNS Tunneling | long DNS label / known-bad domain (`dns` + `bind` sources) | T1071.004 |
+| `dns-tunneling` | DNS Tunneling | long DNS label / known-bad domain (`dns`, `bind`, `infoblox`, `umbrella` sources) | T1071.004 |
 | `priv-esc` | Privilege Escalation | `sudo … USER=root` / Win 4672 | T1068 |
 | `ids-malware` | IDS Malware Signature | Suricata/ET trojan/exploit | T1204 |
 | `radius-brute` | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` failures / MAC / 60 s | T1110 |
@@ -526,15 +576,27 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `lolbin-abuse` | LOLBin Download / Proxy Execution | `certutil -urlcache/-decode`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` | T1105·T1218 |
 | `security-tooling-disabled` | Security Tooling Disabled | `DisableRealtimeMonitoring`, `-ExclusionPath`, AMSI patch markers, `net stop windefend` | T1562.001 |
 | `ad-recon` | Active Directory Enumeration | SharpHound / BloodHound / AdFind / `Get-Domain*` on a command line, or ≥ 10 × 4662 directory reads / account / 60 s | T1087.002 |
-| `cloud-threat` | Cloud Control-Plane Abuse | CloudTrail `eventName`: trail/detector deletion, IAM credential creation, admin policy attach, public bucket, root console login | T1562.008·T1098.001·T1098.003·T1530·T1078.004 |
+| `cloud-threat` | Cloud Control-Plane Abuse | three control planes in one rule — CloudTrail `eventName` (trail/detector deletion, IAM credential creation, admin policy attach, public bucket, root console login), Azure `operationName` (diagnostic-settings delete, privileged `roleAssignments/write`, `listKeys`, key-vault policy write), Microsoft 365 `New/Set-InboxRule` forwarding externally | T1562.008·T1098.001·T1098.003·T1530·T1078.004·T1552.001·T1555·T1114.003 |
 | `identity-threat` | Identity Provider Threat | Okta `user.session.start` successes from ≥ 2 countries / hour, or an MFA-factor / policy / privilege change | T1078.004·T1098.003 |
 | `mfa-fatigue` | MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, then a **critical** follow-up if one is finally approved | T1621 |
 | `reverse-shell` | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | `susp-powershell` | Suspicious PowerShell | `-enc` / `FromBase64String` / hidden window | T1059.001 |
 | `cryptomining` | Cryptomining | `stratum+tcp` / known pool | T1496 |
-| `ransomware` | Ransomware Behavior | shadow-copy deletion / mass `.locked` | T1486 |
+| `ransomware` | Ransomware Behavior | shadow-copy deletion / mass `.locked`, or a backup repository or job deleted / immutability disabled (T1490 — the prelude, seen by `veeam`) | T1486·T1490 |
 | `dos-flood` | DoS / Flood | flood markers, or ≥ 40 blocks to one host / 5 s | T1498 |
-| `phishing` | Phishing Email | SPF/DKIM/DMARC fail + risky attachment | T1566 |
+| `phishing` | Phishing Email | SPF/DKIM/DMARC fail + risky attachment, or the gateway's own verdict (`mail` + `ciscoesa` sources) | T1566 |
+| `process-injection` | Process Injection | Sysmon **10** `ProcessAccess` with a `CreateRemoteThread`-shaped `GrantedAccess` | T1055 |
+| `password-store-theft` | Credentials From Password Store | browser `Login Data` **and** `Local State` read together, or one holder checking out ≥ 4 privileged CyberArk safes / 2 min | T1555.003·T1555.005 |
+| `masquerading` | Masquerading System Binary | a `System32` binary name running from a user-writable path | T1036.005 |
+| `remote-access-tool` | Unmanaged Remote Access Tool | AnyDesk / ScreenConnect-class binary making an outbound connection | T1219 |
+| `sandbox-evasion` | Sandbox / VM Evasion | VM-artefact probing before the payload runs | T1497 |
+| `covert-c2` | Covert C2 Channel | proxy `CONNECT` to Tor ports (9001 / 9051), or a fixed-cadence pull loop against a trusted SaaS host | T1090.003·T1102.002 |
+| `cloud-exfil` | Exfiltration to Cloud Storage | `PUT`/`POST` > 100 MB to Dropbox / Mega / transfer.sh and friends | T1567.002 |
+| `net-config-change` | Network Device Config Tampering | Cisco IOS `%SYS-5-CONFIG_I` removing `logging host` or an ACL | T1562.004 |
+| `vpn-brute` | VPN / Gateway Credential Stuffing | ≥ 6 distinct accounts tried from one IP / 2 min (`citrix` + `ivanti` sources) | T1110.004 |
+| `hypervisor-threat` | Hypervisor Tampering | ESXi lockdown mode disabled, SSH enabled, or `esxcli vm process kill` | T1562.001 |
+| `k8s-threat` | Kubernetes Cluster Abuse | privileged / `hostPID` pod create, or `pods/exec` by an anonymous subject | T1611 |
+| `lateral-exec` | Remote Execution (WMI / WinRM) | connect to 135 / 5985 followed by a remote process create | T1047·T1021.006 |
 
 ---
 

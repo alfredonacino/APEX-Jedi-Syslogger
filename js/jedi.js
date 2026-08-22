@@ -114,7 +114,7 @@
         id: 'dns-tunneling', name: 'Possible DNS Tunneling', severity: 'medium',
         tactic: 'Exfiltration', technique: 'T1071.004 · DNS',
         run(ev) {
-          if ((ev.srcType !== 'dns' && ev.srcType !== 'bind') || !ev.domain) return;
+          if (!/^(dns|bind|infoblox|umbrella)$/.test(ev.srcType) || !ev.domain) return;
           const label = ev.domain.split('.')[0] || '';
           const isBadDomain = THREAT_INTEL.domains.some((d) => ev.domain.endsWith(d));
           if (label.length >= 40 || isBadDomain) {
@@ -391,6 +391,48 @@
         id: 'cloud-threat', name: 'Cloud Control-Plane Abuse', severity: 'high',
         tactic: 'Defense Evasion', technique: 'T1562.008 · Disable Cloud Logs',
         run(ev, ctx) {
+          // Three schemas, one behaviour: the AWS, Azure and Microsoft 365 control
+          // planes get abused the same way, so they share this rule rather than
+          // each getting a near-identical clone.
+          if (ev.srcType === 'azure') {
+            const op = ev.operationName || '';
+            const props = JSON.stringify(ev.azProperties || {});
+            let sev = 'high', tactic, technique, what;
+            if (/INSIGHTS\/DIAGNOSTICSETTINGS\/DELETE/.test(op)) {
+              sev = 'critical'; tactic = 'Defense Evasion'; technique = 'T1562.008 · Disable or Modify Cloud Logs';
+              what = 'subscription audit logging deleted';
+            } else if (/ROLEASSIGNMENTS\/WRITE/.test(op) && /Owner|User Access Administrator/.test(props)) {
+              sev = 'critical'; tactic = 'Privilege Escalation'; technique = 'T1098.003 · Additional Cloud Roles';
+              what = 'privileged role assigned';
+            } else if (/LISTKEYS\/ACTION/.test(op)) {
+              tactic = 'Credential Access'; technique = 'T1552.001 · Credentials In Files';
+              what = 'storage account keys listed';
+            } else if (/KEYVAULT\/VAULTS\/WRITE/.test(op)) {
+              tactic = 'Credential Access'; technique = 'T1555 · Credentials from Password Stores';
+              what = 'key vault access policy rewritten';
+            }
+            if (!technique || !ctx.cooldown('cloud', `${ev.tenantId}:${technique}`, 30000, ev.ts)) return;
+            return {
+              severity: sev, tactic, technique,
+              message: `Azure: ${what} (${op}) by ${ev.user} from ${ev.srcIp}`,
+              srcIp: ev.srcIp, host: ev.host, evidence: [`operation=${op}`, ev.raw || ev.message],
+            };
+          }
+          if (ev.srcType === 'm365') {
+            const op = ev.operation || '';
+            const params = JSON.stringify(ev.parameters || []);
+            if (!/^(New|Set)-InboxRule$/.test(op) || !/ForwardTo|ForwardAsAttachmentTo|RedirectTo/.test(params)) return;
+            if (!ctx.cooldown('cloud', `${ev.user}:inboxrule`, 30000, ev.ts)) return;
+            // Deleting the forwarded copy is what keeps the owner from noticing.
+            const hides = /"DeleteMessage","Value":"True"/.test(params);
+            return {
+              severity: hides ? 'critical' : 'high', tactic: 'Collection',
+              technique: 'T1114.003 · Email Forwarding Rule',
+              message: `Microsoft 365: forwarding rule created on ${ev.user}'s mailbox from ${ev.srcIp}` +
+                (hides ? ' — forwarded mail is deleted from the mailbox' : ''),
+              srcIp: ev.srcIp, host: ev.host, evidence: [`operation=${op}`, ev.raw || ev.message],
+            };
+          }
           if (ev.srcType !== 'cloudtrail') return;
           const n = ev.eventName || '';
           // Nested policy documents come back from JSON.stringify with escaped
@@ -538,6 +580,19 @@
         tactic: 'Credential Access', technique: 'T1555.003 · Credentials from Web Browsers',
         run(ev, ctx) {
           const m = ev.message || '';
+          // A PAM vault is the same objective by a sanctioned route: each checkout
+          // is authorised on its own, so the signal is one holder sweeping safes.
+          if (ev.srcType === 'cyberark') {
+            if (ev.act !== 'Retrieve password') return;
+            const safes = ctx.windowSet('pamsafes', ev.user, 120000, ev.ts, ev.safe);
+            if (safes.size < 4 || !ctx.cooldown('pamsafes', ev.user, 60000, ev.ts)) return;
+            return {
+              severity: 'critical', tactic: 'Credential Access', technique: 'T1555.005 · Password Managers',
+              message: `${ev.user} checked out ${safes.size} privileged safes from the vault in 2 min from ${ev.srcIp}`,
+              srcIp: ev.srcIp, host: ev.host,
+              evidence: [`safes=${Array.from(safes).join(',')}`, `app=${ev.app || ''}`, ev.raw || m],
+            };
+          }
           // The password DB alone is useless — it is encrypted with a key in Local
           // State. Reading both is what turns a file copy into a credential theft.
           if (!/login data|local state|logins\.json|key4\.db|signons\.sqlite|cookies\.sqlite|vault\\|credential(s)? ?manager/i.test(m)) return;
@@ -672,7 +727,9 @@
         id: 'vpn-brute', name: 'VPN / Gateway Credential Stuffing', severity: 'high',
         tactic: 'Credential Access', technique: 'T1110.004 · Credential Stuffing',
         run(ev, ctx) {
-          if (ev.srcType !== 'citrix' || ev.nsEvent !== 'LOGIN_FAILED') return;
+          // NetScaler and Connect Secure are the same gateway story in different
+          // wire formats, so both feed this rule.
+          if (!/^(citrix|ivanti)$/.test(ev.srcType) || ev.nsEvent !== 'LOGIN_FAILED') return;
           // Key on the source: one address trying many accounts is a dump being
           // replayed, which is a different shape from one account being guessed.
           const users = ctx.windowSet('vpnstuff', ev.srcIp, 120000, ev.ts, ev.user);
@@ -681,7 +738,8 @@
               severity: THREAT_INTEL.ips.includes(ev.srcIp) ? 'critical' : 'high',
               message: `Credential stuffing against the VPN gateway from ${ev.srcIp}: ${users.size} accounts tried in 2 min`,
               srcIp: ev.srcIp, host: ev.host,
-              evidence: [`accounts=${users.size}`, `vserver=${ev.dstIp || ''}`, ev.raw || ev.message],
+              evidence: [`accounts=${users.size}`,
+                ev.srcType === 'ivanti' ? `realm=${ev.realm}` : `vserver=${ev.dstIp || ''}`, ev.raw || ev.message],
             };
         },
       },
@@ -789,6 +847,14 @@
         tactic: 'Impact', technique: 'T1486 · Data Encrypted for Impact',
         run(ev) {
           const m = ev.message || '';
+          // The backup platform sees the prelude rather than the encryption:
+          // restore points are destroyed or unlocked before anything is encrypted.
+          if (/backup (repository|job) "[^"]*" has been deleted|immutability has been disabled/i.test(m))
+            return {
+              severity: 'critical', tactic: 'Impact', technique: 'T1490 · Inhibit System Recovery',
+              message: `Backup destruction on ${ev.host}: ${m.slice(0, 90)}`,
+              srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [ev.raw || m],
+            };
           if (/vssadmin.*delete shadows|shadowcopy delete|recoveryenabled no|\.locked|\.encrypted|ransom|decrypt_instructions/i.test(m))
             return { severity: 'critical', message: `Ransomware indicators on ${ev.host}: ${m.slice(0, 80)}`, srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [m] };
         },
@@ -810,7 +876,9 @@
         id: 'phishing', name: 'Phishing Email', severity: 'medium',
         tactic: 'Initial Access', technique: 'T1566 · Phishing',
         run(ev) {
-          if (ev.srcType !== 'mail') return;
+          // The MTA and the security gateway describe the same message; the
+          // gateway just arrives with its own verdicts already attached.
+          if (ev.srcType !== 'mail' && ev.srcType !== 'ciscoesa') return;
           const m = ev.message || '';
           if (ev.phish || /phish|suspicious message|spf=fail.*dmarc=fail|attachment="[^"]*\.(exe|scr|js|vbs|iso|lnk|docm)"/i.test(m))
             return { severity: ev.threatSev || 'medium', message: `Phishing indicators: ${m.slice(0, 90)}`, srcIp: ev.srcIp, host: ev.host, evidence: [m] };
