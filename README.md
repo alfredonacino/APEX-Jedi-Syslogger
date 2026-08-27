@@ -10,7 +10,8 @@ practice. It has two halves:
 
 The dashboard runs entirely in the browser. An optional **zero-dependency Node
 backend** (`server.js`) lets it forward the generated logs as **real UDP/TCP
-syslog** to an actual collector and test connectivity to it.
+syslog** — or as **Splunk HEC** events over HTTP(S) — to an actual collector, and
+test connectivity to it.
 
 > 📖 **Full technical reference:** [DOCUMENTATION.md](DOCUMENTATION.md) — architecture,
 > every scenario & detection rule, the HTTP API, log formats, and deployment.
@@ -69,7 +70,8 @@ xdg-open index.html            # or just open the file (file://)
 
 > **Forwarding to a real IP requires `node server.js`.** A browser page cannot
 > open raw UDP/TCP sockets, so it can never send syslog on its own — the Node
-> process is what actually emits the packets.
+> process is what actually emits the packets. HEC forwarding goes through the
+> same backend, which keeps the token out of the browser's cross-origin path.
 
 ## Deploy to a server
 
@@ -116,9 +118,10 @@ itself does.
 
 | Control | What it does |
 |---------|--------------|
-| **Log collector (receiver)** | Destination `IP : port` + protocol (**UDP/TCP**) that logs are forwarded/tested against. |
-| **Test** | Probes reachability of that IP:port. TCP = real connect (open / refused / timeout). UDP = ICMP probe (detects "nothing listening"; open ports are inconclusive by nature). |
-| **Forward live** | Relays every generated log line to the collector as real syslog via the Node backend. The status line shows a live count; UDP is *sent* (fire-and-forget, no delivery ack), TCP is *delivered*. |
+| **Log collector (receiver)** | Destination `IP : port` (or hostname) + protocol — **UDP**, **TCP**, or **HEC** — that logs are forwarded/tested against. |
+| **HEC settings** | Shown when the protocol is **HEC**: the Splunk **token**, an optional **index** (blank = the token's default), the **sourcetype** (default `syslog`), **HTTPS** on/off, and **skip cert** to accept Splunk's self-signed certificate. Picking HEC swaps the port to **8088**. |
+| **Test** | Probes reachability of that IP:port. TCP = real connect (open / refused / timeout). UDP = ICMP probe (detects "nothing listening"; open ports are inconclusive by nature). HEC posts a real test event, so it also validates the token, index and TLS settings. |
+| **Forward live** | Relays every generated log line to the collector via the Node backend. The status line shows a live count; UDP is *sent* (fire-and-forget, no delivery ack), TCP is *delivered*, HEC is *indexed* (Splunk acks every batch). |
 | **Volume limit** | **Unlimited**, or cap the total number of logs to an integer — ingestion auto-stops at the cap. |
 | **File replay** | Load a `.log`/`.txt`/`.csv` file; enable **use as source** to replay its lines (each parsed into an event), **loop** to repeat endlessly. See `samples/sample.log`. |
 
@@ -127,7 +130,8 @@ itself does.
 `Forward live` → the browser posts batches to `POST /forward`, and the backend
 emits them to your collector. Because **UDP is fire-and-forget**, a rising
 "sent" count means packets *left your machine* — not that the SIEM received them.
-If your SIEM shows nothing:
+(TCP and HEC both ack, so their counts are real deliveries.) If your SIEM shows
+nothing:
 
 1. **Click Test** (or switch to **TCP**). TCP gives a definitive answer:
    *connect succeeded* (reachable + listening), *connection refused* (nothing on
@@ -137,6 +141,26 @@ If your SIEM shows nothing:
 3. **`sudo tcpdump -n -i any port 514` on the collector.** Packets seen but not
    ingested → the SIEM's syslog input isn't configured for that port/proto.
    No packets → a firewall between the hosts (port 514 also needs root on the receiver).
+
+### Sending to Splunk HEC
+
+Prefer HEC over syslog when the target is Splunk: it is acknowledged per batch,
+carries `host`/`sourcetype`/`index` per event, and needs no root or port 514.
+
+1. In Splunk: **Settings › Data inputs › HTTP Event Collector › New Token**, then
+   **Global Settings › All Tokens: Enabled** (HEC listens on **8088**).
+2. In the config bar: protocol **HEC**, the Splunk host, the token, and an index
+   the token may write to. Leave **HTTPS** and **skip cert** ticked for a stock
+   Splunk (its HEC certificate is self-signed); untick HTTPS only if you disabled
+   SSL on the input.
+3. Click **Test** — it posts a real event and reports Splunk's own answer
+   (`Invalid token`, `Incorrect index`, a TLS mismatch, …), so a green result
+   means the next batch will index.
+4. Verify in Splunk: `index=<your index> sourcetype=syslog source=jedisyslogger`.
+
+Each line is sent as one HEC envelope — the raw syslog line in `event`, with the
+generating host, the configured sourcetype/index and the event's own timestamp.
+Batches go to `/services/collector/event` every 500 ms, up to 1000 events each.
 
 ## Detection rules
 
@@ -298,7 +322,7 @@ js/data.js        data pools, RNG, RFC 3164/5424 + vendor line formatting
 js/syslogger.js   log generator, appliance sources, scenarios, file replay, forwarding
 js/jedi.js        SIEM engine: parsing, correlation, detection rules
 js/ui.js          dashboard rendering + wiring
-server.js         optional Node backend: static host + /forward relay + /test probe
+server.js         optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
 samples/sample.log  example mixed-format log for the file-replay demo
 jsconfig.json     editor typecheck settings (no install needed, ships nothing)
 types/globals.d.ts  ambient declarations for window.JS and Node globals

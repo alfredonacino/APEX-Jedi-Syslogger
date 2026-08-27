@@ -11,6 +11,7 @@ interface Window {
 
 // server.js is CommonJS on Node core modules; these stand in for @types/node.
 declare module 'http';
+declare module 'https';
 declare module 'dgram';
 declare module 'net';
 declare module 'fs';

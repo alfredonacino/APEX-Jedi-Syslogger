@@ -73,8 +73,16 @@
         <select id="cfg-proto" class="cfg-input cfg-proto" aria-label="Protocol">
           <option value="udp">UDP</option>
           <option value="tcp">TCP</option>
+          <option value="hec">HEC</option>
         </select>
         <button id="cfg-test" class="cfg-test-btn" title="Test reachability of this IP:port">Test</button>
+      </div>
+      <div class="cfg-row cfg-hec" id="cfg-hec-row" hidden>
+        <input id="cfg-hec-token" class="cfg-input cfg-token" type="password" placeholder="HEC token" spellcheck="false" aria-label="Splunk HEC token" />
+        <input id="cfg-hec-index" class="cfg-input cfg-small" placeholder="index" spellcheck="false" aria-label="HEC index (blank = token default)" />
+        <input id="cfg-hec-sourcetype" class="cfg-input cfg-stype" value="syslog" spellcheck="false" aria-label="HEC sourcetype" />
+        <label class="cfg-radio" title="HTTPS — Splunk HEC listens on TLS by default"><input type="checkbox" id="cfg-hec-tls" checked /> HTTPS</label>
+        <label class="cfg-radio" title="Accept Splunk's self-signed certificate"><input type="checkbox" id="cfg-hec-insecure" checked /> skip cert</label>
       </div>
       <div class="cfg-row">
         <label class="cfg-radio"><input type="checkbox" id="cfg-forward" /> Forward live</label>
@@ -193,7 +201,7 @@
   </div>
 
   <footer class="app-footer">
-    <span>All traffic is synthetic — generated locally for SIEM / detection-engineering practice. Enable “Forward live” (with <code>node server.js</code>) to relay it as real UDP/TCP syslog to a collector.</span>
+    <span>All traffic is synthetic — generated locally for SIEM / detection-engineering practice. Enable “Forward live” (with <code>node server.js</code>) to relay it as real UDP/TCP syslog — or Splunk HEC events — to a collector.</span>
     <span class="app-credit">Created By: <strong>Alfredo Nacino</strong> · <a href="https://www.alfredonacino.com" target="_blank" rel="noopener">www.alfredonacino.com</a> · <a href="mailto:alfredo@nacino.net">alfredo@nacino.net</a></span>
   </footer>
 

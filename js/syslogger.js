@@ -2704,7 +2704,8 @@
       this._filePtr = 0;
       // Live forwarding to a real collector (requires the Node backend)
       this.forwarding = false;
-      this.forwardProto = 'udp';
+      this.forwardProto = 'udp';        // 'udp' | 'tcp' | 'hec' (Splunk HTTP Event Collector)
+      this.hec = { token: '', index: '', sourcetype: 'syslog', ssl: true, insecure: true };
       this.forwardedCount = 0;
       this.forwardError = null;
       this._fwdQueue = [];
@@ -2727,6 +2728,7 @@
     }
     setForwarding(b) { this.forwarding = !!b; if (!b) this._fwdQueue.length = 0; else this.forwardError = null; }
     setForwardProto(p) { this.forwardProto = p; }
+    setHec(cfg) { Object.assign(this.hec, cfg || {}); }
 
     start() {
       if (this.running) return;
@@ -2759,21 +2761,33 @@
       else if (ev.vendor && VENDOR_FORMATTERS[ev.vendor]) ev.raw = VENDOR_FORMATTERS[ev.vendor](ev);
       else ev.raw = formatSyslog(ev, this.format);
       this.emitted++;
-      if (this.forwarding) { this._fwdQueue.push(ev.raw); if (this._fwdQueue.length > 20000) this._fwdQueue.splice(0, 10000); }
+      if (this.forwarding) {
+        this._fwdQueue.push({ raw: ev.raw, host: ev.host || null, ts: ev.ts });
+        if (this._fwdQueue.length > 20000) this._fwdQueue.splice(0, 10000);
+      }
       this.sink(ev);
       if (this.maxEvents != null && this.emitted >= this.maxEvents) this._hitLimit();
       return ev;
     }
 
-    // Relay queued raw lines to the backend, which emits real UDP/TCP syslog.
+    // Relay the queued events to the backend, which emits them as real UDP/TCP
+    // syslog or POSTs them to a Splunk HTTP Event Collector.
     _flushForward() {
       if (!this.forwarding || this._fwdBusy || !this._fwdQueue.length) return;
       if (typeof fetch !== 'function') { this.forwardError = 'forwarding needs the Node backend'; return; }
+      const hec = this.forwardProto === 'hec';
+      // Hold the queue rather than posting batches Splunk will only reject.
+      if (hec && !this.hec.token) { this.forwardError = 'HEC token required'; return; }
       this._fwdBusy = true;
       const batch = this._fwdQueue.splice(0, 1000);
+      const payload = { ip: this.collectorIp, port: this.collectorPort, proto: this.forwardProto };
+      // HEC takes JSON envelopes (time/host/sourcetype/index + the raw line as
+      // the event); UDP/TCP take the raw lines on their own.
+      if (hec) { payload.hec = this.hec; payload.events = batch.map((e) => ({ raw: e.raw, host: e.host, time: e.ts / 1000 })); }
+      else payload.lines = batch.map((e) => e.raw);
       fetch('/forward', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ip: this.collectorIp, port: this.collectorPort, proto: this.forwardProto, lines: batch }),
+        body: JSON.stringify(payload),
       })
         .then((r) => r.json())
         .then((d) => {

@@ -35,7 +35,8 @@ has two halves:
 | **Jedi**      | Miniature SIEM — parses every event, keeps rolling stats, and runs a stateful, MITRE ATT&CK-tagged detection-rule engine. |
 
 Everything renders in the browser. The optional `server.js` backend serves the
-app **and** relays generated logs as real UDP/TCP syslog to an external collector.
+app **and** relays generated logs to an external collector — as real UDP/TCP
+syslog, or as Splunk HEC events over HTTP(S).
 
 All traffic is synthetic. Nothing leaves the browser unless you explicitly enable
 **Forward live** (which requires the backend).
@@ -59,8 +60,9 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
                            ▼
               ┌──────── server.js (Node) ────────┐
               │  /forward → UDP/TCP syslog ───────┼──▶ Collector / SIEM
-              │  /test    → reachability probe    │    (Splunk, Graylog,
-              │  static file host                 │     Wazuh, rsyslog…)
+              │           → Splunk HEC (HTTPS)    │    (Splunk, Graylog,
+              │  /test    → reachability probe    │     Wazuh, rsyslog…)
+              │  static file host                 │
               └───────────────────────────────────┘
 ```
 
@@ -159,9 +161,10 @@ every two seconds.
 | `setFormat('rfc3164' \| 'rfc5424')` | Wire format for the generic sources |
 | `injectScenario(id)` | Fire an attack/appliance burst (works even while stopped) |
 | `setMaxEvents(n \| null)` | Total volume cap (auto-stops at the cap) |
-| `setCollector(ip, port)` | Forwarding/test destination |
+| `setCollector(ip, port)` | Forwarding/test destination (IP or hostname) |
 | `loadFile(lines, name)` / `setFileMode(bool)` / `setLoop(bool)` | File replay |
-| `setForwarding(bool)` / `setForwardProto('udp' \| 'tcp')` | Live forwarding |
+| `setForwarding(bool)` / `setForwardProto('udp' \| 'tcp' \| 'hec')` | Live forwarding |
+| `setHec({token, index, sourcetype, ssl, insecure})` | Splunk HEC settings (merged into `syslogger.hec`) |
 
 The **RFC 3164** vs **RFC 5424** toggle only affects the generic sources;
 appliance events always use their native vendor format.
@@ -619,15 +622,19 @@ are also forwarded and count toward the volume cap like any other event.
 ## 10. Live forwarding & the backend API
 
 A browser cannot open raw UDP/TCP sockets, so **forwarding requires `server.js`.**
-When **Forward live** is on, the browser batches raw lines and POSTs them every
-500 ms; the backend emits them to the collector.
+When **Forward live** is on, the browser batches up to 1000 events and POSTs them
+every 500 ms; the backend emits them to the collector. The same backend also
+carries **Splunk HEC** — a browser could POST to HEC directly, but the token would
+sit in page JavaScript and every batch would need a CORS pre-flight Splunk does
+not answer, so HEC rides the same relay.
 
 ### Endpoints
 
 | Method & path | Body | Response | Purpose |
 |---------------|------|----------|---------|
-| `POST /forward` | `{ip, port, proto, lines[]}` | `{ok, sent, total, error}` | Relay lines as UDP (fire-and-forget) or TCP (newline-framed, RFC 6587) |
-| `POST /test` | `{ip, port, proto}` | `{ok, reachable, warn, ms, code, message}` | Reachability probe (see §11) |
+| `POST /forward` | `{ip, port, proto:'udp'\|'tcp', lines[]}` | `{ok, sent, total, error}` | Relay lines as UDP (fire-and-forget) or TCP (newline-framed, RFC 6587) |
+| `POST /forward` | `{ip, port, proto:'hec', hec{}, events[]}` | `{ok, sent, total, error}` | Relay events to a Splunk HTTP Event Collector |
+| `POST /test` | `{ip, port, proto, hec{}}` | `{ok, reachable, warn, ms, code, message}` | Reachability probe (see §11) |
 | `GET /status` | — | `{ok, backend, forwarded}` | Health / counter |
 | `GET /*` | — | file | Static host for the app |
 
@@ -635,7 +642,35 @@ The backend logs every relay to its console:
 `→ forwarded N line(s) to <ip>:<port>/udp (UDP: no delivery confirmation)`.
 
 **UDP is fire-and-forget** — a rising "sent" count means packets left the host,
-not that the SIEM received them. Use TCP or the Test button to confirm delivery.
+not that the SIEM received them. Use TCP, HEC, or the Test button to confirm
+delivery.
+
+### Splunk HEC
+
+Selecting **HEC** as the protocol swaps the port to **8088** and reveals the HEC
+settings row: token, index (blank = the token's default), sourcetype (default
+`syslog`), **HTTPS**, and **skip cert** (on by default — Splunk ships a
+self-signed HEC certificate).
+
+`hec` payload: `{token, index, sourcetype, ssl, insecure}`. Each queued event
+becomes one JSON envelope, and a batch is the envelopes joined by newlines, POSTed
+to `/services/collector/event` with `Authorization: Splunk <token>`:
+
+```json
+{"time":1756288800.123,"host":"fw-edge-01","source":"jedisyslogger",
+ "sourcetype":"syslog","index":"siem",
+ "event":"<134>Aug 27 10:00:00 fw-edge-01 kernel: [UFW ALLOW] IN=eth0 SRC=…"}
+```
+
+The raw line goes in `event` as a string, so Splunk indexes it verbatim and the
+usual syslog field extractions apply. `host` is the generating host from the
+event itself; a blank index or sourcetype falls back to the token's defaults.
+Splunk answers each batch with `{"text":"Success","code":0}`; anything else is
+surfaced verbatim in the forwarding foot (`Invalid token`, `Incorrect index`,
+`Server is busy`, …). Any HEC-compatible endpoint works — Splunk Enterprise,
+Splunk Cloud, Cribl Stream.
+
+Verify in Splunk with `index=<index> source=jedisyslogger`.
 
 ---
 
@@ -647,6 +682,7 @@ The **Test** button probes the configured `IP:port` via `POST /test`.
 |----------|-----------|
 | **TCP** | Real connect. `✓ reachable and port open`, `✗ Connection refused` (ECONNREFUSED), or `✗ timed out` (firewall). Definitive. |
 | **UDP** | Connected-UDP probe. `✗ ICMP port-unreachable` if nothing is listening (Linux). An open/filtered port is inconclusive (`◐`) because UDP has no ack. |
+| **HEC** | Posts one real (indexed) probe event, so it also proves the token, the index and the TLS settings. Reports Splunk's own answer, and names the fix for the two common TLS mistakes — HTTPS against a plain-HTTP input, and a rejected self-signed certificate. |
 
 Result colouring: green = reachable, amber = inconclusive (UDP open/filtered),
 red = failed (with the exact error code).
@@ -663,7 +699,8 @@ All controls live in the header and the **Source & delivery configuration** bar.
 | Rate slider | 0–60 baseline events per second |
 | RFC 3164 / RFC 5424 | Wire format for generic sources |
 | Reset | Clear all state, counters, stream, and alerts |
-| Log collector `IP : port` + `UDP/TCP` | Forwarding/test destination |
+| Log collector `IP : port` + `UDP/TCP/HEC` | Forwarding/test destination (IP or hostname) |
+| HEC token / index / sourcetype / HTTPS / skip cert | Splunk HEC settings (shown only for **HEC**) |
 | **Test** | Probe reachability of that destination |
 | **Forward live** | Relay generated logs as real syslog (needs backend) |
 | Volume limit — Unlimited / Limit to N | Total-event cap; auto-stops at N |
@@ -822,7 +859,10 @@ silently** — a harness that asserts on alerts is the only thing that catches i
 
 | Symptom | Cause / fix |
 |---------|-------------|
-| "Forward live" green but SIEM sees nothing | UDP is fire-and-forget. Click **Test** or switch to TCP; run `tcpdump -n port 514` on the collector. |
+| "Forward live" green but SIEM sees nothing | UDP is fire-and-forget. Click **Test** or switch to TCP/HEC; run `tcpdump -n port 514` on the collector. |
+| HEC foot says "HEC token required" | The token field is empty — the queue is held rather than posting batches Splunk would reject. |
+| HEC returns `Invalid token` / `Incorrect index` | The token is wrong or disabled, or it is not allowed to write to that index (Splunk: *Data inputs › HTTP Event Collector*). |
+| HEC returns a TLS error | `wrong version number` → the input is plain HTTP, untick **HTTPS**. A certificate rejection → tick **skip cert** to accept Splunk's self-signed one. |
 | Test shows `Connection refused` | Host reachable, nothing listening on that port/proto — enable the SIEM's syslog input. |
 | Test shows `timed out` | Firewall/routing dropping traffic between the hosts. |
 | Forwarding foot says "backend not running" | You opened the app statically (python/`file://`). Serve it with `node server.js`. |

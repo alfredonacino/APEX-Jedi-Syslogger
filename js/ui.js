@@ -224,7 +224,10 @@
     const applyCollector = () => {
       const ip = ipEl.value.trim(), port = portEl.value.trim() || '514';
       syslogger.setCollector(ip, port);
-      const ok = /^(\d{1,3}\.){3}\d{1,3}$/.test(ip);
+      // An IPv4 literal or a hostname — HEC endpoints are usually named
+      // (splunk.example.com, http-inputs-*.splunkcloud.com), and the backend
+      // resolves a name for UDP/TCP forwarding just the same.
+      const ok = /^(\d{1,3}\.){3}\d{1,3}$/.test(ip) || /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(ip);
       ipEl.classList.toggle('invalid', !ok);
     };
     ipEl.addEventListener('input', applyCollector);
@@ -249,7 +252,21 @@
     $('#cfg-loop').addEventListener('change', (e) => syslogger.setLoop(e.target.checked));
     $('#cfg-usefile').addEventListener('change', (e) => syslogger.setFileMode(e.target.checked));
 
-    $('#cfg-proto').addEventListener('change', (e) => syslogger.setForwardProto(e.target.value));
+    const hecEls = ['token', 'index', 'sourcetype', 'tls', 'insecure'].map((k) => $('#cfg-hec-' + k));
+    const applyHec = () => syslogger.setHec(readHec());
+    hecEls.forEach((el) => { el.addEventListener('input', applyHec); el.addEventListener('change', applyHec); });
+    applyHec();
+
+    $('#cfg-proto').addEventListener('change', (e) => {
+      const proto = e.target.value;
+      syslogger.setForwardProto(proto);
+      // HEC is HTTP on 8088, not syslog on 514 — swap the port whenever it is
+      // still the other mode's default, so the common case needs no typing.
+      if (proto === 'hec' && portEl.value.trim() === '514') portEl.value = '8088';
+      if (proto !== 'hec' && portEl.value.trim() === '8088') portEl.value = '514';
+      $('#cfg-hec-row').hidden = proto !== 'hec';
+      applyCollector();
+    });
     $('#cfg-forward').addEventListener('change', (e) => { syslogger.setForwarding(e.target.checked); renderForward(); });
     $('#cfg-test').addEventListener('click', runConnectivityTest);
 
@@ -271,16 +288,34 @@
     syslogger.onStop = () => { syncToggle(); renderVolume(); };
   }
 
+  // Current Splunk HEC settings, read straight off the config bar.
+  function readHec() {
+    return {
+      token: $('#cfg-hec-token').value.trim(),
+      index: $('#cfg-hec-index').value.trim(),
+      sourcetype: $('#cfg-hec-sourcetype').value.trim() || 'syslog',
+      ssl: $('#cfg-hec-tls').checked,
+      insecure: $('#cfg-hec-insecure').checked,
+    };
+  }
+
   // Probe reachability of the configured collector IP:port via the backend.
+  // For HEC the probe is a real test event, so it also validates the token.
   async function runConnectivityTest() {
     const btn = $('#cfg-test'), out = $('#test-result');
-    const ip = $('#cfg-ip').value.trim(), port = $('#cfg-port').value.trim() || '514', proto = $('#cfg-proto').value;
+    const ip = $('#cfg-ip').value.trim(), proto = $('#cfg-proto').value;
+    const port = $('#cfg-port').value.trim() || (proto === 'hec' ? '8088' : '514');
     if (!ip) { out.className = 'cfg-foot test-result test-fail'; out.textContent = '✗ enter a collector IP first'; return; }
+    const body = { ip, port, proto };
+    if (proto === 'hec') {
+      body.hec = readHec();
+      if (!body.hec.token) { out.className = 'cfg-foot test-result test-fail'; out.textContent = '✗ enter the Splunk HEC token first'; return; }
+    }
     btn.disabled = true;
     out.className = 'cfg-foot test-result testing';
     out.textContent = `testing ${ip}:${port}/${proto} …`;
     try {
-      const r = await fetch('/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ip, port, proto }) });
+      const r = await fetch('/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       const d = await r.json();
       const cls = d.reachable ? 'test-ok' : (d.warn ? 'test-warn' : 'test-fail');
       const icon = d.reachable ? '✓ ' : (d.warn ? '◐ ' : '✗ ');
@@ -327,10 +362,15 @@
       foot.textContent = `⚠ ${syslogger.forwardError}`;
       foot.classList.remove('fwd-live'); foot.classList.add('fwd-err');
     } else {
-      const dest = `${syslogger.collectorIp}:${syslogger.collectorPort}/${syslogger.forwardProto}`;
+      const proto = syslogger.forwardProto;
+      const dest = proto === 'hec'
+        ? `${syslogger.hec.ssl ? 'https' : 'http'}://${syslogger.collectorIp}:${syslogger.collectorPort}/services/collector`
+        : `${syslogger.collectorIp}:${syslogger.collectorPort}/${proto}`;
       const n = syslogger.forwardedCount.toLocaleString();
       // UDP is fire-and-forget: "sent" means emitted by the backend, not confirmed received.
-      const note = syslogger.forwardProto === 'udp' ? ` sent (UDP: no delivery ack)` : ` delivered (TCP)`;
+      // TCP and HEC both ack — HEC answers each batch with Splunk's {"code":0}.
+      const note = proto === 'udp' ? ` sent (UDP: no delivery ack)`
+        : proto === 'hec' ? ` indexed (HEC ack)` : ` delivered (TCP)`;
       foot.textContent = `● live → ${dest} · ${n}${note}`;
       foot.classList.add('fwd-live'); foot.classList.remove('fwd-err');
     }

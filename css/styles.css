@@ -130,6 +130,10 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 .cfg-input.cfg-port { width: 62px; }
 .cfg-input.cfg-num { width: 90px; }
 .cfg-input.cfg-proto { width: 74px; padding: 6px 6px; cursor: pointer; }
+.cfg-input.cfg-token { width: 150px; letter-spacing: 1px; }
+.cfg-input.cfg-small { width: 72px; font-size: 12px; }
+.cfg-input.cfg-stype { width: 96px; font-size: 12px; }
+.cfg-hec[hidden] { display: none; }
 .cfg-input:disabled { opacity: .4; }
 .fwd-live { color: var(--saber) !important; font-weight: 600; }
 .fwd-err { color: var(--high) !important; }

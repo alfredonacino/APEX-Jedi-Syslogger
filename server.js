@@ -8,13 +8,15 @@
  *   1. Serves the static web app.
  *   2. Exposes POST /forward — the browser posts the generated raw syslog
  *      lines here and this process relays them as REAL UDP or TCP syslog
- *      datagrams to the collector IP:port you configured in the UI.
+ *      datagrams to the collector IP:port you configured in the UI, or as
+ *      Splunk HTTP Event Collector (HEC) events when the protocol is "hec".
  *
  * Run:  node server.js            (then open http://localhost:8099)
  *       PORT=9000 node server.js
  */
 'use strict';
 const http = require('http');
+const https = require('https');
 const dgram = require('dgram');
 const net = require('net');
 const fs = require('fs');
@@ -52,15 +54,19 @@ function handleForward(req, res) {
     let p;
     try { p = JSON.parse(body); } catch (e) { res.writeHead(400); return res.end('{"ok":false,"error":"bad json"}'); }
     const lines = Array.isArray(p.lines) ? p.lines : [];
+    const events = Array.isArray(p.events) ? p.events : [];
     const proto = (p.proto || 'udp').toLowerCase();
-    forwardLines(p.ip, p.port, proto, lines, (err, sent) => {
+    const done = (err, sent) => {
       totalForwarded += sent;
-      const dest = `${p.ip}:${parseInt(p.port, 10) || 514}/${proto}`;
+      const dest = proto === 'hec' ? hecUrl(p) : `${p.ip}:${parseInt(p.port, 10) || 514}/${proto}`;
+      const unit = proto === 'hec' ? 'event(s)' : 'line(s)';
       if (err) console.log(`  ✗ forward FAILED to ${dest}: ${err.message || err}`);
-      else console.log(`  → forwarded ${sent} line(s) to ${dest}${proto === 'udp' ? ' (UDP: no delivery confirmation)' : ''}`);
+      else console.log(`  → forwarded ${sent} ${unit} to ${dest}${proto === 'udp' ? ' (UDP: no delivery confirmation)' : ''}`);
       res.writeHead(err ? 502 : 200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ ok: !err, sent, total: totalForwarded, error: err ? String(err.message || err) : null }));
-    });
+    };
+    if (proto === 'hec') return forwardHec(p, events, done);
+    forwardLines(p.ip, p.port, proto, lines, done);
   });
 }
 
@@ -75,11 +81,13 @@ function handleTest(req, res) {
   req.on('end', () => {
     let p; try { p = JSON.parse(body); } catch (e) { return sendJson(res, 400, { ok: false, reachable: false, message: 'bad json' }); }
     const ip = (p.ip || '').trim();
-    const port = parseInt(p.port, 10) || 514;
     const proto = (p.proto || 'udp').toLowerCase();
+    const port = parseInt(p.port, 10) || (proto === 'hec' ? 8088 : 514);
     if (!ip) return sendJson(res, 400, { ok: false, reachable: false, message: 'no collector IP set' });
     const done = (r) => { console.log(`  ⟲ test ${ip}:${port}/${proto} → ${r.reachable ? 'OK' : (r.warn ? 'inconclusive' : 'FAIL')}: ${r.message}`); sendJson(res, 200, r); };
-    if (proto === 'tcp') testTcp(ip, port, done); else testUdp(ip, port, done);
+    if (proto === 'hec') testHec(p, done);
+    else if (proto === 'tcp') testTcp(ip, port, done);
+    else testUdp(ip, port, done);
   });
 }
 
@@ -157,6 +165,113 @@ function forwardLines(ip, port, proto, lines, cb) {
   });
 }
 
+// ---- Splunk HTTP Event Collector (HEC) ------------------------------------
+// HEC is not syslog: it is an HTTP(S) POST to /services/collector/event with an
+// "Authorization: Splunk <token>" header and a body of concatenated JSON
+// envelopes — {time, host, source, sourcetype, index, event}. Splunk answers
+// 200 {"text":"Success","code":0}, or a code that says exactly what is wrong.
+// Any SIEM that speaks the HEC API (Splunk, Cribl, Splunk Cloud) accepts this.
+const HEC_PATH = '/services/collector/event';
+
+const HEC_CODES = {
+  1: 'token disabled', 2: 'token is required', 3: 'invalid authorization',
+  4: 'invalid token', 5: 'no data', 6: 'invalid data format', 7: 'incorrect index',
+  8: 'internal server error', 9: 'server is busy', 10: 'data channel is missing',
+  11: 'invalid data channel', 12: 'event field is required', 13: 'event field cannot be blank',
+  14: 'ACK is disabled', 15: 'error in handling indexed fields',
+  16: 'query string authorization is not enabled',
+};
+
+function hecUrl(p) {
+  const cfg = p.hec || {};
+  return `${cfg.ssl === false ? 'http' : 'https'}://${p.ip}:${parseInt(p.port, 10) || 8088}${HEC_PATH}`;
+}
+
+// One HEC envelope per generated line. The raw syslog line goes in `event` as a
+// string so Splunk indexes it verbatim; undefined keys are dropped by stringify,
+// so a blank index/host simply falls back to the token's defaults.
+function hecEnvelope(cfg, e) {
+  return JSON.stringify({
+    time: typeof e.time === 'number' ? e.time : undefined,
+    host: e.host || undefined,
+    source: 'jedisyslogger',
+    sourcetype: cfg.sourcetype || 'syslog',
+    index: cfg.index || undefined,
+    event: e.raw,
+  });
+}
+
+// TLS and HTTP mistakes are the two ways HEC setup goes wrong; name both.
+function hecError(e, ip, port, cfg) {
+  const code = (e && e.code) || '';
+  const msg = (e && e.message) || '';
+  if (code === 'EPROTO' || /wrong version number/i.test(msg))
+    return new Error(`TLS handshake failed at ${ip}:${port} — that port is plain HTTP; untick HTTPS`);
+  if (/SELF_SIGNED|UNABLE_TO_VERIFY|CERT_HAS_EXPIRED|ALTNAME/.test(code))
+    return new Error(`TLS certificate rejected (${code}) — tick "skip cert" to accept Splunk's self-signed certificate`);
+  if (code === 'ECONNRESET' && cfg.ssl === false)
+    return new Error(`Connection reset by ${ip}:${port} — HEC is probably expecting HTTPS; tick HTTPS`);
+  return new Error(errMessage(e, ip, port, cfg.ssl === false ? 'http' : 'https'));
+}
+
+function hecPost(p, body, cb) {
+  const cfg = p.hec || {};
+  const ip = (p.ip || '').trim();
+  const port = parseInt(p.port, 10) || 8088;
+  if (!ip) return cb(new Error('no collector host set'));
+  if (!cfg.token) return cb(new Error('HEC token required — create one under Settings › Data inputs › HTTP Event Collector'));
+  const mod = cfg.ssl === false ? http : https;
+  const opts = {
+    host: ip, port, path: HEC_PATH, method: 'POST',
+    headers: {
+      Authorization: `Splunk ${cfg.token}`,
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    },
+  };
+  // Splunk ships a self-signed HEC certificate, so verification is opt-in.
+  if (mod === https) opts.rejectUnauthorized = cfg.insecure === false;
+  let done = false;
+  const fin = (err, r) => { if (done) return; done = true; cb(err, r); };
+  const request = mod.request(opts, (resp) => {
+    let out = '';
+    resp.on('data', (c) => { out += c; if (out.length > 1e5) resp.destroy(); });
+    resp.on('end', () => {
+      let j = null; try { j = JSON.parse(out); } catch (e) {}
+      const code = j && typeof j.code === 'number' ? j.code : null;
+      if (resp.statusCode === 200 && (code === 0 || code === null)) return fin(null, { text: (j && j.text) || 'Success', code });
+      const why = (j && j.text) || HEC_CODES[code] || `HTTP ${resp.statusCode}`;
+      fin(new Error(`Splunk HEC rejected the batch — ${why}${code != null ? ` (code ${code})` : ''}`));
+    });
+  });
+  request.setTimeout(8000, () => { request.destroy(); fin(new Error(`HEC request to ${ip}:${port} timed out`)); });
+  request.on('error', (e) => fin(hecError(e, ip, port, cfg)));
+  request.end(body);
+}
+
+function forwardHec(p, events, cb) {
+  if (!events.length) return cb(null, 0);
+  const body = events.map((e) => hecEnvelope(p.hec || {}, e)).join('\n');
+  hecPost(p, body, (err) => cb(err, err ? 0 : events.length));
+}
+
+// The HEC probe is a real (indexed) test event, so unlike the TCP/UDP probes it
+// also proves the token, the index and the TLS settings are right.
+function testHec(p, cb) {
+  const start = Date.now();
+  const cfg = p.hec || {};
+  const probe = { time: Date.now() / 1000, host: 'jedisyslogger', raw: '<14>jedisyslogger HEC connectivity probe' };
+  hecPost(p, hecEnvelope(cfg, probe), (err, r) => {
+    const ms = Date.now() - start;
+    if (err) return cb({ ok: false, reachable: false, proto: 'hec', ms, message: err.message });
+    cb({
+      ok: true, reachable: true, proto: 'hec', ms, code: r.code,
+      message: `HEC accepted a test event at ${hecUrl(p)} — token valid, indexing into ` +
+        `${cfg.index || "the token's default index"} as sourcetype ${cfg.sourcetype || 'syslog'}`,
+    });
+  });
+}
+
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
@@ -171,6 +286,6 @@ function serveStatic(req, res) {
 
 server.listen(PORT, () => {
   console.log(`\n  ⚔️  APEX JediSyslogger running → http://localhost:${PORT}`);
-  console.log(`      POST /forward relays syslog to your configured collector (UDP/TCP).`);
+  console.log(`      POST /forward relays syslog to your configured collector (UDP/TCP/Splunk HEC).`);
   console.log(`      Press Ctrl+C to stop.\n`);
 });
