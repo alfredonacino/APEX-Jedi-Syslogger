@@ -50,13 +50,20 @@
       word-break: break-all; background: var(--bg); border: 1px solid var(--border-2);
       border-radius: 6px; padding: 10px; text-align: center;
     }
-    .enrol .uri {
-      font-family: var(--mono); font-size: 10.5px; color: var(--text-mute);
-      word-break: break-all; margin-top: 8px; line-height: 1.5;
+    /* The plate is white on purpose: a QR inverted by the dark theme is a QR
+       most scanners refuse. */
+    .enrol .qr {
+      background: #fff; border-radius: 8px; padding: 8px;
+      width: 232px; margin: 0 auto 12px; line-height: 0;
     }
-    .enrol dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 11.5px; margin: 10px 0 0; }
-    .enrol dt { color: var(--text-mute); }
-    .enrol dd { color: var(--text-dim); margin: 0; font-family: var(--mono); }
+    .enrol .qr svg { width: 100%; height: auto; display: block; }
+    .enrol .manual summary {
+      font-size: 11.5px; color: var(--saber-2); cursor: pointer; list-style: none;
+      text-align: center; padding: 4px 0;
+    }
+    .enrol .manual summary::-webkit-details-marker { display: none; }
+    .enrol .manual summary:hover { text-decoration: underline; }
+    .enrol .manual p { margin: 8px 0; font-size: 11.5px; }
     .signin-foot { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); font-size: 11px; color: var(--text-mute); line-height: 1.6; }
     .signin-foot code { font-family: var(--mono); color: #cde7ff; }
     .hidden { display: none !important; }
@@ -94,15 +101,16 @@
         <p class="step-hint" id="code-hint">Enter the 6-digit code from your authenticator app.</p>
 
         <div class="enrol hidden" id="enrol-box">
-          <p>Add this account to an authenticator app (Google Authenticator, Aegis,
-            1Password, Bitwarden…), then enter the code it shows. This secret is displayed
-            once per enrolment — store it somewhere safe.</p>
-          <div class="secret" id="enrol-secret">…</div>
-          <dl>
-            <dt>Account</dt><dd id="enrol-account">APEX JediSyslogger</dd>
-            <dt>Type</dt><dd>Time-based · SHA-1 · 6 digits · 30s</dd>
-          </dl>
-          <div class="uri" id="enrol-uri"></div>
+          <p>Scan this with an authenticator app (Google Authenticator, Aegis, 1Password,
+            Bitwarden…), then enter the code it shows. It is displayed once per
+            enrolment — capture it now.</p>
+          <div class="qr" id="enrol-qr"></div>
+          <details class="manual">
+            <summary>Can't scan it?</summary>
+            <p>Enter it by hand — account <strong id="enrol-account">APEX JediSyslogger</strong>,
+              time-based, SHA-1, 6 digits, 30 seconds.</p>
+            <div class="secret" id="enrol-secret">…</div>
+          </details>
         </div>
 
         <label class="field">
@@ -121,6 +129,7 @@
     </main>
   </div>
 
+  <script src="js/qr.js"></script>
   <script src="js/login.js"></script>
 </body>
 </html>

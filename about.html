@@ -186,15 +186,20 @@ xdg-open index.html            <span class="cm"># or just open the file (file://
         <li>Start the backend and sign in with the username and password. A correct
         password alone does <strong>not</strong> sign you in; it moves you to the second
         step.</li>
-        <li>The first sign-in shows the <strong>enrolment screen</strong> with the secret
-        in Base32 and an <code>otpauth://</code> URI. Add it to Google Authenticator,
-        Aegis, 1Password, Bitwarden, or anything else that does time-based codes —
-        <strong>SHA-1, 6 digits, 30 seconds</strong> (the defaults everywhere).</li>
+        <li>The first sign-in shows the <strong>enrolment screen with a QR code</strong>.
+        Scan it with Google Authenticator, Aegis, 1Password, Bitwarden, or anything else
+        that does time-based codes. Can't scan? Expand <strong>Can't scan it?</strong> for
+        the Base32 secret to type in — time-based, SHA-1, 6 digits, 30 seconds.</li>
         <li>Type the code the app shows. That seals the enrolment: from then on the
         secret is never displayed again, and every sign-in needs a live code.</li>
       </ol>
-      <p>The same secret is printed on the console at every start until it is enrolled,
-      so a headless install can be enrolled without opening the UI.</p>
+      <p>The console prints the same QR — as text, using half-block characters — at every
+      start until it is enrolled, so a headless install is enrolled by scanning its
+      terminal (or its <code>apex.log</code>) without opening the UI.</p>
+      <p>The QR is generated in-process by <code>js/qr.js</code>, a small QR encoder
+      written for this (no dependencies, here as everywhere).
+      <code>node js/qr.js --selftest</code> checks it against the format and version
+      tables in ISO/IEC 18004.</p>
 
       <h3>Managing credentials</h3>
       <pre><code>node server.js --show-auth              <span class="cm"># who can sign in, and whether 2FA is enrolled</span>
@@ -501,6 +506,7 @@ js/syslogger.js     log generator, appliance sources, scenarios, file replay, fo
 js/jedi.js          SIEM engine: parsing, correlation, detection rules
 js/ui.js            dashboard rendering + wiring
 js/login.js         the two-step sign-in flow
+js/qr.js            QR encoder for the 2FA enrolment code (browser + console)
 auth.js             password (scrypt) + TOTP two-factor, sessions, lockout
 auth.json           generated per install: password hash + TOTP secret (0600, gitignored)
 server.js           optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe

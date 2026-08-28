@@ -81,6 +81,7 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `js/jedi.js` | Parsing, correlation windows, detection rules, stats, threat level |
 | `js/ui.js` | Dashboard rendering, charts, config wiring, drawer |
 | `js/login.js` | The two-step sign-in flow on `login.html` |
+| `js/qr.js` | QR encoder (ISO/IEC 18004) for the 2FA enrolment code — browser and console |
 | `auth.js` | scrypt passwords, RFC 6238 TOTP, sessions, lockout (§13) |
 | `auth.json` | Generated per install: password hash + TOTP secret (`0600`, gitignored, never served) |
 | `server.js` | Optional backend: static host + `/forward` relay + `/test` probe + the sign-in gate |
@@ -804,6 +805,31 @@ code inside its own window is a copied string, not a second factor.
 generator against the RFC 6238 test vectors, including one past 2³² seconds that
 exercises the 64-bit counter.
 
+### Enrolment QR
+
+Nobody should have to retype a 32-character secret, so enrolment is a QR of the
+`otpauth://` URI, drawn by `js/qr.js` — a QR encoder written for this project
+(byte mode, error-correction level M, versions 1–10, no dependencies). One file
+serves both consumers: the sign-in page loads it as a browser script and renders
+inline SVG, and `server.js` `require()`s it to draw the same symbol in the
+terminal with half-block characters.
+
+Two deliberate choices:
+
+- **The URI omits `algorithm`, `digits` and `period`.** They are the Key Uri
+  Format's defaults, and spelling them out pushes the symbol up a version — a
+  larger symbol at the same size on screen is a harder one to scan.
+- **Both renderers force dark-on-white.** The SVG sits on a white plate rather
+  than inheriting the dark theme, and the terminal output sets an explicit white
+  background, because a QR inverted by a dark theme is one many scanners refuse.
+
+`node js/qr.js --selftest` checks the format-information strings against ISO/IEC
+18004 Table C.1, the version-information strings against Table D.1, and that both
+renderers reproduce the module matrix exactly.
+
+The Base32 secret stays available behind **Can't scan it?** on the page and below
+the QR in the console, for a password manager or a device with no camera.
+
 ### Sessions and lockout
 
 | | |
@@ -1002,7 +1028,8 @@ silently** — a harness that asserts on alerts is the only thing that catches i
 | "That code is not valid right now" | The host clock and the phone clock disagree by more than ~30 s. Fix NTP on the server. |
 | "That code was already used" | Correct — a code works once. Wait for the authenticator to roll over. |
 | Locked out after typos | 5 failures locks the account for 5 minutes. Wait it out, or restart the backend to clear it. |
-| Lost the authenticator | `node server.js --reset-2fa` on the host, then restart it and enrol the new secret. |
+| Lost the authenticator | `node server.js --reset-2fa` on the host, then restart it and scan the new QR. |
+| The enrolment QR will not scan | Enlarge the terminal (the console QR needs ~53 columns) or use **Can't scan it?** for the secret. A QR rendered light-on-dark by a screenshot tool will not scan — use the page or the terminal directly. |
 | Forgot the password | `node server.js --reset-auth` restores the documented defaults, then restart. |
 | Signed out of every browser at once | Expected after a backend restart — sessions live in memory only. |
 | Sign-in page never appears | You are serving statically (`python3 -m http.server`), which enforces nothing. Use `node server.js`. |

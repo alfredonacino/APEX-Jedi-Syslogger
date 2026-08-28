@@ -41,13 +41,27 @@
     formCode.classList.remove('hidden');
     if (res.stage === 'enrol') {
       $('#code-title').textContent = 'Set up two-factor';
-      $('#code-hint').textContent = 'Two-factor is not enrolled yet. Add the secret below to your authenticator, then enter the code it shows to finish.';
+      $('#code-hint').textContent = 'Two-factor is not enrolled yet. Scan the code below with your authenticator, then enter the six digits it shows to finish.';
       $('#enrol-box').classList.remove('hidden');
       $('#enrol-secret').textContent = res.pretty || res.secret || '';
-      $('#enrol-uri').textContent = res.uri || '';
+      showQr(res.uri);
       $('#signin-foot').textContent = 'The secret is shown until enrolment completes. After that, only node server.js --reset-2fa can issue a new one.';
     }
     $('#f-code').focus();
+  }
+
+  // The URI is the only thing that has to reach the authenticator, and a QR is
+  // the one form of it nobody has to retype. If the encoder is missing or the URI
+  // will not fit a symbol, fall back to showing the URI itself.
+  function showQr(uri) {
+    const box = document.querySelector('#enrol-qr');
+    const qr = window.JS && window.JS.qr;
+    if (!uri || !qr) { box.textContent = uri || ''; return; }
+    try {
+      box.innerHTML = qr.toSvg(qr.encode(uri), { label: 'Two-factor enrolment QR code' });
+    } catch (err) {
+      box.textContent = uri;
+    }
   }
 
   formPassword.addEventListener('submit', async (e) => {

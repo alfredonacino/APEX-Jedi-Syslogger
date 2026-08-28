@@ -104,15 +104,20 @@ nobody can derive it from these docs. Enrol it once:
 1. Start the backend and sign in at `http://localhost:8099/` with the username and
    password. A correct password alone does **not** sign you in; it moves you to
    the second step.
-2. The first sign-in shows the **enrolment screen** with the secret in Base32 and
-   an `otpauth://` URI. Add it to Google Authenticator, Aegis, 1Password,
-   Bitwarden, or anything else that does time-based codes — **SHA-1, 6 digits, 30
-   seconds** (the defaults everywhere).
+2. The first sign-in shows the **enrolment screen with a QR code**. Scan it with
+   Google Authenticator, Aegis, 1Password, Bitwarden, or anything else that does
+   time-based codes. Can't scan? Expand **Can't scan it?** for the Base32 secret to
+   type in — time-based, SHA-1, 6 digits, 30 seconds.
 3. Type the code the app shows. That seals the enrolment: from then on the secret
    is never displayed again, and every sign-in needs a live code.
 
-The same secret is printed on the console at every start until it is enrolled, so
-a headless install can be enrolled without opening the UI.
+The console prints the same QR — as text, using half-block characters — at every
+start until it is enrolled, so a headless install is enrolled by scanning its
+terminal (or its `apex.log`) without opening the UI.
+
+The QR is generated in-process by `js/qr.js`, a small QR encoder written for this
+(no dependencies, here as everywhere). `node js/qr.js --selftest` checks it
+against the format and version tables in ISO/IEC 18004.
 
 ### Managing credentials
 
@@ -406,6 +411,7 @@ js/syslogger.js   log generator, appliance sources, scenarios, file replay, forw
 js/jedi.js        SIEM engine: parsing, correlation, detection rules
 js/ui.js          dashboard rendering + wiring
 js/login.js       the two-step sign-in flow
+js/qr.js          QR encoder for the 2FA enrolment code (browser + console)
 auth.js           password (scrypt) + TOTP two-factor, sessions, lockout
 auth.json         generated per install: password hash + TOTP secret (0600, gitignored)
 server.js         optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe

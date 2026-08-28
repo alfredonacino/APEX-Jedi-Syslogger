@@ -24,6 +24,7 @@ const net = require('net');
 const fs = require('fs');
 const path = require('path');
 const authlib = require('./auth');
+const qrlib = require('./js/qr.js');
 
 const ROOT = __dirname;
 const PORT = parseInt(process.env.PORT, 10) || 8099;
@@ -46,7 +47,7 @@ let auth = null;
 
 // Reachable without a session: the sign-in page, the stylesheet it needs, and
 // the endpoints that hand out a session in the first place.
-const PUBLIC_PATHS = new Set(['/login.html', '/js/login.js', '/css/styles.css', '/auth/login', '/auth/totp', '/auth/logout', '/auth/session']);
+const PUBLIC_PATHS = new Set(['/login.html', '/js/login.js', '/js/qr.js', '/css/styles.css', '/auth/login', '/auth/totp', '/auth/logout', '/auth/session']);
 
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -452,16 +453,20 @@ function runCli(argv) {
 }
 
 function printEnrolment(e) {
+  console.log(`\n    Scan this with your authenticator app:\n`);
+  // Black ink on a forced white background, so it scans whatever the terminal
+  // theme is — and it survives into the pm2 log for a headless install.
+  try {
+    console.log(qrlib.toAnsi(qrlib.encode(e.uri), { indent: '      ' }));
+  } catch (err) {
+    console.log(`      ${e.uri}`);
+  }
   console.log(`
-    Add it to your authenticator by hand:
+    …or enter it by hand:
 
       account   ${authlib.ISSUER}
       secret    ${e.pretty}
       type      time-based, SHA-1, 6 digits, 30 seconds
-
-    …or paste this URI into an app that accepts one:
-
-      ${e.uri}
 `);
 }
 

@@ -129,10 +129,12 @@ function totpMatches(secret, code, step) {
   return null;
 }
 
+// algorithm=SHA1, digits=6 and period=30 are the Key Uri Format's defaults, so
+// spelling them out only makes the QR a version larger — and a larger symbol at
+// the same size on screen is a harder one to scan.
 function otpauthUri(store) {
   const label = encodeURIComponent(`${ISSUER}:${store.user}`);
-  const q = `secret=${store.totpSecret}&issuer=${encodeURIComponent(ISSUER)}&algorithm=SHA1&digits=6&period=30`;
-  return `otpauth://totp/${label}?${q}`;
+  return `otpauth://totp/${label}?secret=${store.totpSecret}&issuer=${encodeURIComponent(ISSUER)}`;
 }
 
 // Grouped in fours — the shape every authenticator's manual-entry field expects.
