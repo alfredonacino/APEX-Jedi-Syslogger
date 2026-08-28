@@ -89,6 +89,13 @@
         <label class="cfg-radio" title="HTTPS — Splunk HEC listens on TLS by default"><input type="checkbox" id="cfg-hec-tls" checked /> HTTPS</label>
         <label class="cfg-radio" title="Accept Splunk's self-signed certificate"><input type="checkbox" id="cfg-hec-insecure" checked /> skip cert</label>
       </div>
+      <div class="cfg-row cfg-hist-row" id="cfg-hist-row" hidden>
+        <span class="cfg-hist-label" title="Receivers you have used before">📜</span>
+        <select id="cfg-history" class="cfg-input cfg-hist" aria-label="Previously used collectors"></select>
+        <button id="cfg-hist-use" class="cfg-test-btn" title="Load this receiver back into the panel">Use</button>
+        <button id="cfg-hist-save" class="cfg-test-btn cfg-btn-ghost" title="Save the current receiver to the history">Save</button>
+        <button id="cfg-hist-del" class="cfg-test-btn cfg-btn-del" title="Forget the selected receiver">✕</button>
+      </div>
       <div class="cfg-row">
         <label class="cfg-radio"><input type="checkbox" id="cfg-forward" /> Forward live</label>
         <span class="cfg-foot" id="fwd-foot">simulation only (no backend)</span>

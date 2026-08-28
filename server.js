@@ -158,6 +158,7 @@ function handleApi(req, res, urlPath, session) {
       ok: true,
       profile: authlib.publicUser(me),
       collector: auth.getCollector(me.id),
+      history: auth.getHistory(me.id),
       userCount: auth.users.length,
     });
   }
@@ -169,6 +170,27 @@ function handleApi(req, res, urlPath, session) {
       const r = auth.setCollector(me.id, p.collector || p);
       sendJson(res, r.ok ? 200 : 400, r);
     });
+  }
+
+  // — collector history —
+  // Written on a deliberate act (Test, switching forwarding on, or Save), never
+  // on every keystroke, so the list stays a record of receivers actually used.
+  if (req.method === 'GET' && urlPath === '/api/profile/history') {
+    return sendJson(res, 200, { ok: true, history: auth.getHistory(me.id) });
+  }
+  if (req.method === 'POST' && urlPath === '/api/profile/history') {
+    return body((p) => {
+      const r = auth.rememberCollector(me.id, p.collector || p);
+      sendJson(res, r.ok ? 200 : 400, r);
+    });
+  }
+  if (req.method === 'DELETE' && urlPath === '/api/profile/history') {
+    const r = auth.clearHistory(me.id);
+    return sendJson(res, 200, r);
+  }
+  if (req.method === 'DELETE' && urlPath.startsWith('/api/profile/history/')) {
+    const r = auth.forgetCollector(me.id, urlPath.split('/')[4]);
+    return sendJson(res, r.ok ? 200 : 404, r);
   }
 
   if (req.method === 'POST' && urlPath === '/api/profile/password') {

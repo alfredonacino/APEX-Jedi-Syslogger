@@ -160,6 +160,31 @@ reported by length, not printed) and offers **Reset to defaults**.
 Saved collector settings live in `auth.json` alongside the credentials — same
 `0600` file, never served over HTTP. Deleting a user deletes theirs with them.
 
+#### Receiver history — pick a past collector and run it again
+
+The collector panel carries a **📜 history** of the receivers you have used, so
+going back to one is a click rather than retyping an address, a token and an
+index.
+
+| Control | What it does |
+|---------|--------------|
+| the list | Every receiver this account has used, **newest first**. Hover an entry for the full destination, how many times it was used, and when. |
+| **Use** | Loads that receiver back into the panel — protocol, address, port and the whole HEC block — and makes it the active collector. Then **Test** it or hit **Start Ingestion**. |
+| **Save** | Puts the receiver currently in the panel into the history without waiting to use it. |
+| **✕** | Forgets the selected receiver. |
+
+An entry is recorded automatically whenever you actually use a receiver: when you
+press **Test** (pass *or* fail — a failing probe is exactly the destination you
+come back to), and when you switch **Forward live** on. It is never recorded on a
+keystroke, so the list never fills with half-typed addresses.
+
+One entry per destination, keyed on `protocol://host:port`. Pointing at the same
+receiver again updates that entry — a re-issued HEC token or a new index replaces
+what was stored — rather than piling up copies. The newest **12** are kept.
+
+**Account › Receivers I have used** lists the same history with a **Forget** per
+row and **Clear the whole history**.
+
 ### Managing accounts from the command line
 
 ```bash

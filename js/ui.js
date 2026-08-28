@@ -270,8 +270,19 @@
       applyCollector();
       saveCollector();
     });
-    $('#cfg-forward').addEventListener('change', (e) => { syslogger.setForwarding(e.target.checked); renderForward(); });
+    $('#cfg-forward').addEventListener('change', (e) => {
+      syslogger.setForwarding(e.target.checked);
+      // Switching forwarding on is a deliberate use of this receiver, so it earns
+      // a place in the history.
+      if (e.target.checked) rememberCollector();
+      renderForward();
+    });
     $('#cfg-test').addEventListener('click', runConnectivityTest);
+
+    $('#cfg-hist-use').addEventListener('click', useHistoryEntry);
+    $('#cfg-hist-save').addEventListener('click', () => rememberCollector(true));
+    $('#cfg-hist-del').addEventListener('click', forgetHistoryEntry);
+    $('#cfg-history').addEventListener('dblclick', useHistoryEntry);
 
     $('#cfg-file').addEventListener('change', (e) => {
       const file = e.target.files && e.target.files[0];
@@ -342,16 +353,121 @@
     }, 600);
   }
 
-  async function loadCollector() {
-    let c = null;
+  // ── Collector history ────────────────────────────────────────────────
+  // Every receiver this account has actually used, newest first, so an earlier
+  // destination can be picked back up without retyping it.
+  let history = [];
+
+  function currentCollector() {
+    return {
+      ip: $('#cfg-ip').value.trim(),
+      port: $('#cfg-port').value.trim(),
+      proto: $('#cfg-proto').value,
+      hec: readHec(),
+    };
+  }
+
+  // "3m ago" beats a timestamp in a control this narrow.
+  function ago(iso) {
+    const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (secs < 90) return 'just now';
+    const mins = secs / 60;
+    if (mins < 60) return `${Math.round(mins)}m ago`;
+    if (mins < 60 * 24) return `${Math.round(mins / 60)}h ago`;
+    return `${Math.round(mins / 60 / 24)}d ago`;
+  }
+
+  function renderHistory() {
+    const row = $('#cfg-hist-row'), sel = $('#cfg-history');
+    if (!collectorLoaded) { row.hidden = true; return; }   // no profile to store one in
+    row.hidden = false;
+    const keep = sel.value;
+    sel.innerHTML = '';
+    if (!history.length) {
+      sel.appendChild(new Option('no saved receivers yet', ''));
+      sel.disabled = true;
+      $('#cfg-hist-use').disabled = true;
+      $('#cfg-hist-del').disabled = true;
+      return;
+    }
+    sel.disabled = false;
+    $('#cfg-hist-use').disabled = false;
+    $('#cfg-hist-del').disabled = false;
+    // The list is newest-first, so recency is in the order — the label stays short
+    // enough to read whole, and the detail lives in the tooltip.
+    for (const e of history) {
+      const opt = new Option(`${e.proto.toUpperCase()} · ${e.ip}:${e.port}`, e.id);
+      const detail = e.proto === 'hec'
+        ? `${e.hec.ssl ? 'https' : 'http'}://${e.ip}:${e.port}/services/collector` +
+          ` · sourcetype ${e.hec.sourcetype}${e.hec.index ? ` · index ${e.hec.index}` : ''}` +
+          `${e.hec.token ? ' · token saved' : ' · no token'}`
+        : `${e.ip}:${e.port}/${e.proto}`;
+      opt.title = `${detail} · used ${e.uses}× · last ${ago(e.lastUsed)}`;
+      sel.appendChild(opt);
+    }
+    if (keep && history.some((e) => e.id === keep)) sel.value = keep;
+  }
+
+  // Record the panel as it stands. Called on Test, on switching forwarding on,
+  // and from the Save button — never on a keystroke, or the list would fill with
+  // half-typed addresses.
+  async function rememberCollector(announce) {
+    if (!collectorLoaded) return;
+    const collector = currentCollector();
+    if (!collector.ip) {
+      if (announce) flashTest('✗ enter a collector address first', 'test-fail');
+      return;
+    }
     try {
-      const d = await (await fetch('/api/profile')).json();
-      if (d && d.ok) c = d.collector;
-    } catch (e) { /* static hosting, or JEDI_AUTH=off — nothing to resume */ }
-    if (!c) return;
+      const d = await (await fetch('/api/profile/history', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ collector }),
+      })).json();
+      if (d && d.ok) {
+        history = d.history;
+        renderHistory();
+        if (announce) flashTest(`✓ saved ${collector.proto.toUpperCase()} · ${collector.ip}:${collector.port} to the history`, 'test-ok');
+      }
+    } catch (e) { /* the run matters more than the bookkeeping */ }
+  }
+
+  // Put a past receiver back in the panel — the "rerun" path.
+  function useHistoryEntry() {
+    const id = $('#cfg-history').value;
+    const e = history.find((x) => x.id === id);
+    if (!e) return;
+    applyCollectorValues(e);
+    saveCollector();
+    flashTest(`✓ loaded ${e.proto.toUpperCase()} · ${e.ip}:${e.port} — Test it or start ingesting`, 'test-ok');
+  }
+
+  async function forgetHistoryEntry() {
+    const id = $('#cfg-history').value;
+    const e = history.find((x) => x.id === id);
+    if (!e) return;
+    try {
+      const d = await (await fetch(`/api/profile/history/${id}`, { method: 'DELETE' })).json();
+      if (d && d.ok) {
+        history = d.history;
+        renderHistory();
+        flashTest(`forgot ${e.proto.toUpperCase()} · ${e.ip}:${e.port}`, '');
+      }
+    } catch (err) { /* nothing worth interrupting the run for */ }
+  }
+
+  // The collector panel has one status line; history messages borrow it.
+  function flashTest(text, cls) {
+    const out = $('#test-result');
+    out.className = 'cfg-foot test-result ' + (cls || '');
+    out.textContent = text;
+  }
+
+  // Drive the panel's own listeners rather than reaching past them, so the
+  // syslogger and the profile stay in step.
+  function applyCollectorValues(c) {
     const fire = (node, type) => node.dispatchEvent(new Event(type, { bubbles: true }));
-    // Protocol first: its handler may swap the port default, and the saved port
-    // has to be the one that survives.
+    // Protocol first: its handler may swap the port default, and the value we are
+    // applying has to be the one that survives.
     $('#cfg-proto').value = c.proto || 'udp';
     fire($('#cfg-proto'), 'change');
     $('#cfg-ip').value = c.ip || '';
@@ -365,7 +481,18 @@
     $('#cfg-hec-tls').checked = hec.ssl !== false;
     $('#cfg-hec-insecure').checked = hec.insecure !== false;
     fire($('#cfg-hec-token'), 'input');
+  }
+
+  async function loadCollector() {
+    let d = null;
+    try {
+      d = await (await fetch('/api/profile')).json();
+    } catch (e) { /* static hosting, or JEDI_AUTH=off — nothing to resume */ }
+    if (!d || !d.ok || !d.collector) return;
+    applyCollectorValues(d.collector);
     collectorLoaded = true;
+    history = d.history || [];
+    renderHistory();
   }
 
   // Current Splunk HEC settings, read straight off the config bar.
@@ -401,6 +528,9 @@
       const icon = d.reachable ? '✓ ' : (d.warn ? '◐ ' : '✗ ');
       out.className = 'cfg-foot test-result ' + cls;
       out.textContent = icon + (d.message || d.error || 'the backend refused the probe') + (d.ms != null ? ` (${d.ms} ms)` : '');
+      // Testing a receiver is using it; remember it either way, since a failed
+      // probe is exactly the destination you come back to.
+      rememberCollector();
     } catch (e) {
       out.className = 'cfg-foot test-result test-fail';
       out.textContent = '✗ backend not reachable — start it with: node server.js';

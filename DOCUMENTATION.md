@@ -875,6 +875,41 @@ Two people testing different collectors at once never collide, and deleting a
 user deletes their collector with them. With `JEDI_AUTH=off` there is no profile,
 so nothing is remembered.
 
+### Receiver history
+
+`collectorHistory` on each account is the list of receivers that account has
+used, newest first, capped at `HISTORY_MAX` (12). Each entry is a cleaned
+collector object plus its bookkeeping:
+
+```json
+{ "key": "hec://splunk.lab.local:8088", "id": "9f2c…",
+  "ip": "splunk.lab.local", "port": 8088, "proto": "hec", "hec": { … },
+  "firstUsed": "2026-08-28T…", "lastUsed": "2026-08-28T…", "uses": 3 }
+```
+
+`key` is `protocol://host:port` and is what deduplicates: `rememberCollector()`
+updates the matching entry in place — so a re-issued HEC token or a changed index
+replaces what was stored — bumps `uses` and `lastUsed`, and moves it to the front.
+Only then does the list get trimmed to the cap.
+
+| Method & path | Purpose |
+|---------------|---------|
+| `GET /api/profile/history` | the list (also returned inside `GET /api/profile`) |
+| `POST /api/profile/history` | `{collector}` — record one |
+| `DELETE /api/profile/history/<id>` | forget one |
+| `DELETE /api/profile/history` | clear the lot |
+
+**When an entry is recorded** is a deliberate choice: on **Test** (whatever the
+result — a failing probe is exactly the destination you return to), on switching
+**Forward live** on, and on the panel's **Save** button. Never on an edit — the
+collector itself is saved on every keystroke, but recording history that way would
+fill the list with half-typed addresses.
+
+The dashboard's `📜` row is the interface: a newest-first list, **Use** to load one
+back into the panel (protocol first, so its port-swap default cannot overwrite the
+stored port), **Save**, and **✕** to forget. The Account page carries the same list
+with per-row **Forget** and a **Clear the whole history**.
+
 ### TOTP specifics
 
 RFC 6238 over HMAC-SHA1, 6 digits, 30-second step — the universal defaults, so
@@ -1117,6 +1152,9 @@ silently** — a harness that asserts on alerts is the only thing that catches i
 | "That needs an admin account" | You are signed in as a `user`. An admin can promote you on the Account page. |
 | "That is the only admin" | Promote a second account first; the install always keeps at least one admin. |
 | The collector panel is not remembered | You are serving statically, or running `JEDI_AUTH=off` — there is no profile to save into. |
+| The history row is not shown | Same cause — it appears only once a profile has loaded. |
+| A receiver is missing from the history | It is only recorded on **Test**, on switching **Forward live** on, or via **Save**. Editing the fields alone does not record it. |
+| An old receiver vanished | The history keeps the 12 most recently used. |
 | A user sees someone else's collector | They cannot: it is keyed to the session's account. Check who is actually signed in via the header badge. |
 | Signed out of every browser at once | Expected after a backend restart — sessions live in memory only. |
 | Sign-in page never appears | You are serving statically (`python3 -m http.server`), which enforces nothing. Use `node server.js`. |

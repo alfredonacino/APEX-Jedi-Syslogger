@@ -30,6 +30,7 @@ const DEFAULT_PASSWORD = 'APEXjedi2026!';
 
 const ISSUER = 'APEX JediSyslogger';
 const STORE_VERSION = 2;
+const HISTORY_MAX = 12;   // most recently used first; older receivers fall off
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;   // 8 hours
 const PENDING_TTL_MS = 3 * 60 * 1000;        // password step → code step
 const MAX_FAILS = 5;
@@ -60,6 +61,7 @@ function newUser(name, password, role) {
     passwordIsDefault: !password,
     created: new Date().toISOString(),
     collector: defaultCollector(),
+    collectorHistory: [],
   };
 }
 
@@ -107,6 +109,7 @@ function load() {
     if (!u.id) u.id = crypto.randomBytes(8).toString('hex');
     if (!u.role) u.role = 'admin';
     if (!u.collector) u.collector = defaultCollector();
+    if (!Array.isArray(u.collectorHistory)) u.collectorHistory = [];
   }
   if (JSON.stringify(store) !== JSON.stringify(raw)) save(store);
   return store;
@@ -462,6 +465,56 @@ class Auth {
     save(this.store);
     return { ok: true, collector: u.collector };
   }
+
+  // ---- Collector history ---------------------------------------------------
+  // The receivers this user has actually used, most recent first, so a past
+  // destination can be picked back up without retyping it.
+
+  getHistory(id) {
+    const u = this.byId(id);
+    return u && Array.isArray(u.collectorHistory) ? u.collectorHistory : [];
+  }
+
+  // One entry per destination: setting the same host/port/protocol again updates
+  // that entry (a re-issued HEC token, a new index) instead of piling up copies.
+  rememberCollector(id, cfg) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    const c = cleanCollector(cfg);
+    if (!c.ip) return { ok: false, error: 'Set a collector address first' };
+    const key = `${c.proto}://${c.ip}:${c.port}`;
+    const now = new Date().toISOString();
+    const list = Array.isArray(u.collectorHistory) ? u.collectorHistory : [];
+    const found = list.find((e) => e.key === key);
+    const entry = Object.assign({}, c, {
+      key,
+      id: found ? found.id : crypto.randomBytes(6).toString('hex'),
+      firstUsed: found ? found.firstUsed : now,
+      lastUsed: now,
+      uses: (found ? found.uses : 0) + 1,
+    });
+    u.collectorHistory = [entry].concat(list.filter((e) => e.key !== key)).slice(0, HISTORY_MAX);
+    save(this.store);
+    return { ok: true, history: u.collectorHistory };
+  }
+
+  forgetCollector(id, entryId) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    const list = Array.isArray(u.collectorHistory) ? u.collectorHistory : [];
+    if (!list.some((e) => e.id === entryId)) return { ok: false, error: 'No such entry' };
+    u.collectorHistory = list.filter((e) => e.id !== entryId);
+    save(this.store);
+    return { ok: true, history: u.collectorHistory };
+  }
+
+  clearHistory(id) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    u.collectorHistory = [];
+    save(this.store);
+    return { ok: true, history: [] };
+  }
 }
 
 // `Set-Cookie` without Secure: the app is plain HTTP by default, and a Secure
@@ -487,7 +540,7 @@ function readCookie(header, name) {
 module.exports = {
   Auth, sessionCookie, clearCookie, readCookie, otpauthUri, prettySecret, publicUser,
   defaultCollector, cleanCollector,
-  DEFAULT_USER, DEFAULT_PASSWORD, MIN_PASSWORD, STORE, ISSUER,
+  DEFAULT_USER, DEFAULT_PASSWORD, MIN_PASSWORD, STORE, ISSUER, HISTORY_MAX,
   // exported for the self-test in `node auth.js --selftest`
   base32Encode, base32Decode, totpAt, currentStep,
 };

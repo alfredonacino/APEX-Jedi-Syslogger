@@ -45,6 +45,7 @@
       say($('#pw-note'), '⚠ This account still uses the documented default password. Change it now.', 'err');
     }
     renderCollector(data.collector);
+    renderHistory(data.history || []);
     if (me.role === 'admin') { $('#users-card').classList.remove('hidden'); loadUsers(); }
   }
 
@@ -97,14 +98,23 @@
   // ── My log collector ─────────────────────────────────────────────────
   function renderCollector(c) {
     const hec = (c && c.hec) || {};
+    const isHec = c.proto === 'hec';
     $('#col-dest').textContent = `${c.ip || '—'}:${c.port}`;
-    $('#col-proto').textContent = c.proto === 'hec' ? 'Splunk HEC (HTTP Event Collector)' : c.proto.toUpperCase();
+    $('#col-proto').textContent = isHec ? 'Splunk HEC (HTTP Event Collector)' : c.proto.toUpperCase();
     $('#col-token').textContent = hec.token ? `saved (${hec.token.length} characters)` : 'not set';
     $('#col-index').textContent = hec.index || "the token's default";
     $('#col-stype').textContent = hec.sourcetype || 'syslog';
-    $('#col-tls').textContent = c.proto === 'hec'
+    $('#col-tls').textContent = isHec
       ? `${hec.ssl ? 'HTTPS' : 'plain HTTP'}${hec.ssl && hec.insecure ? ', certificate not verified' : ''}`
-      : 'not applicable';
+      : '—';
+    // The HEC block is kept while you are on UDP/TCP so switching back does not
+    // mean retyping the token; say so rather than showing it as if it were live.
+    const why = isHec ? '' : `kept for when you switch back to HEC — the protocol is ${c.proto.toUpperCase()}`;
+    for (const id of ['#col-token', '#col-index', '#col-stype', '#col-tls']) {
+      $(id).classList.toggle('inactive', !isHec);
+      $(id).title = why;
+    }
+    $('#col-hec-note').textContent = why;
   }
 
   $('#col-reset').addEventListener('click', async () => {
@@ -119,6 +129,58 @@
       if (data.ok) { renderCollector(data.collector); say(note, '✓ Back to the defaults. Reload the dashboard to pick it up.', 'ok'); }
       else say(note, data.error || 'Could not save', 'err');
     } catch (err) { say(note, 'Cannot reach the backend', 'err'); }
+  });
+
+  // ── Collector history ────────────────────────────────────────────────
+  function ago(iso) {
+    const secs = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (secs < 90) return 'just now';
+    const mins = secs / 60;
+    if (mins < 60) return `${Math.round(mins)} min ago`;
+    if (mins < 60 * 24) return `${Math.round(mins / 60)} h ago`;
+    return `${Math.round(mins / 60 / 24)} d ago`;
+  }
+
+  function renderHistory(list) {
+    const body = $('#hist-body');
+    body.innerHTML = '';
+    $('#hist-clear').disabled = !list.length;
+    if (!list.length) {
+      const tr = el('tr');
+      const td = el('td', null, 'Nothing yet — test a receiver on the dashboard and it lands here.');
+      td.colSpan = 5;
+      td.style.color = 'var(--text-mute)';
+      tr.appendChild(td);
+      body.appendChild(tr);
+      return;
+    }
+    for (const e of list) {
+      const tr = el('tr');
+      tr.appendChild(el('td', 'name', `${e.ip}:${e.port}`));
+      const detail = e.proto === 'hec'
+        ? `HEC · ${e.hec.ssl ? 'https' : 'http'} · sourcetype ${e.hec.sourcetype}` +
+          `${e.hec.index ? ` · index ${e.hec.index}` : ''}${e.hec.token ? ' · token saved' : ''}`
+        : e.proto.toUpperCase();
+      tr.appendChild(el('td', null, detail));
+      tr.appendChild(el('td', null, `${e.uses}×`));
+      tr.appendChild(el('td', null, ago(e.lastUsed)));
+      const acts = el('td', 'acts');
+      acts.appendChild(button('btn-danger', 'Forget', () => forget(e)));
+      tr.appendChild(acts);
+      body.appendChild(tr);
+    }
+  }
+
+  async function forget(entry) {
+    const { data } = await api('DELETE', `/api/profile/history/${entry.id}`);
+    if (data.ok) { renderHistory(data.history); say($('#hist-note'), `✓ Forgot ${entry.ip}:${entry.port}.`, 'ok'); }
+    else say($('#hist-note'), data.error || 'Could not remove that entry', 'err');
+  }
+
+  $('#hist-clear').addEventListener('click', async () => {
+    if (!confirm('Forget every receiver in the history?\n\nYour current collector settings stay as they are.')) return;
+    const { data } = await api('DELETE', '/api/profile/history');
+    if (data.ok) { renderHistory(data.history); say($('#hist-note'), '✓ History cleared.', 'ok'); }
   });
 
   // ── Users (admin) ────────────────────────────────────────────────────

@@ -242,6 +242,37 @@ xdg-open index.html            <span class="cm"># or just open the file (file://
       credentials — same <code>0600</code> file, never served over HTTP. Deleting a user
       deletes theirs with them.</p>
 
+      <h3>Receiver history — pick a past collector and run it again</h3>
+      <p>The collector panel carries a <strong>📜 history</strong> of the receivers you have
+      used, so going back to one is a click rather than retyping an address, a token and an
+      index.</p>
+      <table>
+        <thead><tr><th>Control</th><th>What it does</th></tr></thead>
+        <tbody>
+          <tr><td>the list</td><td>Every receiver this account has used,
+          <strong>newest first</strong>. Hover an entry for the full destination, how many
+          times it was used, and when.</td></tr>
+          <tr><td><strong>Use</strong></td><td>Loads that receiver back into the panel —
+          protocol, address, port and the whole HEC block — and makes it the active
+          collector. Then <strong>Test</strong> it or hit <strong>Start
+          Ingestion</strong>.</td></tr>
+          <tr><td><strong>Save</strong></td><td>Puts the receiver currently in the panel
+          into the history without waiting to use it.</td></tr>
+          <tr><td><strong>✕</strong></td><td>Forgets the selected receiver.</td></tr>
+        </tbody>
+      </table>
+      <p>An entry is recorded automatically whenever you actually use a receiver: when you
+      press <strong>Test</strong> (pass <em>or</em> fail — a failing probe is exactly the
+      destination you come back to), and when you switch <strong>Forward live</strong> on.
+      It is never recorded on a keystroke, so the list never fills with half-typed
+      addresses.</p>
+      <p>One entry per destination, keyed on <code>protocol://host:port</code>. Pointing at
+      the same receiver again updates that entry — a re-issued HEC token or a new index
+      replaces what was stored — rather than piling up copies. The newest
+      <strong>12</strong> are kept. <strong>Account › Receivers I have used</strong> lists
+      the same history with a <strong>Forget</strong> per row and <strong>Clear the whole
+      history</strong>.</p>
+
       <h3>Managing accounts from the command line</h3>
       <pre><code>node server.js --list-users                      <span class="cm"># every account, role, password and 2FA state</span>
 node server.js --add-user &lt;name&gt; '&lt;pw&gt;' [--admin]

@@ -130,6 +130,14 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 .cfg-input.cfg-port { width: 62px; }
 .cfg-input.cfg-num { width: 90px; }
 .cfg-input.cfg-proto { width: 74px; padding: 6px 6px; cursor: pointer; }
+.cfg-hist-row[hidden] { display: none; }
+.cfg-hist-label { font-size: 13px; cursor: help; }
+.cfg-input.cfg-hist { width: 218px; font-size: 12px; padding: 6px; cursor: pointer; }
+.cfg-input.cfg-hist:disabled { opacity: .5; }
+.cfg-test-btn.cfg-btn-ghost { background: rgba(125,160,200,.10); border-color: var(--border-2); color: var(--text-dim); }
+.cfg-test-btn.cfg-btn-ghost:hover { background: rgba(125,160,200,.2); }
+.cfg-test-btn.cfg-btn-del { background: rgba(255,59,92,.10); border-color: rgba(255,59,92,.35); color: var(--crit); padding: 6px 9px; }
+.cfg-test-btn.cfg-btn-del:hover { background: rgba(255,59,92,.22); }
 .auth-badge { display: inline-flex; align-items: center; gap: 8px; }
 .auth-badge[hidden] { display: none; }
 .auth-user { font-size: 12px; color: var(--text-dim); font-family: var(--mono); }
