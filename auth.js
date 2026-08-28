@@ -90,9 +90,10 @@ function migrate(raw) {
 }
 
 function load() {
-  let raw = null;
+  let raw = null, rawText = null;
   try {
-    raw = JSON.parse(fs.readFileSync(STORE, 'utf8'));
+    rawText = fs.readFileSync(STORE, 'utf8');
+    raw = JSON.parse(rawText);
   } catch (e) {
     if (e.code !== 'ENOENT') console.log(`  ⚠ auth.json unreadable (${e.code || e.message}) — recreating it`);
   }
@@ -111,12 +112,17 @@ function load() {
     if (!u.collector) u.collector = defaultCollector();
     if (!Array.isArray(u.collectorHistory)) u.collectorHistory = [];
   }
-  if (JSON.stringify(store) !== JSON.stringify(raw)) save(store);
+  // Compare against the text that was read, not against `raw` — for a file that
+  // is already current, migrate() hands back that same object, so comparing the
+  // two would compare it with itself and a backfill would never reach disk.
+  if (serialise(store) !== rawText) save(store);
   return store;
 }
 
+const serialise = (store) => JSON.stringify(store, null, 2) + '\n';
+
 function save(store) {
-  fs.writeFileSync(STORE, JSON.stringify(store, null, 2) + '\n', { mode: 0o600 });
+  fs.writeFileSync(STORE, serialise(store), { mode: 0o600 });
   try { fs.chmodSync(STORE, 0o600); } catch (e) {}   // enforce it on an existing file
 }
 
