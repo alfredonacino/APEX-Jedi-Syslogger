@@ -10,9 +10,11 @@
  *      lines here and this process relays them as REAL UDP or TCP syslog
  *      datagrams to the collector IP:port you configured in the UI, or as
  *      Splunk HTTP Event Collector (HEC) events when the protocol is "hec".
+ *   3. Gates all of it behind a password + TOTP two-factor sign-in (auth.js).
  *
  * Run:  node server.js            (then open http://localhost:8099)
  *       PORT=9000 node server.js
+ *       node server.js --help     (credential management)
  */
 'use strict';
 const http = require('http');
@@ -21,9 +23,15 @@ const dgram = require('dgram');
 const net = require('net');
 const fs = require('fs');
 const path = require('path');
+const authlib = require('./auth');
 
 const ROOT = __dirname;
 const PORT = parseInt(process.env.PORT, 10) || 8099;
+
+// Auth is on unless explicitly disabled. JEDI_AUTH=off restores the old
+// no-sign-in behaviour for a throwaway local run.
+const AUTH_ON = String(process.env.JEDI_AUTH || '').toLowerCase() !== 'off';
+const SECURE_COOKIE = process.env.JEDI_SECURE_COOKIE === '1';
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
@@ -33,19 +41,102 @@ const MIME = {
 
 let totalForwarded = 0;
 
+// Set once the listener starts; the CLI paths below never touch it.
+let auth = null;
+
+// Reachable without a session: the sign-in page, the stylesheet it needs, and
+// the endpoints that hand out a session in the first place.
+const PUBLIC_PATHS = new Set(['/login.html', '/js/login.js', '/css/styles.css', '/auth/login', '/auth/totp', '/auth/logout', '/auth/session']);
+
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
 
-  if (req.method === 'POST' && req.url === '/forward') return handleForward(req, res);
-  if (req.method === 'POST' && req.url === '/test') return handleTest(req, res);
-  if (req.method === 'GET' && req.url === '/status') {
+  const urlPath = req.url.split('?')[0];
+
+  if (req.method === 'POST' && urlPath === '/auth/login') return handleLogin(req, res);
+  if (req.method === 'POST' && urlPath === '/auth/totp') return handleTotp(req, res);
+  if (req.method === 'POST' && urlPath === '/auth/logout') return handleLogout(req, res);
+  if (req.method === 'GET' && urlPath === '/auth/session') return handleSession(req, res);
+
+  const session = AUTH_ON ? auth.sessionFor(req.headers.cookie) : { user: null };
+  if (AUTH_ON && !session && !PUBLIC_PATHS.has(urlPath)) return denyAnonymous(req, res, urlPath);
+  // Already signed in? The sign-in page has nothing left to offer.
+  if (AUTH_ON && session && urlPath === '/login.html') { res.writeHead(302, { Location: '/' }); return res.end(); }
+
+  if (req.method === 'POST' && urlPath === '/forward') return handleForward(req, res);
+  if (req.method === 'POST' && urlPath === '/test') return handleTest(req, res);
+  if (req.method === 'GET' && urlPath === '/status') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: true, backend: 'jedisyslogger', forwarded: totalForwarded }));
   }
   return serveStatic(req, res);
 });
+
+// A browser navigating to a page gets sent to the sign-in form; anything else
+// (fetch, curl, the forwarding relay) gets a JSON 401 it can act on.
+function denyAnonymous(req, res, urlPath) {
+  if (String(req.headers.accept || '').includes('text/html')) {
+    res.writeHead(302, { Location: `/login.html?next=${encodeURIComponent(urlPath)}` });
+    return res.end();
+  }
+  return sendJson(res, 401, { ok: false, error: 'not signed in — reload the page and sign in again' });
+}
+
+// ---- Sign-in endpoints -----------------------------------------------------
+
+function readJson(req, res, limit, cb) {
+  let body = '';
+  req.on('data', (c) => { body += c; if (body.length > limit) req.destroy(); });
+  req.on('end', () => {
+    try { cb(JSON.parse(body || '{}')); }
+    catch (e) { sendJson(res, 400, { ok: false, error: 'bad json' }); }
+  });
+}
+
+// Step 1: username + password. A correct password does not sign you in on its
+// own — it returns a short-lived token for the second factor.
+function handleLogin(req, res) {
+  readJson(req, res, 1e5, (p) => {
+    if (!AUTH_ON) return sendJson(res, 200, { ok: true, stage: 'done', authRequired: false });
+    const r = auth.login(p.user, p.pass);
+    console.log(`  🔑 sign-in attempt for "${String(p.user || '').slice(0, 40)}" → ${r.ok ? r.stage : 'DENIED (' + r.error + ')'}`);
+    sendJson(res, r.ok ? 200 : (r.locked ? 429 : 401), r);
+  });
+}
+
+// Step 2: the six-digit code. Only this hands out the session cookie.
+function handleTotp(req, res) {
+  readJson(req, res, 1e5, (p) => {
+    if (!AUTH_ON) return sendJson(res, 200, { ok: true, authRequired: false });
+    const r = auth.verifyTotp(p.pending, p.code);
+    if (!r.ok) {
+      console.log(`  🔑 second factor DENIED (${r.error})`);
+      return sendJson(res, r.locked ? 429 : 401, r);
+    }
+    console.log(`  🔑 "${r.user}" signed in (session valid ${Math.round((r.expires - Date.now()) / 3600000)}h)`);
+    res.setHeader('Set-Cookie', authlib.sessionCookie(r.sid, SECURE_COOKIE));
+    // The session id travels in the HttpOnly cookie only, never in the body.
+    sendJson(res, 200, { ok: true, user: r.user, expires: r.expires });
+  });
+}
+
+function handleLogout(req, res) {
+  if (AUTH_ON) auth.logout(req.headers.cookie);
+  res.setHeader('Set-Cookie', authlib.clearCookie());
+  sendJson(res, 200, { ok: true });
+}
+
+function handleSession(req, res) {
+  if (!AUTH_ON) return sendJson(res, 200, { ok: true, authRequired: false, user: null });
+  const s = auth.sessionFor(req.headers.cookie);
+  sendJson(res, 200, {
+    ok: true, authRequired: true, user: s ? s.user : null, expires: s ? s.expires : null,
+    // Only someone already signed in is told the password is still the default.
+    passwordIsDefault: s ? auth.passwordIsDefault : undefined,
+  });
+}
 
 function handleForward(req, res) {
   let body = '';
@@ -272,11 +363,17 @@ function testHec(p, cb) {
   });
 }
 
+// Files that must never be served, however the request is spelled: auth.json
+// holds the password hash and the TOTP secret, and a dotfile is never app content.
+const PRIVATE_FILES = new Set(['auth.json']);
+
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
   if (urlPath === '/') urlPath = '/index.html';
   const filePath = path.normalize(path.join(ROOT, urlPath));
   if (!filePath.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }
+  const base = path.basename(filePath);
+  if (PRIVATE_FILES.has(base) || base.startsWith('.')) { res.writeHead(403); return res.end('forbidden'); }
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream' });
@@ -284,8 +381,121 @@ function serveStatic(req, res) {
   });
 }
 
-server.listen(PORT, () => {
+// ---- Credential management CLI --------------------------------------------
+// Returns true when it handled an argument, so the caller knows not to listen.
+function runCli(argv) {
+  const has = (f) => argv.includes(f);
+  if (!argv.length) return false;
+
+  if (has('--help') || has('-h')) {
+    console.log(`
+  APEX JediSyslogger — backend
+
+    node server.js                        serve the app on ${PORT} (PORT=n to change)
+    node server.js --show-auth            who can sign in, and whether 2FA is enrolled
+    node server.js --set-password <pw>    replace the sign-in password
+    node server.js --reset-2fa            issue a new TOTP secret (lost authenticator)
+    node server.js --reset-auth           back to the documented defaults, new 2FA secret
+    node auth.js   --selftest             check the Base32/TOTP maths against the RFCs
+
+  JEDI_AUTH=off          run with no sign-in at all (local throwaway use)
+  JEDI_SECURE_COOKIE=1   add Secure to the session cookie (behind a TLS proxy)
+`);
+    return true;
+  }
+
+  if (has('--reset-auth')) {
+    try { fs.unlinkSync(authlib.STORE); } catch (e) {}
+    const a = new authlib.Auth(true);
+    console.log(`\n  ✓ credentials reset to the documented defaults`);
+    printCredentials(a, true);
+    return true;
+  }
+
+  if (has('--set-password')) {
+    const pw = argv[argv.indexOf('--set-password') + 1];
+    if (!pw || pw.startsWith('--')) {
+      console.log(`\n  ✗ usage: node server.js --set-password '<new password>'\n`);
+      process.exitCode = 1;
+      return true;
+    }
+    if (pw.length < 8) {
+      console.log(`\n  ✗ that password is ${pw.length} characters — use at least 8\n`);
+      process.exitCode = 1;
+      return true;
+    }
+    const a = new authlib.Auth(true);
+    a.setPassword(pw);
+    console.log(`\n  ✓ password updated for "${a.user}"`);
+    console.log(`    Restart the server to apply it — a running process keeps the old`);
+    console.log(`    credentials in memory, and its open sessions stay valid until then.\n`);
+    return true;
+  }
+
+  if (has('--reset-2fa')) {
+    const a = new authlib.Auth(true);
+    const e = a.resetTotp();
+    console.log(`\n  ✓ new TOTP secret issued for "${a.user}" — the old authenticator entry is dead`);
+    printEnrolment(e);
+    return true;
+  }
+
+  if (has('--show-auth')) {
+    const a = new authlib.Auth(true);
+    printCredentials(a, false);
+    return true;
+  }
+
+  console.log(`\n  ✗ unknown option: ${argv.find((x) => x.startsWith('--')) || argv[0]} — try --help\n`);
+  process.exitCode = 1;
+  return true;
+}
+
+function printEnrolment(e) {
+  console.log(`
+    Add it to your authenticator by hand:
+
+      account   ${authlib.ISSUER}
+      secret    ${e.pretty}
+      type      time-based, SHA-1, 6 digits, 30 seconds
+
+    …or paste this URI into an app that accepts one:
+
+      ${e.uri}
+`);
+}
+
+function printCredentials(a, showPassword) {
+  console.log(`
+    sign-in user   ${a.user}
+    password       ${showPassword ? authlib.DEFAULT_PASSWORD + '   ← the documented default, change it' : (a.passwordIsDefault ? 'still the documented default — change it' : 'set (not the default)')}
+    second factor  ${a.totpConfirmed ? 'enrolled' : 'NOT yet enrolled — the next sign-in shows the secret'}
+    stored in      ${authlib.STORE}
+`);
+  if (!a.totpConfirmed) printEnrolment(a.enrolment);
+}
+
+// A credential-management argument runs and exits; otherwise, serve.
+if (!runCli(process.argv.slice(2))) start();
+
+function start() {
+  auth = new authlib.Auth(AUTH_ON);
+  server.listen(PORT, () => {
   console.log(`\n  ⚔️  APEX JediSyslogger running → http://localhost:${PORT}`);
   console.log(`      POST /forward relays syslog to your configured collector (UDP/TCP/Splunk HEC).`);
+  if (!AUTH_ON) {
+    console.log(`      🔓 JEDI_AUTH=off — NO SIGN-IN REQUIRED, anyone who can reach this port is in.`);
+  } else {
+    console.log(`      🔒 Sign-in required: user "${auth.user}" + a 6-digit authenticator code.`);
+    if (auth.passwordIsDefault) {
+      console.log(`      ⚠  Password is still the documented default (${authlib.DEFAULT_PASSWORD}).`);
+      console.log(`         Change it:  node server.js --set-password '<new password>'`);
+    }
+    if (!auth.totpConfirmed) {
+      console.log(`      ⚠  Two-factor is not enrolled yet — enrol on the first sign-in, or now:`);
+      printEnrolment(auth.enrolment);
+    }
+  }
   console.log(`      Press Ctrl+C to stop.\n`);
-});
+  });
+}

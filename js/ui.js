@@ -89,6 +89,7 @@
     buildSeverityRows();
     wireControls();
     wireConfig();
+    wireAuth();
     requestAnimationFrame(renderLoop);
     setInterval(renderStream, 250);   // stream paints on its own cadence
   }
@@ -288,6 +289,31 @@
     syslogger.onStop = () => { syncToggle(); renderVolume(); };
   }
 
+  // ── Sign-in state ────────────────────────────────────────────────────
+  // The backend gates the whole app, so reaching this code already means a valid
+  // session (or JEDI_AUTH=off). This only surfaces who that is, and offers the
+  // way out.
+  async function wireAuth() {
+    const badge = $('#auth-badge');
+    $('#btn-logout').addEventListener('click', async () => {
+      try { await fetch('/auth/logout', { method: 'POST' }); } catch (e) {}
+      location.href = '/login.html';
+    });
+    try {
+      const s = await (await fetch('/auth/session')).json();
+      if (!s.authRequired || !s.user) return;   // auth disabled, or served statically
+      const who = `signed in as <span class="auth-who">${escapeHtml(s.user)}</span>`;
+      // A documented default password is a published password — say so, loudly.
+      const warn = s.passwordIsDefault
+        ? ` <span class="auth-warn" title="This install still uses the documented default password. Change it on the host: node server.js --set-password '<new password>'">⚠ default password</span>`
+        : '';
+      $('#auth-user').innerHTML = who + warn;
+      badge.hidden = false;
+    } catch (e) {
+      // Static hosting has no /auth/session — leave the badge hidden.
+    }
+  }
+
   // Current Splunk HEC settings, read straight off the config bar.
   function readHec() {
     return {
@@ -320,7 +346,7 @@
       const cls = d.reachable ? 'test-ok' : (d.warn ? 'test-warn' : 'test-fail');
       const icon = d.reachable ? '✓ ' : (d.warn ? '◐ ' : '✗ ');
       out.className = 'cfg-foot test-result ' + cls;
-      out.textContent = icon + d.message + (d.ms != null ? ` (${d.ms} ms)` : '');
+      out.textContent = icon + (d.message || d.error || 'the backend refused the probe') + (d.ms != null ? ` (${d.ms} ms)` : '');
     } catch (e) {
       out.className = 'cfg-foot test-result test-fail';
       out.textContent = '✗ backend not reachable — start it with: node server.js';

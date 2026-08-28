@@ -1,3 +1,6 @@
 # Claude Code project instructions — local only, do not publish
 CLAUDE.md
 .claude/
+
+# Local credential store — password hash + TOTP secret, never commit it
+auth.json

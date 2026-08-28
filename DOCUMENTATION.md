@@ -17,9 +17,10 @@ formats, the HTTP API, configuration, and deployment.
 - [10. Live forwarding & the backend API](#10-live-forwarding--the-backend-api)
 - [11. Connectivity test](#11-connectivity-test)
 - [12. Configuration reference](#12-configuration-reference)
-- [13. Deployment](#13-deployment)
-- [14. Extending the app](#14-extending-the-app)
-- [15. Troubleshooting](#15-troubleshooting)
+- [13. Authentication (password + 2FA)](#13-authentication-password--2fa)
+- [14. Deployment](#14-deployment)
+- [15. Extending the app](#15-extending-the-app)
+- [16. Troubleshooting](#16-troubleshooting)
 
 ---
 
@@ -36,7 +37,9 @@ has two halves:
 
 Everything renders in the browser. The optional `server.js` backend serves the
 app **and** relays generated logs to an external collector — as real UDP/TCP
-syslog, or as Splunk HEC events over HTTP(S).
+syslog, or as Splunk HEC events over HTTP(S). Because that relay can put real
+traffic on your network, the backend requires a **password plus a TOTP second
+factor** before it answers anything (§13).
 
 All traffic is synthetic. Nothing leaves the browser unless you explicitly enable
 **Forward live** (which requires the backend).
@@ -71,12 +74,16 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | File | Responsibility |
 |------|----------------|
 | `index.html` | Markup / panel scaffold |
+| `login.html` | Password + two-factor sign-in page |
 | `css/styles.css` | Dark SIEM theme, responsive layout |
 | `js/data.js` | Random helpers, host/user/threat-intel pools, RFC 3164/5424 + vendor line formatters |
 | `js/syslogger.js` | Baseline generators, attack scenarios, appliance sources, file replay, forward queue |
 | `js/jedi.js` | Parsing, correlation windows, detection rules, stats, threat level |
 | `js/ui.js` | Dashboard rendering, charts, config wiring, drawer |
-| `server.js` | Optional backend: static host + `/forward` relay + `/test` probe |
+| `js/login.js` | The two-step sign-in flow on `login.html` |
+| `auth.js` | scrypt passwords, RFC 6238 TOTP, sessions, lockout (§13) |
+| `auth.json` | Generated per install: password hash + TOTP secret (`0600`, gitignored, never served) |
+| `server.js` | Optional backend: static host + `/forward` relay + `/test` probe + the sign-in gate |
 | `samples/sample.log` | Example mixed-format log for the file-replay demo |
 | `jsconfig.json` | Editor typecheck settings — read by the editor, never shipped |
 | `types/globals.d.ts` | Ambient declarations for `window.JS` and Node globals |
@@ -707,11 +714,132 @@ All controls live in the header and the **Source & delivery configuration** bar.
 | File replay — Choose file / loop / use as source | Replay an uploaded log file |
 | Stream filter / pause | Filter the live stream; freeze it |
 
-`PORT` env var overrides the backend's listen port (default **8099**).
+| Signed-in badge / **Sign out** | Who the session belongs to; ends it (see §13) |
+
+Environment variables:
+
+| Variable | Effect |
+|----------|--------|
+| `PORT` | backend listen port (default **8099**) |
+| `JEDI_AUTH=off` | disable the sign-in entirely (see §13) |
+| `JEDI_SECURE_COOKIE=1` | add `Secure` to the session cookie, for use behind TLS |
 
 ---
 
-## 13. Deployment
+## 13. Authentication (password + 2FA)
+
+`server.js` gates the whole app behind a password **and** a TOTP second factor.
+It is on by default: this backend opens real UDP/TCP sockets and can POST to a
+Splunk HEC, so an open port here is an open relay onto your network.
+
+Static hosting (`python3 -m http.server`, `file://`) enforces **nothing** — there
+is no process to check a session. Only the Node backend authenticates.
+
+### The credential store
+
+`auth.json`, written next to `server.js` on first start, mode `0600`, gitignored,
+and never served (`serveStatic` refuses it and any dotfile, including through a
+`..` path). It holds:
+
+| Field | Meaning |
+|-------|---------|
+| `user` | the sign-in name (`admin`) |
+| `salt` / `hash` | scrypt(password, salt, 64) — N=16384, the Node default |
+| `totpSecret` | Base32, 160 bits of randomness, generated per install |
+| `totpConfirmed` | false until a code from the enrolled app verifies once |
+| `lastTotpStep` | the last accepted 30-second step — the replay guard |
+| `passwordIsDefault` | drives the console warning and the ⚠ badge in the header |
+
+### Defaults
+
+| | Value |
+|---|---|
+| Username | `admin` |
+| Password | `APEXjedi2026!` |
+| TOTP secret | random per install — printed on first start, never a fixed default |
+
+The password is documented, therefore public. `--set-password` before exposing
+the port; until then the console warns at every start and the dashboard header
+shows a **⚠ default password** badge next to the signed-in user.
+
+### The sign-in flow
+
+```
+POST /auth/login  {user, pass}
+   ├─ wrong            → 401 {error}                        (counts toward lockout)
+   ├─ locked out       → 429 {locked, retryAfter, error}
+   ├─ right, enrolled  → 200 {stage:'totp',  pending}
+   └─ right, first use → 200 {stage:'enrol', pending, secret, pretty, uri}
+
+POST /auth/totp   {pending, code}
+   ├─ bad/replayed/expired → 401 {error}                     (counts toward lockout)
+   └─ good                 → 200 {user, expires} + Set-Cookie: jedi_sid=…
+```
+
+A correct password on its own grants nothing: it returns a `pending` token good
+for three minutes, and only the code exchanges that for a session. The session id
+travels **only** in the `HttpOnly` cookie — never in a response body, never in a
+URL — so page JavaScript cannot read it.
+
+| Endpoint | Purpose |
+|----------|---------|
+| `POST /auth/login` | step 1 — username + password |
+| `POST /auth/totp` | step 2 — the six-digit code; issues the session cookie |
+| `POST /auth/logout` | drop the session and clear the cookie |
+| `GET /auth/session` | who is signed in (`{authRequired, user, expires, passwordIsDefault}`) |
+
+Reachable without a session: `/login.html`, `/js/login.js`, `/css/styles.css` and
+the four `/auth/*` endpoints. Everything else — the dashboard, every asset,
+`/forward`, `/test`, `/status` — returns a redirect to the sign-in page for a
+browser navigation (`Accept: text/html`) or a JSON **401** for anything else.
+
+### TOTP specifics
+
+RFC 6238 over HMAC-SHA1, 6 digits, 30-second step — the universal defaults, so
+any authenticator works. Verification accepts the neighbouring steps (±30 s) for
+clock drift, and a step that has already been accepted is refused: replaying a
+code inside its own window is a copied string, not a second factor.
+
+`node auth.js --selftest` checks the Base32 codec against RFC 4648 §10 and the
+generator against the RFC 6238 test vectors, including one past 2³² seconds that
+exercises the 64-bit counter.
+
+### Sessions and lockout
+
+| | |
+|---|---|
+| Session lifetime | 8 hours, in memory — a backend restart signs everyone out |
+| Cookie | `jedi_sid`, `HttpOnly`, `SameSite=Strict`, `Path=/`; `Secure` only with `JEDI_SECURE_COOKIE=1` |
+| Lockout | 5 failed attempts → that account is refused for 5 minutes, correct password included |
+| Pending token | 3 minutes between the password step and the code step |
+
+The cookie has no `Secure` flag by default because the app speaks plain HTTP and
+a `Secure` cookie would never be stored. Behind a TLS terminator, set
+`JEDI_SECURE_COOKIE=1`.
+
+### Command line
+
+```bash
+node server.js --show-auth              # user, whether the password is default, 2FA state
+node server.js --set-password '<pw>'    # replace the password (minimum 8 characters)
+node server.js --reset-2fa              # new TOTP secret — lost authenticator
+node server.js --reset-auth             # documented defaults + a new secret
+node server.js --help                   # all of the above
+```
+
+Each runs against `auth.json` and exits without starting the listener. A running
+backend keeps its credentials and sessions in memory, so **restart it** to apply
+a change.
+
+### Turning it off
+
+`JEDI_AUTH=off node server.js` serves with no sign-in at all, for a throwaway
+local run. The startup banner says so in plain language, `/auth/session` reports
+`authRequired: false`, and the dashboard hides the sign-in badge.
+
+---
+
+## 14. Deployment
 
 The app is a static site plus a zero-dependency Node backend. **Requirement on the
 target: Node.js** (no `npm install`).
@@ -724,7 +852,10 @@ target: Node.js** (no `npm install`).
 - **git** — only needed if you clone the repo (you can download an archive
   instead — see below).
 - **Nothing else.** There is no `package.json` and no `npm install` — the backend
-  uses only Node's built-in `http`, `dgram`, `net`, `fs`, and `path` modules.
+  uses only Node's built-in `http`, `https`, `dgram`, `net`, `crypto`, `fs`, and
+  `path` modules.
+- **An authenticator app** on your phone or desktop (Google Authenticator, Aegis,
+  1Password, Bitwarden…) — the sign-in needs a TOTP code (§13).
 
 ### Getting the code onto a new machine
 
@@ -754,9 +885,14 @@ unpack it. Either way you end up with `index.html`, `server.js`, and the `js/`,
 If you already have the project locally and want to push it to a server:
 
 ```bash
-rsync -av --exclude '.git' --exclude 'node_modules' \
+rsync -av --exclude '.git' --exclude 'node_modules' --exclude 'auth.json' \
   ./ alfreddgreat@172.26.250.20:/home/alfreddgreat/APEX_JediSyslogger/
 ```
+
+> **`auth.json` must never be copied between hosts.** Every install generates its
+> own password hash and TOTP secret on first start; shipping one around means two
+> machines share a second factor, and a `--delete` sync would wipe the target's
+> credentials and silently sign everyone out. Exclude it, always.
 
 ### Run it
 
@@ -767,7 +903,9 @@ PORT=80 node server.js                            # privileged port (needs root/
 setsid node server.js </dev/null >apex.log 2>&1 & # detached
 ```
 
-Then browse to `http://172.26.250.20:8099`.
+Then browse to `http://172.26.250.20:8099` and sign in (§13). On a host's very
+first start the console prints the default username and password plus the TOTP
+secret to enrol — capture it from `apex.log` when you start it detached.
 
 > **Starting it over SSH: use `setsid`, not `nohup`.** A plain
 > `nohup node server.js > apex.log 2>&1 &` leaves the server's stdout attached to
@@ -818,7 +956,7 @@ sudo ufw allow out 514/udp          # syslog egress (adjust to your collector)
 
 ---
 
-## 14. Extending the app
+## 15. Extending the app
 
 - **New generic log source** — add a builder to `BASELINE` in `js/syslogger.js`
   and a `SOURCE_META` colour/label in `js/ui.js`.
@@ -855,10 +993,19 @@ silently** — a harness that asserts on alerts is the only thing that catches i
 
 ---
 
-## 15. Troubleshooting
+## 16. Troubleshooting
 
 | Symptom | Cause / fix |
 |---------|-------------|
+| Every page bounces to the sign-in screen | No session. Sign in; if it loops, the backend restarted (sessions are in memory). |
+| Signed in, then everything returns 401 | The backend restarted, or the 8-hour session expired. Sign in again. |
+| "That code is not valid right now" | The host clock and the phone clock disagree by more than ~30 s. Fix NTP on the server. |
+| "That code was already used" | Correct — a code works once. Wait for the authenticator to roll over. |
+| Locked out after typos | 5 failures locks the account for 5 minutes. Wait it out, or restart the backend to clear it. |
+| Lost the authenticator | `node server.js --reset-2fa` on the host, then restart it and enrol the new secret. |
+| Forgot the password | `node server.js --reset-auth` restores the documented defaults, then restart. |
+| Signed out of every browser at once | Expected after a backend restart — sessions live in memory only. |
+| Sign-in page never appears | You are serving statically (`python3 -m http.server`), which enforces nothing. Use `node server.js`. |
 | "Forward live" green but SIEM sees nothing | UDP is fire-and-forget. Click **Test** or switch to TCP/HEC; run `tcpdump -n port 514` on the collector. |
 | HEC foot says "HEC token required" | The token field is empty — the queue is held rather than posting batches Splunk would reject. |
 | HEC returns `Invalid token` / `Incorrect index` | The token is wrong or disabled, or it is not allowed to write to that index (Splunk: *Data inputs › HTTP Event Collector*). |

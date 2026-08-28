@@ -130,6 +130,11 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 .cfg-input.cfg-port { width: 62px; }
 .cfg-input.cfg-num { width: 90px; }
 .cfg-input.cfg-proto { width: 74px; padding: 6px 6px; cursor: pointer; }
+.auth-badge { display: inline-flex; align-items: center; gap: 8px; }
+.auth-badge[hidden] { display: none; }
+.auth-user { font-size: 12px; color: var(--text-dim); font-family: var(--mono); }
+.auth-user .auth-who { color: var(--saber); font-weight: 600; }
+.auth-warn { color: var(--medium); font-weight: 600; cursor: help; }
 .cfg-input.cfg-token { width: 150px; letter-spacing: 1px; }
 .cfg-input.cfg-small { width: 72px; font-size: 12px; }
 .cfg-input.cfg-stype { width: 96px; font-size: 12px; }

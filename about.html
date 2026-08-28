@@ -109,7 +109,10 @@
       <p>The dashboard runs entirely in the browser. An optional <strong>zero-dependency
       Node backend</strong> (<code>server.js</code>) lets it forward the generated logs
       as <strong>real UDP/TCP syslog</strong> — or as <strong>Splunk HEC</strong> events
-      over HTTP(S) — to an actual collector, and test connectivity to it.</p>
+      over HTTP(S) — to an actual collector, and test connectivity to it. The backend is
+      behind a <strong>password + two-factor sign-in</strong> (section 3) — it can put real
+      traffic on your network, so it does not answer to just anyone who can reach the
+      port.</p>
       <div class="callout">📖 <strong>Full technical reference:</strong>
       <code>DOCUMENTATION.md</code> — architecture, every scenario &amp; detection rule,
       the HTTP API, log formats, and deployment.</div>
@@ -157,9 +160,88 @@ xdg-open index.html            <span class="cm"># or just open the file (file://
     </section>
 
     <section>
-      <h2><span class="num">3</span>Deploy to a server</h2>
+      <h2><span class="num">3</span>Signing in</h2>
+      <p><code>node server.js</code> gates the whole app behind a <strong>password plus a
+      six-digit authenticator code</strong> (TOTP, RFC 6238). The first start writes
+      <code>auth.json</code> next to <code>server.js</code> (mode <code>0600</code>,
+      gitignored) and prints what you need.</p>
+      <table>
+        <thead><tr><th></th><th>Default</th></tr></thead>
+        <tbody>
+          <tr><td><strong>Username</strong></td><td><code>admin</code></td></tr>
+          <tr><td><strong>Password</strong></td><td><code>APEXjedi2026!</code></td></tr>
+          <tr><td><strong>Second factor</strong></td><td>a fresh random TOTP secret,
+          printed on first start</td></tr>
+        </tbody>
+      </table>
+      <div class="callout"><strong>The password above is published in this document, so
+      it is not a secret.</strong> Change it before anyone else can reach the port:
+      <code>node server.js --set-password 'something only you know'</code> — then restart
+      the server.</div>
+
+      <h3>Enrolling the second factor</h3>
+      <p>The TOTP secret is generated per install — it is <em>not</em> a documented
+      default, so nobody can derive it from these docs. Enrol it once:</p>
+      <ol>
+        <li>Start the backend and sign in with the username and password. A correct
+        password alone does <strong>not</strong> sign you in; it moves you to the second
+        step.</li>
+        <li>The first sign-in shows the <strong>enrolment screen</strong> with the secret
+        in Base32 and an <code>otpauth://</code> URI. Add it to Google Authenticator,
+        Aegis, 1Password, Bitwarden, or anything else that does time-based codes —
+        <strong>SHA-1, 6 digits, 30 seconds</strong> (the defaults everywhere).</li>
+        <li>Type the code the app shows. That seals the enrolment: from then on the
+        secret is never displayed again, and every sign-in needs a live code.</li>
+      </ol>
+      <p>The same secret is printed on the console at every start until it is enrolled,
+      so a headless install can be enrolled without opening the UI.</p>
+
+      <h3>Managing credentials</h3>
+      <pre><code>node server.js --show-auth              <span class="cm"># who can sign in, and whether 2FA is enrolled</span>
+node server.js --set-password '&lt;pw&gt;'    <span class="cm"># replace the password (min 8 characters)</span>
+node server.js --reset-2fa              <span class="cm"># new TOTP secret — for a lost authenticator</span>
+node server.js --reset-auth             <span class="cm"># back to the documented defaults + a new secret</span>
+node auth.js   --selftest               <span class="cm"># check the Base32/TOTP maths against the RFCs</span></code></pre>
+      <p>Each of these edits <code>auth.json</code> and exits. <strong>Restart the backend
+      afterwards</strong> — a running process holds the credentials in memory.</p>
+
+      <h3>What is enforced, and what is not</h3>
+      <table>
+        <thead><tr><th></th><th></th></tr></thead>
+        <tbody>
+          <tr><td><strong>Password</strong></td><td>scrypt, per-install random salt.
+          Never stored or logged in the clear.</td></tr>
+          <tr><td><strong>Second factor</strong></td><td>TOTP, ±1 step of clock tolerance,
+          and a used code cannot be replayed.</td></tr>
+          <tr><td><strong>Brute force</strong></td><td>5 failed attempts locks that account
+          for 5 minutes — the correct password is refused during the lockout too.</td></tr>
+          <tr><td><strong>Session</strong></td><td>An <code>HttpOnly</code>,
+          <code>SameSite=Strict</code> cookie, valid 8 hours. Held in memory, so a backend
+          restart signs everyone out.</td></tr>
+          <tr><td><strong>Coverage</strong></td><td>Every route: the dashboard, the assets,
+          <code>/forward</code>, <code>/test</code>, <code>/status</code>.
+          <code>auth.json</code> itself is never served.</td></tr>
+        </tbody>
+      </table>
+      <p>Two things it deliberately does not do:</p>
+      <ul>
+        <li><strong>Static hosting has no sign-in.</strong>
+        <code>python3 -m http.server</code> just serves files; there is no process to check
+        a session. Only <code>node server.js</code> enforces anything.</li>
+        <li><strong>The session cookie is not <code>Secure</code></strong> — the app speaks
+        plain HTTP, and a <code>Secure</code> cookie would simply never be stored. Behind a
+        TLS proxy, set <code>JEDI_SECURE_COOKIE=1</code>. On an untrusted network, put it
+        behind HTTPS.</li>
+      </ul>
+      <p>To turn sign-in off for a throwaway local run:
+      <code>JEDI_AUTH=off node server.js</code>. The banner says so in the clear when you
+      do.</p>
+    </section>
+
+    <section>
+      <h2><span class="num">4</span>Deploy to a server</h2>
       <pre><code><span class="cm"># from the project directory, copy to the target host</span>
-rsync -av --exclude '.git' --exclude 'apex.log' \
+rsync -av --exclude '.git' --exclude 'apex.log' --exclude 'auth.json' \
   ./ user@your-server:/home/user/APEX_JediSyslogger/
 
 <span class="cm"># on the server</span>
@@ -177,7 +259,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">4</span>Using it</h2>
+      <h2><span class="num">5</span>Using it</h2>
       <ol>
         <li><strong>Start Ingestion</strong> — begins benign baseline traffic. Drag the
         <strong>Rate</strong> slider (0–60 eps) to change volume.</li>
@@ -228,7 +310,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">5</span>Live forwarding &amp; troubleshooting</h2>
+      <h2><span class="num">6</span>Live forwarding &amp; troubleshooting</h2>
       <p><code>Forward live</code> → the browser posts batches to <code>POST /forward</code>,
       and the backend emits them to your collector. Because <strong>UDP is
       fire-and-forget</strong>, a rising "sent" count means packets <em>left your
@@ -272,7 +354,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">6</span>Detection rules</h2>
+      <h2><span class="num">7</span>Detection rules</h2>
       <table>
         <thead><tr><th>Rule</th><th>Trigger</th><th>ATT&amp;CK</th></tr></thead>
         <tbody>
@@ -314,7 +396,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">7</span>Attack scenarios <span class="tag">60</span></h2>
+      <h2><span class="num">8</span>Attack scenarios <span class="tag">60</span></h2>
       <p>Injected from the <strong>Attack ›</strong> menu; each button fires a burst built
       to trip a detection.</p>
       <ul>
@@ -332,7 +414,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">8</span>Appliance log formats <span class="tag">41</span></h2>
+      <h2><span class="num">9</span>Appliance log formats <span class="tag">41</span></h2>
       <p>Injected from the <strong>Appliance logs ›</strong> menu — each event is rendered
       in the vendor's real wire format (syslog <code>&lt;PRI&gt;</code> + native payload).</p>
       <table>
@@ -409,20 +491,24 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">9</span>Project layout</h2>
+      <h2><span class="num">10</span>Project layout</h2>
       <pre><code>index.html          markup + panel scaffold
+login.html          password + two-factor sign-in page
 about.html          this page — instructions
 css/styles.css      dark SIEM theme
 js/data.js          data pools, RNG, RFC 3164/5424 + vendor line formatting
 js/syslogger.js     log generator, appliance sources, scenarios, file replay, forwarding
 js/jedi.js          SIEM engine: parsing, correlation, detection rules
 js/ui.js            dashboard rendering + wiring
+js/login.js         the two-step sign-in flow
+auth.js             password (scrypt) + TOTP two-factor, sessions, lockout
+auth.json           generated per install: password hash + TOTP secret (0600, gitignored)
 server.js           optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
 samples/sample.log  example mixed-format log for the file-replay demo</code></pre>
     </section>
 
     <section>
-      <h2><span class="num">10</span>Extending it</h2>
+      <h2><span class="num">11</span>Extending it</h2>
       <ul>
         <li><strong>Add a log source</strong>: add a builder to <code>BASELINE</code> in
         <code>syslogger.js</code> and a <code>SOURCE_META</code> entry in <code>ui.js</code>.</li>

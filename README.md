@@ -11,7 +11,9 @@ practice. It has two halves:
 The dashboard runs entirely in the browser. An optional **zero-dependency Node
 backend** (`server.js`) lets it forward the generated logs as **real UDP/TCP
 syslog** — or as **Splunk HEC** events over HTTP(S) — to an actual collector, and
-test connectivity to it.
+test connectivity to it. The backend is behind a **password + two-factor sign-in**
+(see [Signing in](#signing-in)) — it can put real traffic on your network, so it
+does not answer to just anyone who can reach the port.
 
 > 📖 **Full technical reference:** [DOCUMENTATION.md](DOCUMENTATION.md) — architecture,
 > every scenario & detection rule, the HTTP API, log formats, and deployment.
@@ -54,7 +56,7 @@ node server.js                 # serves the app on http://localhost:8099
 
 That's the entire install. For a custom port, a systemd service, or firewall
 rules see [Run it](#run-it) below and
-[DOCUMENTATION.md §13](DOCUMENTATION.md#13-deployment).
+[DOCUMENTATION.md §14](DOCUMENTATION.md#14-deployment).
 
 ## Run it
 
@@ -73,11 +75,84 @@ xdg-open index.html            # or just open the file (file://)
 > process is what actually emits the packets. HEC forwarding goes through the
 > same backend, which keeps the token out of the browser's cross-origin path.
 
+The first start prints the sign-in credentials and a two-factor secret — read on.
+
+## Signing in
+
+`node server.js` gates the whole app behind a **password plus a six-digit
+authenticator code** (TOTP, RFC 6238). The first start writes `auth.json` next to
+`server.js` (mode `0600`, gitignored) and prints what you need:
+
+| | Default |
+|---|---|
+| **Username** | `admin` |
+| **Password** | `APEXjedi2026!` |
+| **Second factor** | a fresh random TOTP secret, printed on first start |
+
+**The password above is published in this README, so it is not a secret.** Change
+it before anyone else can reach the port:
+
+```bash
+node server.js --set-password 'something only you know'   # then restart the server
+```
+
+### Enrolling the second factor
+
+The TOTP secret is generated per install — it is *not* a documented default, so
+nobody can derive it from these docs. Enrol it once:
+
+1. Start the backend and sign in at `http://localhost:8099/` with the username and
+   password. A correct password alone does **not** sign you in; it moves you to
+   the second step.
+2. The first sign-in shows the **enrolment screen** with the secret in Base32 and
+   an `otpauth://` URI. Add it to Google Authenticator, Aegis, 1Password,
+   Bitwarden, or anything else that does time-based codes — **SHA-1, 6 digits, 30
+   seconds** (the defaults everywhere).
+3. Type the code the app shows. That seals the enrolment: from then on the secret
+   is never displayed again, and every sign-in needs a live code.
+
+The same secret is printed on the console at every start until it is enrolled, so
+a headless install can be enrolled without opening the UI.
+
+### Managing credentials
+
+```bash
+node server.js --show-auth              # who can sign in, and whether 2FA is enrolled
+node server.js --set-password '<pw>'    # replace the password (min 8 characters)
+node server.js --reset-2fa              # new TOTP secret — for a lost authenticator
+node server.js --reset-auth             # back to the documented defaults + a new secret
+node auth.js   --selftest               # check the Base32/TOTP maths against the RFCs
+```
+
+Each of these edits `auth.json` and exits. **Restart the backend afterwards** — a
+running process holds the credentials in memory.
+
+### What is enforced, and what is not
+
+| | |
+|---|---|
+| **Password** | scrypt, per-install random salt. Never stored or logged in the clear. |
+| **Second factor** | TOTP, ±1 step of clock tolerance, and a used code cannot be replayed. |
+| **Brute force** | 5 failed attempts locks that account for 5 minutes — the correct password is refused during the lockout too. |
+| **Session** | An `HttpOnly`, `SameSite=Strict` cookie, valid 8 hours. Held in memory, so a backend restart signs everyone out. |
+| **Coverage** | Every route: the dashboard, the assets, `/forward`, `/test`, `/status`. `auth.json` itself is never served. |
+
+Two things it deliberately does not do:
+
+- **Static hosting has no sign-in.** `python3 -m http.server` just serves files;
+  there is no process to check a session. Only `node server.js` enforces anything.
+- **The session cookie is not `Secure`** — the app speaks plain HTTP, and a
+  `Secure` cookie would simply never be stored. Behind a TLS proxy, set
+  `JEDI_SECURE_COOKIE=1`. On an untrusted network, put it behind HTTPS.
+
+To turn sign-in off for a throwaway local run: `JEDI_AUTH=off node server.js`.
+The banner says so in the clear when you do.
+
 ## Deploy to a server
 
 ```bash
 # from the project directory, copy to the target host
-rsync -av --exclude '.git' --exclude 'apex.log' \
+rsync -av --exclude '.git' --exclude 'apex.log' --exclude 'auth.json' \
   ./ alfreddgreat@172.26.250.20:/home/alfreddgreat/APEX_JediSyslogger/
 
 # on the server
@@ -87,8 +162,15 @@ setsid node server.js </dev/null >apex.log 2>&1 & # detached
 ```
 
 Requires **Node.js** on the target (no npm install — zero dependencies). Then
-browse to `http://<server-ip>:8099`. See [DOCUMENTATION.md §13](DOCUMENTATION.md#13-deployment)
-for a systemd unit and firewall notes.
+browse to `http://<server-ip>:8099` and sign in. See
+[DOCUMENTATION.md §14](DOCUMENTATION.md#14-deployment) for a systemd unit and
+firewall notes.
+
+> **Never copy `auth.json` between hosts** — hence the `--exclude` above. Each
+> install generates its own password hash and TOTP secret on first start; copying
+> one over means both machines share a second factor, and a `--delete` sync would
+> silently wipe the target's credentials. The server's own first start prints the
+> secret to enrol; watch its console (`apex.log` when detached).
 
 > **Use `setsid`, not `nohup`, when starting it over SSH** — a plain `nohup … &`
 > keeps the session's stdout attached and hangs the SSH channel.
@@ -317,11 +399,15 @@ Snare is Windows Event Log over a different wire format, so it reuses the existi
 
 ```
 index.html        markup + panel scaffold
+login.html        password + two-factor sign-in page
 css/styles.css    dark SIEM theme
 js/data.js        data pools, RNG, RFC 3164/5424 + vendor line formatting
 js/syslogger.js   log generator, appliance sources, scenarios, file replay, forwarding
 js/jedi.js        SIEM engine: parsing, correlation, detection rules
 js/ui.js          dashboard rendering + wiring
+js/login.js       the two-step sign-in flow
+auth.js           password (scrypt) + TOTP two-factor, sessions, lockout
+auth.json         generated per install: password hash + TOTP secret (0600, gitignored)
 server.js         optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
 samples/sample.log  example mixed-format log for the file-replay demo
 jsconfig.json     editor typecheck settings (no install needed, ships nothing)
