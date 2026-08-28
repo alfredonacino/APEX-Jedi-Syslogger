@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Account — APEX JediSyslogger</title>
+  <link rel="stylesheet" href="css/styles.css" />
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>" />
+  <style>
+    /* ── Account page (scoped; reuses the theme vars from styles.css) ── */
+    .acct { max-width: 880px; margin: 0 auto; padding: 0 18px 60px; }
+    .card {
+      background: var(--bg-1); border: 1px solid var(--border);
+      border-radius: var(--radius); padding: 20px 22px; margin: 18px 0;
+    }
+    .card > h2 {
+      font-size: 15px; color: var(--text); margin: 0 0 4px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .card > .lede { font-size: 12px; color: var(--text-dim); margin: 0 0 16px; line-height: 1.55; }
+    .card h3 {
+      font-size: 12px; letter-spacing: .4px; text-transform: uppercase;
+      color: var(--saber-2); margin: 20px 0 10px;
+    }
+    .facts { display: grid; grid-template-columns: auto 1fr; gap: 6px 16px; font-size: 12.5px; margin: 0 0 4px; }
+    .facts dt { color: var(--text-mute); }
+    .facts dd { color: var(--text); margin: 0; font-family: var(--mono); }
+    .pill {
+      font-size: 10px; letter-spacing: .5px; text-transform: uppercase; font-weight: 700;
+      border-radius: 20px; padding: 2px 9px; white-space: nowrap;
+    }
+    .pill-admin { background: rgba(74,222,128,.14); color: var(--saber); border: 1px solid rgba(74,222,128,.4); }
+    .pill-user  { background: rgba(125,160,200,.12); color: var(--text-dim); border: 1px solid var(--border-2); }
+    .pill-warn  { background: rgba(251,191,36,.14); color: var(--medium); border: 1px solid rgba(251,191,36,.4); }
+    .pill-ok    { background: rgba(74,222,128,.10); color: var(--saber); border: 1px solid rgba(74,222,128,.3); }
+
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
+    .fld { display: block; }
+    .fld > span {
+      display: block; font-size: 10.5px; letter-spacing: .5px; text-transform: uppercase;
+      color: var(--text-dim); margin-bottom: 5px;
+    }
+    .fld input, .fld select {
+      background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 6px;
+      color: var(--text); padding: 8px 10px; font-size: 13px; font-family: var(--mono); width: 190px;
+    }
+    .fld input:focus, .fld select:focus { outline: none; border-color: var(--saber-2); }
+    .fld select { width: 110px; cursor: pointer; }
+
+    .btn-go, .btn-warn, .btn-danger {
+      font-size: 12px; font-weight: 600; padding: 8px 14px; border-radius: 6px;
+      cursor: pointer; white-space: nowrap; border: 1px solid;
+    }
+    .btn-go     { background: rgba(74,222,128,.12); border-color: rgba(74,222,128,.45); color: var(--saber); }
+    .btn-go:hover { background: rgba(74,222,128,.24); }
+    .btn-warn   { background: rgba(251,191,36,.10); border-color: rgba(251,191,36,.4); color: var(--medium); }
+    .btn-warn:hover { background: rgba(251,191,36,.2); }
+    .btn-danger { background: rgba(255,59,92,.10); border-color: rgba(255,59,92,.4); color: var(--crit); }
+    .btn-danger:hover { background: rgba(255,59,92,.2); }
+    .btn-go:disabled, .btn-warn:disabled, .btn-danger:disabled { opacity: .45; cursor: default; }
+
+    .note { font-size: 12px; line-height: 1.5; margin: 12px 0 0; min-height: 16px; }
+    .note.ok { color: var(--saber); font-weight: 600; }
+    .note.err { color: var(--crit); font-weight: 600; }
+    .note.info { color: var(--text-dim); }
+
+    table.users { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+    table.users th {
+      text-align: left; font-size: 10.5px; letter-spacing: .5px; text-transform: uppercase;
+      color: var(--text-mute); font-weight: 600; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--border);
+    }
+    table.users td { padding: 10px 10px 10px 0; border-bottom: 1px solid var(--border); vertical-align: middle; }
+    table.users td.name { font-family: var(--mono); color: var(--text); }
+    table.users td.acts { text-align: right; white-space: nowrap; }
+    table.users td.acts button { margin-left: 6px; padding: 5px 9px; font-size: 11px; }
+    table.users tr.me td.name::after { content: ' (you)'; color: var(--text-mute); font-family: var(--font); }
+
+    /* White plate on purpose — a QR inverted by the dark theme is one most
+       scanners refuse. */
+    .qr-plate { background: #fff; border-radius: 8px; padding: 8px; width: 216px; margin: 14px 0 10px; line-height: 0; }
+    .qr-plate svg { width: 100%; height: auto; display: block; }
+    .secret {
+      font-family: var(--mono); font-size: 14px; letter-spacing: 2px; color: var(--saber);
+      background: var(--bg-2); border: 1px solid var(--border-2); border-radius: 6px;
+      padding: 9px 12px; display: inline-block; word-break: break-all;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand">
+      <span class="brand-mark">⚔️</span>
+      <div>
+        <h1><span class="brand-apex">APEX</span> Jedi<span class="brand-accent">Syslogger</span></h1>
+        <p class="brand-sub">Account &amp; users</p>
+      </div>
+    </div>
+    <div class="controls">
+      <a href="/" class="btn btn-ghost" style="text-decoration:none">← Back to dashboard</a>
+    </div>
+  </header>
+
+  <main class="acct">
+    <!-- ── My profile ─────────────────────────────────────────────── -->
+    <section class="card">
+      <h2>My profile <span class="pill pill-user" id="my-role">user</span></h2>
+      <p class="lede">Your sign-in, your second factor, and the Log Collector this
+        account resumes with.</p>
+      <dl class="facts">
+        <dt>Username</dt><dd id="my-name">…</dd>
+        <dt>Second factor</dt><dd id="my-2fa">…</dd>
+        <dt>Account created</dt><dd id="my-created">…</dd>
+      </dl>
+
+      <h3>Change password</h3>
+      <form id="form-password">
+        <div class="row">
+          <label class="fld"><span>Current password</span>
+            <input type="password" id="pw-current" autocomplete="current-password" required /></label>
+          <label class="fld"><span>New password</span>
+            <input type="password" id="pw-next" autocomplete="new-password" minlength="8" required /></label>
+          <label class="fld"><span>Repeat new password</span>
+            <input type="password" id="pw-again" autocomplete="new-password" minlength="8" required /></label>
+          <button type="submit" class="btn-go" id="pw-go">Change password</button>
+        </div>
+        <p class="note" id="pw-note"></p>
+      </form>
+
+      <h3>Reset my second factor</h3>
+      <p class="lede">Issues a new secret and retires the old authenticator entry.
+        You enrol again right here.</p>
+      <form id="form-totp">
+        <div class="row">
+          <label class="fld"><span>Confirm with your password</span>
+            <input type="password" id="totp-pw" autocomplete="current-password" required /></label>
+          <button type="submit" class="btn-warn" id="totp-go">Reset second factor</button>
+        </div>
+        <p class="note" id="totp-note"></p>
+      </form>
+      <div class="hidden" id="totp-enrol">
+        <div class="qr-plate" id="totp-qr"></div>
+        <div class="secret" id="totp-secret"></div>
+        <p class="note info">Scan it, then sign out and back in with a fresh code.
+          This is the only time it is shown.</p>
+      </div>
+    </section>
+
+    <!-- ── My log collector ───────────────────────────────────────── -->
+    <section class="card">
+      <h2>My Log Collector (Receiver)</h2>
+      <p class="lede">Saved as you edit it on the dashboard, and restored the next time
+        you sign in. Every account keeps its own, so two people testing at once never
+        collide.</p>
+      <dl class="facts">
+        <dt>Destination</dt><dd id="col-dest">…</dd>
+        <dt>Protocol</dt><dd id="col-proto">…</dd>
+        <dt>HEC token</dt><dd id="col-token">…</dd>
+        <dt>HEC index</dt><dd id="col-index">…</dd>
+        <dt>HEC sourcetype</dt><dd id="col-stype">…</dd>
+        <dt>TLS</dt><dd id="col-tls">…</dd>
+      </dl>
+      <div class="row" style="margin-top:14px">
+        <button class="btn-warn" id="col-reset">Reset to defaults</button>
+      </div>
+      <p class="note" id="col-note"></p>
+    </section>
+
+    <!-- ── Users (admins only) ────────────────────────────────────── -->
+    <section class="card hidden" id="users-card">
+      <h2>Users <span class="pill pill-admin">admin only</span></h2>
+      <p class="lede">Everyone signs in with their own password and their own second
+        factor. A new account enrols its authenticator on first sign-in.</p>
+
+      <table class="users">
+        <thead>
+          <tr><th>User</th><th>Role</th><th>Password</th><th>Second factor</th><th></th></tr>
+        </thead>
+        <tbody id="users-body"></tbody>
+      </table>
+      <p class="note" id="users-note"></p>
+
+      <h3>Add a user</h3>
+      <form id="form-newuser">
+        <div class="row">
+          <label class="fld"><span>Username</span>
+            <input id="nu-name" spellcheck="false" autocomplete="off" required /></label>
+          <label class="fld"><span>Initial password</span>
+            <input type="password" id="nu-pass" autocomplete="new-password" minlength="8" required /></label>
+          <label class="fld"><span>Role</span>
+            <select id="nu-role"><option value="user">user</option><option value="admin">admin</option></select></label>
+          <button type="submit" class="btn-go" id="nu-go">Create account</button>
+        </div>
+        <p class="note" id="nu-note"></p>
+      </form>
+    </section>
+  </main>
+
+  <script src="js/qr.js"></script>
+  <script src="js/account.js"></script>
+</body>
+</html>

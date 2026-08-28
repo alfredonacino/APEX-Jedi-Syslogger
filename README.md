@@ -11,9 +11,10 @@ practice. It has two halves:
 The dashboard runs entirely in the browser. An optional **zero-dependency Node
 backend** (`server.js`) lets it forward the generated logs as **real UDP/TCP
 syslog** — or as **Splunk HEC** events over HTTP(S) — to an actual collector, and
-test connectivity to it. The backend is behind a **password + two-factor sign-in**
-(see [Signing in](#signing-in)) — it can put real traffic on your network, so it
-does not answer to just anyone who can reach the port.
+test connectivity to it. The backend is **multi-user**, behind a **password +
+two-factor sign-in**, and each account keeps its own Log Collector settings (see
+[Signing in](#signing-in)) — it can put real traffic on your network, so it does
+not answer to just anyone who can reach the port.
 
 > 📖 **Full technical reference:** [DOCUMENTATION.md](DOCUMENTATION.md) — architecture,
 > every scenario & detection rule, the HTTP API, log formats, and deployment.
@@ -80,17 +81,19 @@ The first start prints the sign-in credentials and a two-factor secret — read 
 ## Signing in
 
 `node server.js` gates the whole app behind a **password plus a six-digit
-authenticator code** (TOTP, RFC 6238). The first start writes `auth.json` next to
-`server.js` (mode `0600`, gitignored) and prints what you need:
+authenticator code** (TOTP, RFC 6238), with **as many accounts as you need**. The
+first start writes `auth.json` next to `server.js` (mode `0600`, gitignored) and
+creates one admin:
 
 | | Default |
 |---|---|
 | **Username** | `admin` |
 | **Password** | `APEXjedi2026!` |
-| **Second factor** | a fresh random TOTP secret, printed on first start |
+| **Second factor** | a fresh random TOTP secret per account, shown as a QR |
+| **Role** | `admin` |
 
 **The password above is published in this README, so it is not a secret.** Change
-it before anyone else can reach the port:
+it in the app (**Account › Change password**) or on the host:
 
 ```bash
 node server.js --set-password 'something only you know'   # then restart the server
@@ -98,60 +101,103 @@ node server.js --set-password 'something only you know'   # then restart the ser
 
 ### Enrolling the second factor
 
-The TOTP secret is generated per install — it is *not* a documented default, so
-nobody can derive it from these docs. Enrol it once:
+Each account gets its own TOTP secret, generated per install — *not* a documented
+default, so nobody can derive it from these docs. Enrol it once:
 
-1. Start the backend and sign in at `http://localhost:8099/` with the username and
-   password. A correct password alone does **not** sign you in; it moves you to
-   the second step.
-2. The first sign-in shows the **enrolment screen with a QR code**. Scan it with
-   Google Authenticator, Aegis, 1Password, Bitwarden, or anything else that does
-   time-based codes. Can't scan? Expand **Can't scan it?** for the Base32 secret to
-   type in — time-based, SHA-1, 6 digits, 30 seconds.
+1. Sign in at `http://localhost:8099/` with the username and password. A correct
+   password alone does **not** sign you in; it moves you to the second step.
+2. The first sign-in shows a **QR code**. Scan it with Google Authenticator,
+   Aegis, 1Password, Bitwarden, or anything else that does time-based codes.
+   Can't scan? Expand **Can't scan it?** for the Base32 secret to type in.
 3. Type the code the app shows. That seals the enrolment: from then on the secret
    is never displayed again, and every sign-in needs a live code.
 
-The console prints the same QR — as text, using half-block characters — at every
-start until it is enrolled, so a headless install is enrolled by scanning its
-terminal (or its `apex.log`) without opening the UI.
+The console prints the same QR — as text, using half-block characters — for every
+unenrolled account at each start, so a headless install is enrolled by scanning
+its terminal (or its `apex.log`) without opening the UI.
 
 The QR is generated in-process by `js/qr.js`, a small QR encoder written for this
 (no dependencies, here as everywhere). `node js/qr.js --selftest` checks it
 against the format and version tables in ISO/IEC 18004.
 
-### Managing credentials
+### Accounts, roles and the Account page
+
+**Account** in the dashboard header opens the management page.
+
+| Role | Can do |
+|------|--------|
+| `user` | Their own dashboard, their own Log Collector, their own password and second factor |
+| `admin` | All of that, plus create, delete, promote, demote, and reset the password or second factor of anyone |
+
+Everyone gets, on their own profile:
+
+- **Change password** — asks for the current one, then signs out every *other*
+  session for that account and leaves the one making the change signed in.
+- **Reset my second factor** — also asks for the password, then issues a new
+  secret and shows the QR to re-enrol on the spot. The old authenticator entry
+  stops working immediately.
+
+Admins additionally get a **Users** table: role, whether the password is still a
+default, whether the second factor is enrolled, and per-row **Set password**,
+**Reset 2FA**, **Make admin / Make user** and **Delete**. Two guardrails are
+enforced on the server, not just greyed out in the UI: you cannot delete or demote
+the account you are signed in as, and you cannot leave the install with no admin.
+
+A new account is created with a password you choose and **no second factor** — its
+owner enrols their own authenticator at their first sign-in.
+
+### Every user has their own Log Collector
+
+The **Log collector (receiver)** panel is per account. Whatever you set — IP or
+hostname, port, protocol, and the whole HEC block (token, index, sourcetype, TLS
+switches) — is saved to your profile as you type it, and **restored the next time
+you sign in**. Two people testing against different collectors at the same time
+never overwrite each other.
+
+**Account › My Log Collector** shows what is currently saved (the HEC token is
+reported by length, not printed) and offers **Reset to defaults**.
+
+Saved collector settings live in `auth.json` alongside the credentials — same
+`0600` file, never served over HTTP. Deleting a user deletes theirs with them.
+
+### Managing accounts from the command line
 
 ```bash
-node server.js --show-auth              # who can sign in, and whether 2FA is enrolled
-node server.js --set-password '<pw>'    # replace the password (min 8 characters)
-node server.js --reset-2fa              # new TOTP secret — for a lost authenticator
-node server.js --reset-auth             # back to the documented defaults + a new secret
-node auth.js   --selftest               # check the Base32/TOTP maths against the RFCs
+node server.js --list-users                      # every account, role, password and 2FA state
+node server.js --add-user <name> '<pw>' [--admin]
+node server.js --delete-user <name>
+node server.js --set-password [user] '<pw>'      # defaults to the first admin
+node server.js --reset-2fa [user]                # new TOTP secret — lost authenticator
+node server.js --reset-auth                      # wipe every account back to the default admin
+node auth.js   --selftest                        # Base32/TOTP maths against the RFCs
+node js/qr.js  --selftest                        # QR encoder against ISO/IEC 18004
 ```
 
 Each of these edits `auth.json` and exits. **Restart the backend afterwards** — a
-running process holds the credentials in memory.
+running process holds the accounts in memory.
 
 ### What is enforced, and what is not
 
 | | |
 |---|---|
-| **Password** | scrypt, per-install random salt. Never stored or logged in the clear. |
-| **Second factor** | TOTP, ±1 step of clock tolerance, and a used code cannot be replayed. |
+| **Password** | scrypt, per-account random salt. Never stored or logged in the clear. |
+| **Second factor** | TOTP per account, ±1 step of clock tolerance, and a used code cannot be replayed. |
 | **Brute force** | 5 failed attempts locks that account for 5 minutes — the correct password is refused during the lockout too. |
 | **Session** | An `HttpOnly`, `SameSite=Strict` cookie, valid 8 hours. Held in memory, so a backend restart signs everyone out. |
-| **Coverage** | Every route: the dashboard, the assets, `/forward`, `/test`, `/status`. `auth.json` itself is never served. |
+| **Roles** | Re-checked on the server for every `/api/users*` call. Hiding the Users card from a non-admin is a courtesy, not the control. |
+| **Coverage** | Every route: the dashboard, the assets, `/api/*`, `/forward`, `/test`, `/status`. `auth.json` itself is never served. |
 
 Two things it deliberately does not do:
 
 - **Static hosting has no sign-in.** `python3 -m http.server` just serves files;
-  there is no process to check a session. Only `node server.js` enforces anything.
+  there is no process to check a session, no accounts, and no saved collector.
+  Only `node server.js` enforces or remembers anything.
 - **The session cookie is not `Secure`** — the app speaks plain HTTP, and a
   `Secure` cookie would simply never be stored. Behind a TLS proxy, set
   `JEDI_SECURE_COOKIE=1`. On an untrusted network, put it behind HTTPS.
 
 To turn sign-in off for a throwaway local run: `JEDI_AUTH=off node server.js`.
-The banner says so in the clear when you do.
+The banner says so in the clear, and per-user collector storage goes with it.
 
 ## Deploy to a server
 
@@ -405,6 +451,7 @@ Snare is Windows Event Log over a different wire format, so it reuses the existi
 ```
 index.html        markup + panel scaffold
 login.html        password + two-factor sign-in page
+account.html      profile, password, second factor, and user management
 css/styles.css    dark SIEM theme
 js/data.js        data pools, RNG, RFC 3164/5424 + vendor line formatting
 js/syslogger.js   log generator, appliance sources, scenarios, file replay, forwarding
@@ -412,8 +459,9 @@ js/jedi.js        SIEM engine: parsing, correlation, detection rules
 js/ui.js          dashboard rendering + wiring
 js/login.js       the two-step sign-in flow
 js/qr.js          QR encoder for the 2FA enrolment code (browser + console)
-auth.js           password (scrypt) + TOTP two-factor, sessions, lockout
-auth.json         generated per install: password hash + TOTP secret (0600, gitignored)
+js/account.js     the Account page: profile, collector, users
+auth.js           accounts: scrypt passwords, TOTP, roles, sessions, lockout
+auth.json         generated per install: accounts + each user's collector (0600, gitignored)
 server.js         optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
 samples/sample.log  example mixed-format log for the file-replay demo
 jsconfig.json     editor typecheck settings (no install needed, ships nothing)

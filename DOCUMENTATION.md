@@ -17,7 +17,7 @@ formats, the HTTP API, configuration, and deployment.
 - [10. Live forwarding & the backend API](#10-live-forwarding--the-backend-api)
 - [11. Connectivity test](#11-connectivity-test)
 - [12. Configuration reference](#12-configuration-reference)
-- [13. Authentication (password + 2FA)](#13-authentication-password--2fa)
+- [13. Accounts, sign-in and per-user settings](#13-accounts-sign-in-and-per-user-settings)
 - [14. Deployment](#14-deployment)
 - [15. Extending the app](#15-extending-the-app)
 - [16. Troubleshooting](#16-troubleshooting)
@@ -39,7 +39,8 @@ Everything renders in the browser. The optional `server.js` backend serves the
 app **and** relays generated logs to an external collector — as real UDP/TCP
 syslog, or as Splunk HEC events over HTTP(S). Because that relay can put real
 traffic on your network, the backend requires a **password plus a TOTP second
-factor** before it answers anything (§13).
+factor** before it answers anything, and keeps a **separate Log Collector per
+account** (§13).
 
 All traffic is synthetic. Nothing leaves the browser unless you explicitly enable
 **Forward live** (which requires the backend).
@@ -82,8 +83,10 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `js/ui.js` | Dashboard rendering, charts, config wiring, drawer |
 | `js/login.js` | The two-step sign-in flow on `login.html` |
 | `js/qr.js` | QR encoder (ISO/IEC 18004) for the 2FA enrolment code — browser and console |
-| `auth.js` | scrypt passwords, RFC 6238 TOTP, sessions, lockout (§13) |
-| `auth.json` | Generated per install: password hash + TOTP secret (`0600`, gitignored, never served) |
+| `account.html` | Profile, password, second factor, and the admin user list |
+| `js/account.js` | The Account page's logic |
+| `auth.js` | Accounts: scrypt passwords, RFC 6238 TOTP, roles, sessions, lockout, per-user collector (§13) |
+| `auth.json` | Generated per install: every account plus its saved collector (`0600`, gitignored, never served) |
 | `server.js` | Optional backend: static host + `/forward` relay + `/test` probe + the sign-in gate |
 | `samples/sample.log` | Example mixed-format log for the file-replay demo |
 | `jsconfig.json` | Editor typecheck settings — read by the editor, never shipped |
@@ -727,37 +730,64 @@ Environment variables:
 
 ---
 
-## 13. Authentication (password + 2FA)
+## 13. Accounts, sign-in and per-user settings
 
-`server.js` gates the whole app behind a password **and** a TOTP second factor.
-It is on by default: this backend opens real UDP/TCP sockets and can POST to a
-Splunk HEC, so an open port here is an open relay onto your network.
+`server.js` gates the whole app behind a password **and** a TOTP second factor,
+across as many accounts as you need. It is on by default: this backend opens real
+UDP/TCP sockets and can POST to a Splunk HEC, so an open port here is an open
+relay onto your network.
 
 Static hosting (`python3 -m http.server`, `file://`) enforces **nothing** — there
-is no process to check a session. Only the Node backend authenticates.
+is no process to check a session, no accounts, and no saved settings. Only the
+Node backend authenticates or remembers.
 
 ### The credential store
 
 `auth.json`, written next to `server.js` on first start, mode `0600`, gitignored,
 and never served (`serveStatic` refuses it and any dotfile, including through a
-`..` path). It holds:
+`..` path). Format version 2:
+
+```json
+{ "version": 2, "users": [ { … }, { … } ] }
+```
+
+Each entry:
 
 | Field | Meaning |
 |-------|---------|
-| `user` | the sign-in name (`admin`) |
+| `id` | 16 hex characters; what the `/api/users/<id>` routes address |
+| `user` | the sign-in name |
+| `role` | `admin` or `user` |
 | `salt` / `hash` | scrypt(password, salt, 64) — N=16384, the Node default |
-| `totpSecret` | Base32, 160 bits of randomness, generated per install |
+| `totpSecret` | Base32, 160 bits of randomness, per account |
 | `totpConfirmed` | false until a code from the enrolled app verifies once |
 | `lastTotpStep` | the last accepted 30-second step — the replay guard |
 | `passwordIsDefault` | drives the console warning and the ⚠ badge in the header |
+| `collector` | that user's Log Collector panel — see below |
+
+A **version 1 file** (one flat user object, before multi-user) is migrated in
+place on load: the account is carried over whole and promoted to `admin`, so the
+password hash and an already-enrolled TOTP secret survive the upgrade. Nobody is
+locked out of their own install by updating.
+
+### Roles
+
+| Role | Can do |
+|------|--------|
+| `user` | Their own dashboard, their own collector, their own password and second factor |
+| `admin` | All of that, plus create, delete, promote, demote, and reset the password or second factor of anyone |
+
+Two guardrails are enforced in `auth.js`, not merely greyed out in the UI: you
+cannot delete or demote the account you are signed in as, and the last remaining
+admin cannot be deleted or demoted.
 
 ### Defaults
 
 | | Value |
 |---|---|
-| Username | `admin` |
+| Username | `admin` (role `admin`) |
 | Password | `APEXjedi2026!` |
-| TOTP secret | random per install — printed on first start, never a fixed default |
+| TOTP secret | random per account — shown as a QR, never a fixed default |
 
 The password is documented, therefore public. `--set-password` before exposing
 the port; until then the console warns at every start and the dashboard header
@@ -787,12 +817,63 @@ URL — so page JavaScript cannot read it.
 | `POST /auth/login` | step 1 — username + password |
 | `POST /auth/totp` | step 2 — the six-digit code; issues the session cookie |
 | `POST /auth/logout` | drop the session and clear the cookie |
-| `GET /auth/session` | who is signed in (`{authRequired, user, expires, passwordIsDefault}`) |
+| `GET /auth/session` | who is signed in (`{authRequired, user, role, expires, passwordIsDefault}`) |
 
-Reachable without a session: `/login.html`, `/js/login.js`, `/css/styles.css` and
-the four `/auth/*` endpoints. Everything else — the dashboard, every asset,
-`/forward`, `/test`, `/status` — returns a redirect to the sign-in page for a
-browser navigation (`Accept: text/html`) or a JSON **401** for anything else.
+Reachable without a session: `/login.html`, `/js/login.js`, `/js/qr.js`,
+`/css/styles.css` and the four `/auth/*` endpoints. Everything else — the
+dashboard, every asset, `/api/*`, `/forward`, `/test`, `/status` — returns a
+redirect to the sign-in page for a browser navigation (`Accept: text/html`) or a
+JSON **401** for anything else.
+
+### Profile and user-management API
+
+Everything under `/api` needs a session; the `/api/users*` half needs `role:
+"admin"`, re-checked server-side on every call.
+
+| Method & path | Body | Purpose |
+|---------------|------|---------|
+| `GET /api/profile` | — | your account, your saved collector, the account count |
+| `PUT /api/profile/collector` | `{collector}` | save your Log Collector panel |
+| `POST /api/profile/password` | `{current, next}` | change your own password |
+| `POST /api/profile/totp` | `{password}` | new TOTP secret for yourself; returns the QR URI |
+| `GET /api/users` | — | **admin** — every account |
+| `POST /api/users` | `{user, password, role}` | **admin** — create an account |
+| `DELETE /api/users/<id>` | — | **admin** — delete an account and its collector |
+| `POST /api/users/<id>/password` | `{password}` | **admin** — set someone's password |
+| `POST /api/users/<id>/totp` | — | **admin** — force someone to re-enrol |
+| `POST /api/users/<id>/role` | `{role}` | **admin** — promote or demote |
+
+Changing a password (yours or someone else's) revokes that account's sessions —
+except the one making its own change, which stays signed in. An admin resetting
+someone's second factor is shown nothing secret: that user enrols from the QR
+their own next sign-in presents.
+
+The **Account** page (`account.html` + `js/account.js`) is the interface over all
+of it, reached from the header once signed in.
+
+### Per-user Log Collector
+
+Each account's `collector` object mirrors the **Log collector (receiver)** panel:
+
+```json
+{ "ip": "splunk.lab.local", "port": 8088, "proto": "hec",
+  "hec": { "token": "…", "index": "siem", "sourcetype": "syslog",
+           "ssl": true, "insecure": true } }
+```
+
+`js/ui.js` loads it from `GET /api/profile` right after the session badge
+resolves, applies it to the config bar (protocol first, so its port-swap default
+cannot overwrite the saved port), and writes it back through
+`PUT /api/profile/collector` on every edit, debounced 600 ms. `collectorLoaded`
+gates the writer so applying the saved values never saves them straight back.
+
+Values are coerced server-side by `cleanCollector()` — the port clamped to
+1–65535, the protocol restricted to `udp`/`tcp`/`hec`, strings length-capped —
+because this arrives straight off the wire.
+
+Two people testing different collectors at once never collide, and deleting a
+user deletes their collector with them. With `JEDI_AUTH=off` there is no profile,
+so nothing is remembered.
 
 ### TOTP specifics
 
@@ -846,16 +927,18 @@ a `Secure` cookie would never be stored. Behind a TLS terminator, set
 ### Command line
 
 ```bash
-node server.js --show-auth              # user, whether the password is default, 2FA state
-node server.js --set-password '<pw>'    # replace the password (minimum 8 characters)
-node server.js --reset-2fa              # new TOTP secret — lost authenticator
-node server.js --reset-auth             # documented defaults + a new secret
-node server.js --help                   # all of the above
+node server.js --list-users                       # every account, role, password and 2FA state
+node server.js --add-user <name> '<pw>' [--admin]
+node server.js --delete-user <name>
+node server.js --set-password [user] '<pw>'       # defaults to the first admin
+node server.js --reset-2fa [user]                 # new TOTP secret — lost authenticator
+node server.js --reset-auth                       # wipe every account back to the default admin
+node server.js --help                             # all of the above
 ```
 
 Each runs against `auth.json` and exits without starting the listener. A running
-backend keeps its credentials and sessions in memory, so **restart it** to apply
-a change.
+backend keeps its accounts and sessions in memory, so **restart it** to apply a
+change.
 
 ### Turning it off
 
@@ -1030,7 +1113,11 @@ silently** — a harness that asserts on alerts is the only thing that catches i
 | Locked out after typos | 5 failures locks the account for 5 minutes. Wait it out, or restart the backend to clear it. |
 | Lost the authenticator | `node server.js --reset-2fa` on the host, then restart it and scan the new QR. |
 | The enrolment QR will not scan | Enlarge the terminal (the console QR needs ~53 columns) or use **Can't scan it?** for the secret. A QR rendered light-on-dark by a screenshot tool will not scan — use the page or the terminal directly. |
-| Forgot the password | `node server.js --reset-auth` restores the documented defaults, then restart. |
+| Forgot the password | Ask an admin to set a new one on the Account page, or `node server.js --set-password <user> '<pw>'`. With no admin left, `node server.js --reset-auth` wipes every account back to the default admin. |
+| "That needs an admin account" | You are signed in as a `user`. An admin can promote you on the Account page. |
+| "That is the only admin" | Promote a second account first; the install always keeps at least one admin. |
+| The collector panel is not remembered | You are serving statically, or running `JEDI_AUTH=off` — there is no profile to save into. |
+| A user sees someone else's collector | They cannot: it is keyed to the session's account. Check who is actually signed in via the header badge. |
 | Signed out of every browser at once | Expected after a backend restart — sessions live in memory only. |
 | Sign-in page never appears | You are serving statically (`python3 -m http.server`), which enforces nothing. Use `node server.js`. |
 | "Forward live" green but SIEM sees nothing | UDP is fire-and-forget. Click **Test** or switch to TCP/HEC; run `tcpdump -n port 514` on the collector. |

@@ -7,9 +7,11 @@
  * authenticator app can scan (Google Authenticator, Aegis, 1Password, Bitwarden)
  * works, because the shared secret is plain Base32 in an otpauth:// URI.
  *
- * Credentials live in auth.json next to this file (mode 0600, gitignored). It is
- * created on first start with the documented defaults; the console prints them,
- * plus the freshly generated TOTP secret to enrol.
+ * Multi-user: auth.json next to this file (mode 0600, gitignored) holds every
+ * account — credentials, its own TOTP secret, a role, and that user's saved Log
+ * Collector settings, so a session resumes where the last one left off and two
+ * people testing at once never collide. Created on first start with the
+ * documented default admin; a v1 single-user file is migrated in place on load.
  *
  * Sessions are in memory: a restart signs everyone out, which is the safer
  * default for a tool with no session store to keep consistent.
@@ -27,6 +29,7 @@ const DEFAULT_USER = 'admin';
 const DEFAULT_PASSWORD = 'APEXjedi2026!';
 
 const ISSUER = 'APEX JediSyslogger';
+const STORE_VERSION = 2;
 const SESSION_TTL_MS = 8 * 60 * 60 * 1000;   // 8 hours
 const PENDING_TTL_MS = 3 * 60 * 1000;        // password step → code step
 const MAX_FAILS = 5;
@@ -41,10 +44,13 @@ function hashPassword(password, salt) {
   return { salt: s, hash: crypto.scryptSync(password, s, 64).toString('hex') };
 }
 
-function newStore(password) {
+// Every account carries its own second factor and its own collector.
+function newUser(name, password, role) {
   const { salt, hash } = hashPassword(password || DEFAULT_PASSWORD);
   return {
-    user: DEFAULT_USER,
+    id: crypto.randomBytes(8).toString('hex'),
+    user: name,
+    role: role === 'admin' ? 'admin' : 'user',
     salt,
     hash,
     // 20 random bytes = 160 bits, what RFC 4226 recommends for a TOTP secret.
@@ -53,20 +59,57 @@ function newStore(password) {
     lastTotpStep: 0,        // replay guard: a code is good for one login only
     passwordIsDefault: !password,
     created: new Date().toISOString(),
+    collector: defaultCollector(),
   };
 }
 
+function defaultCollector() {
+  return {
+    ip: '10.0.0.100', port: 514, proto: 'udp',
+    hec: { token: '', index: '', sourcetype: 'syslog', ssl: true, insecure: true },
+  };
+}
+
+function newStore() {
+  return { version: STORE_VERSION, users: [newUser(DEFAULT_USER, null, 'admin')] };
+}
+
+// A v1 file is one flat user object. Carry it over whole — the password hash and
+// an already-enrolled TOTP secret have to survive, or upgrading would lock the
+// only account out of its own install.
+function migrate(raw) {
+  if (raw && Array.isArray(raw.users)) return raw;
+  if (raw && raw.user && raw.hash && raw.totpSecret) {
+    console.log('  ⟲ auth.json: migrating the single-user file to the multi-user format');
+    const carried = newUser(raw.user, 'placeholder', 'admin');
+    return { version: STORE_VERSION, users: [Object.assign(carried, raw, { id: carried.id, role: 'admin' })] };
+  }
+  return null;
+}
+
 function load() {
+  let raw = null;
   try {
-    const s = JSON.parse(fs.readFileSync(STORE, 'utf8'));
-    if (s && s.user && s.hash && s.totpSecret) return s;
-    console.log('  ⚠ auth.json is incomplete — recreating it with the defaults');
+    raw = JSON.parse(fs.readFileSync(STORE, 'utf8'));
   } catch (e) {
     if (e.code !== 'ENOENT') console.log(`  ⚠ auth.json unreadable (${e.code || e.message}) — recreating it`);
   }
-  const fresh = newStore(null);
-  save(fresh);
-  return fresh;
+  const store = migrate(raw);
+  if (!store) {
+    if (raw) console.log('  ⚠ auth.json is incomplete — recreating it with the defaults');
+    const fresh = newStore();
+    save(fresh);
+    return fresh;
+  }
+  // Backfill anything an older file predates, then persist the upgrade.
+  store.version = STORE_VERSION;
+  for (const u of store.users) {
+    if (!u.id) u.id = crypto.randomBytes(8).toString('hex');
+    if (!u.role) u.role = 'admin';
+    if (!u.collector) u.collector = defaultCollector();
+  }
+  if (JSON.stringify(store) !== JSON.stringify(raw)) save(store);
+  return store;
 }
 
 function save(store) {
@@ -132,9 +175,9 @@ function totpMatches(secret, code, step) {
 // algorithm=SHA1, digits=6 and period=30 are the Key Uri Format's defaults, so
 // spelling them out only makes the QR a version larger — and a larger symbol at
 // the same size on screen is a harder one to scan.
-function otpauthUri(store) {
-  const label = encodeURIComponent(`${ISSUER}:${store.user}`);
-  return `otpauth://totp/${label}?secret=${store.totpSecret}&issuer=${encodeURIComponent(ISSUER)}`;
+function otpauthUri(u) {
+  const label = encodeURIComponent(`${ISSUER}:${u.user}`);
+  return `otpauth://totp/${label}?secret=${u.totpSecret}&issuer=${encodeURIComponent(ISSUER)}`;
 }
 
 // Grouped in fours — the shape every authenticator's manual-entry field expects.
@@ -142,9 +185,9 @@ function prettySecret(secret) { return secret.replace(/(.{4})/g, '$1 ').trim(); 
 
 // ---- Sessions, pending logins, lockout -------------------------------------
 
-const sessions = new Map();   // token → { user, expires }
-const pending = new Map();    // token → { user, expires, enrolling }
-const fails = new Map();      // user → { count, until }
+const sessions = new Map();   // sid   → { userId, expires }
+const pending = new Map();    // token → { userId, user, expires }
+const fails = new Map();      // username → { count, until }
 
 function sweep(map, now) {
   for (const [k, v] of map) if (v.expires <= now) map.delete(k);
@@ -169,43 +212,85 @@ function clearFailures(user) { fails.delete(user); }
 
 // ---- Public API used by server.js ------------------------------------------
 
+const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{2,31}$/i;
+const MIN_PASSWORD = 8;
+
+// What a caller outside this module is allowed to see about an account: never
+// the hash, the salt, or the TOTP secret.
+function publicUser(u) {
+  return {
+    id: u.id,
+    user: u.user,
+    role: u.role,
+    totpConfirmed: !!u.totpConfirmed,
+    passwordIsDefault: !!u.passwordIsDefault,
+    created: u.created,
+  };
+}
+
+// Accept only what the collector panel can actually use, and coerce it — this
+// comes straight off the wire.
+function cleanCollector(raw) {
+  const c = raw || {};
+  const hec = c.hec || {};
+  const port = parseInt(c.port, 10);
+  const proto = String(c.proto || 'udp').toLowerCase();
+  return {
+    ip: String(c.ip || '').trim().slice(0, 253),
+    port: port > 0 && port < 65536 ? port : 514,
+    proto: ['udp', 'tcp', 'hec'].includes(proto) ? proto : 'udp',
+    hec: {
+      token: String(hec.token || '').trim().slice(0, 256),
+      index: String(hec.index || '').trim().slice(0, 128),
+      sourcetype: String(hec.sourcetype || 'syslog').trim().slice(0, 128) || 'syslog',
+      ssl: hec.ssl !== false,
+      insecure: hec.insecure !== false,
+    },
+  };
+}
+
 class Auth {
   constructor(enabled) {
     this.enabled = enabled !== false;
     this.store = this.enabled ? load() : null;
   }
 
-  get user() { return this.store ? this.store.user : null; }
-  get passwordIsDefault() { return !!(this.store && this.store.passwordIsDefault); }
-  get totpConfirmed() { return !!(this.store && this.store.totpConfirmed); }
-  get enrolment() {
-    return { secret: this.store.totpSecret, pretty: prettySecret(this.store.totpSecret), uri: otpauthUri(this.store) };
+  get users() { return this.store ? this.store.users : []; }
+  byId(id) { return this.users.find((u) => u.id === id) || null; }
+  byName(name) { return this.users.find((u) => u.user.toLowerCase() === String(name || '').toLowerCase()) || null; }
+  admins() { return this.users.filter((u) => u.role === 'admin'); }
+  list() { return this.users.map(publicUser); }
+
+  enrolmentFor(u) {
+    return { secret: u.totpSecret, pretty: prettySecret(u.totpSecret), uri: otpauthUri(u) };
   }
 
   // Step 1 — username + password. Returns what the client must do next.
   login(username, password) {
     const now = Date.now();
     sweep(pending, now);
-    const user = String(username || '').trim();
-    const left = lockoutLeft(user, now);
+    const name = String(username || '').trim();
+    const left = lockoutLeft(name.toLowerCase(), now);
     if (left) return { ok: false, locked: true, retryAfter: left, error: `Too many failed attempts — locked for ${left}s` };
 
-    const s = this.store;
-    const userOk = user.length === s.user.length &&
-      crypto.timingSafeEqual(Buffer.from(user), Buffer.from(s.user));
-    const given = hashPassword(String(password || ''), s.salt);
-    const passOk = crypto.timingSafeEqual(Buffer.from(given.hash, 'hex'), Buffer.from(s.hash, 'hex'));
-    if (!userOk || !passOk) {
-      noteFailure(user, now);
+    const u = this.byName(name);
+    // Hash against a decoy salt for an unknown user so a wrong name and a wrong
+    // password cost the same time, and answer both with one message.
+    const salt = u ? u.salt : 'unknown-user-constant-salt';
+    const given = hashPassword(String(password || ''), salt);
+    const target = u ? u.hash : given.hash.replace(/./g, '0');
+    const passOk = u != null &&
+      crypto.timingSafeEqual(Buffer.from(given.hash, 'hex'), Buffer.from(target, 'hex'));
+    if (!passOk) {
+      noteFailure(name.toLowerCase(), now);
       return { ok: false, error: 'Invalid username or password' };
     }
 
     const token = newToken();
-    const enrolling = !s.totpConfirmed;
-    pending.set(token, { user: s.user, expires: now + PENDING_TTL_MS, enrolling });
-    return enrolling
-      ? { ok: true, stage: 'enrol', pending: token, ...this.enrolment }
-      : { ok: true, stage: 'totp', pending: token };
+    pending.set(token, { userId: u.id, user: u.user, expires: now + PENDING_TTL_MS });
+    return u.totpConfirmed
+      ? { ok: true, stage: 'totp', pending: token }
+      : Object.assign({ ok: true, stage: 'enrol', pending: token }, this.enrolmentFor(u));
   }
 
   // Step 2 — the six-digit code. On the first success the enrolment is sealed.
@@ -214,28 +299,29 @@ class Auth {
     sweep(pending, now);
     const p = pending.get(token);
     if (!p) return { ok: false, expired: true, error: 'Sign-in timed out — start again' };
-    const left = lockoutLeft(p.user, now);
+    const u = this.byId(p.userId);
+    if (!u) { pending.delete(token); return { ok: false, expired: true, error: 'That account no longer exists' }; }
+    const left = lockoutLeft(u.user.toLowerCase(), now);
     if (left) return { ok: false, locked: true, retryAfter: left, error: `Too many failed attempts — locked for ${left}s` };
 
-    const s = this.store;
-    const step = totpMatches(s.totpSecret, code, currentStep(now));
+    const step = totpMatches(u.totpSecret, code, currentStep(now));
     if (step == null) {
-      noteFailure(p.user, now);
+      noteFailure(u.user.toLowerCase(), now);
       return { ok: false, error: 'That code is not valid right now' };
     }
     // A code is single-use: replaying one from the same 30-second step is not a
     // second factor, it is a copied string.
-    if (step <= s.lastTotpStep) return { ok: false, error: 'That code was already used — wait for the next one' };
+    if (step <= u.lastTotpStep) return { ok: false, error: 'That code was already used — wait for the next one' };
 
     pending.delete(token);
-    clearFailures(p.user);
-    s.lastTotpStep = step;
-    if (!s.totpConfirmed) s.totpConfirmed = true;
-    save(s);
+    clearFailures(u.user.toLowerCase());
+    u.lastTotpStep = step;
+    if (!u.totpConfirmed) u.totpConfirmed = true;
+    save(this.store);
 
     const sid = newToken();
-    sessions.set(sid, { user: s.user, expires: now + SESSION_TTL_MS });
-    return { ok: true, sid, user: s.user, expires: now + SESSION_TTL_MS };
+    sessions.set(sid, { userId: u.id, expires: now + SESSION_TTL_MS });
+    return { ok: true, sid, user: u.user, role: u.role, expires: now + SESSION_TTL_MS };
   }
 
   sessionFor(cookieHeader) {
@@ -245,7 +331,11 @@ class Auth {
     const sid = readCookie(cookieHeader, COOKIE);
     if (!sid) return null;
     const s = sessions.get(sid);
-    return s ? { user: s.user, expires: s.expires, sid } : null;
+    if (!s) return null;
+    const u = this.byId(s.userId);
+    // The account was deleted mid-session; the cookie is worthless now.
+    if (!u) { sessions.delete(sid); return null; }
+    return { sid, account: u, userId: u.id, user: u.user, role: u.role, expires: s.expires };
   }
 
   logout(cookieHeader) {
@@ -253,26 +343,125 @@ class Auth {
     if (sid) sessions.delete(sid);
   }
 
-  setPassword(password) {
-    const { salt, hash } = hashPassword(password);
-    Object.assign(this.store, { salt, hash, passwordIsDefault: false });
-    save(this.store);
+  // Drop every live session for one account — after a password change, a role
+  // change, or a deletion, the old cookie must stop working.
+  revokeSessionsFor(userId, keepSid) {
+    for (const [sid, s] of sessions) if (s.userId === userId && sid !== keepSid) sessions.delete(sid);
+    for (const [tok, p] of pending) if (p.userId === userId) pending.delete(tok);
   }
 
-  // Re-enrol: a new secret, unconfirmed, so the next login shows the QR/secret
-  // again. Used when the authenticator device is lost.
-  resetTotp() {
-    Object.assign(this.store, {
+  // ---- User management (admin) ---------------------------------------------
+
+  createUser(name, password, role) {
+    const clean = String(name || '').trim();
+    if (!USERNAME_RE.test(clean)) {
+      return { ok: false, error: 'Username must be 3–32 characters: letters, digits, dot, dash or underscore' };
+    }
+    if (this.byName(clean)) return { ok: false, error: `"${clean}" already exists` };
+    if (String(password || '').length < MIN_PASSWORD) {
+      return { ok: false, error: `Password must be at least ${MIN_PASSWORD} characters` };
+    }
+    const u = newUser(clean, String(password), role);
+    this.store.users.push(u);
+    save(this.store);
+    return { ok: true, user: publicUser(u) };
+  }
+
+  deleteUser(id, actingId) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    if (u.id === actingId) return { ok: false, error: 'You cannot delete the account you are signed in as' };
+    if (u.role === 'admin' && this.admins().length === 1) {
+      return { ok: false, error: 'That is the only admin — promote someone else first' };
+    }
+    this.store.users = this.store.users.filter((x) => x.id !== id);
+    save(this.store);
+    this.revokeSessionsFor(id);
+    return { ok: true };
+  }
+
+  setRole(id, role, actingId) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    const next = role === 'admin' ? 'admin' : 'user';
+    if (u.role === 'admin' && next !== 'admin' && this.admins().length === 1) {
+      return { ok: false, error: 'That is the only admin — promote someone else first' };
+    }
+    if (u.id === actingId && next !== 'admin') {
+      return { ok: false, error: 'You cannot remove your own admin rights' };
+    }
+    u.role = next;
+    save(this.store);
+    return { ok: true, user: publicUser(u) };
+  }
+
+  // Used by an admin resetting someone else, and by the CLI.
+  setPassword(id, password) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    if (String(password || '').length < MIN_PASSWORD) {
+      return { ok: false, error: `Password must be at least ${MIN_PASSWORD} characters` };
+    }
+    Object.assign(u, hashPassword(String(password)), { passwordIsDefault: false });
+    save(this.store);
+    this.revokeSessionsFor(id);
+    return { ok: true };
+  }
+
+  // Does this password belong to this account? Used to re-confirm before a change
+  // that a borrowed session should not be able to make on its own.
+  verifyPassword(id, password) {
+    const u = this.byId(id);
+    if (!u) return false;
+    const given = hashPassword(String(password || ''), u.salt);
+    return crypto.timingSafeEqual(Buffer.from(given.hash, 'hex'), Buffer.from(u.hash, 'hex'));
+  }
+
+  // Changing your own password means proving you know the current one — a stolen
+  // session should not be able to lock the owner out of their own account.
+  changeOwnPassword(id, current, next, keepSid) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    if (!this.verifyPassword(id, current)) {
+      return { ok: false, error: 'That is not your current password' };
+    }
+    if (String(next || '').length < MIN_PASSWORD) {
+      return { ok: false, error: `Password must be at least ${MIN_PASSWORD} characters` };
+    }
+    Object.assign(u, hashPassword(String(next)), { passwordIsDefault: false });
+    save(this.store);
+    // Every other session for this account dies; the one doing the change stays.
+    this.revokeSessionsFor(id, keepSid);
+    return { ok: true };
+  }
+
+  // Re-enrol: a new secret, unconfirmed, so the next sign-in shows the QR again.
+  resetTotp(id) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    Object.assign(u, {
       totpSecret: base32Encode(crypto.randomBytes(20)),
       totpConfirmed: false,
       lastTotpStep: 0,
     });
     save(this.store);
-    return this.enrolment;
+    return Object.assign({ ok: true }, this.enrolmentFor(u));
   }
 
-  // Wipe every live session — used after a credential change.
-  revokeAllSessions() { sessions.clear(); pending.clear(); }
+  // ---- Per-user Log Collector ----------------------------------------------
+
+  getCollector(id) {
+    const u = this.byId(id);
+    return u ? (u.collector || defaultCollector()) : defaultCollector();
+  }
+
+  setCollector(id, cfg) {
+    const u = this.byId(id);
+    if (!u) return { ok: false, error: 'No such user' };
+    u.collector = cleanCollector(cfg);
+    save(this.store);
+    return { ok: true, collector: u.collector };
+  }
 }
 
 // `Set-Cookie` without Secure: the app is plain HTTP by default, and a Secure
@@ -296,8 +485,9 @@ function readCookie(header, name) {
 }
 
 module.exports = {
-  Auth, sessionCookie, clearCookie, readCookie, otpauthUri, prettySecret,
-  DEFAULT_USER, DEFAULT_PASSWORD, STORE, ISSUER,
+  Auth, sessionCookie, clearCookie, readCookie, otpauthUri, prettySecret, publicUser,
+  defaultCollector, cleanCollector,
+  DEFAULT_USER, DEFAULT_PASSWORD, MIN_PASSWORD, STORE, ISSUER,
   // exported for the self-test in `node auth.js --selftest`
   base32Encode, base32Decode, totpAt, currentStep,
 };

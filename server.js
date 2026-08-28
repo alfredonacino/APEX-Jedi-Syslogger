@@ -10,7 +10,9 @@
  *      lines here and this process relays them as REAL UDP or TCP syslog
  *      datagrams to the collector IP:port you configured in the UI, or as
  *      Splunk HTTP Event Collector (HEC) events when the protocol is "hec".
- *   3. Gates all of it behind a password + TOTP two-factor sign-in (auth.js).
+ *   3. Gates all of it behind a password + TOTP two-factor sign-in, with
+ *      multiple accounts, per-user Log Collector settings, and a management
+ *      API for admins (auth.js).
  *
  * Run:  node server.js            (then open http://localhost:8099)
  *       PORT=9000 node server.js
@@ -61,11 +63,12 @@ const server = http.createServer((req, res) => {
   if (req.method === 'POST' && urlPath === '/auth/logout') return handleLogout(req, res);
   if (req.method === 'GET' && urlPath === '/auth/session') return handleSession(req, res);
 
-  const session = AUTH_ON ? auth.sessionFor(req.headers.cookie) : { user: null };
+  const session = AUTH_ON ? auth.sessionFor(req.headers.cookie) : { user: null, anonymous: true };
   if (AUTH_ON && !session && !PUBLIC_PATHS.has(urlPath)) return denyAnonymous(req, res, urlPath);
   // Already signed in? The sign-in page has nothing left to offer.
   if (AUTH_ON && session && urlPath === '/login.html') { res.writeHead(302, { Location: '/' }); return res.end(); }
 
+  if (urlPath.startsWith('/api/')) return handleApi(req, res, urlPath, session);
   if (req.method === 'POST' && urlPath === '/forward') return handleForward(req, res);
   if (req.method === 'POST' && urlPath === '/test') return handleTest(req, res);
   if (req.method === 'GET' && urlPath === '/status') {
@@ -133,10 +136,113 @@ function handleSession(req, res) {
   if (!AUTH_ON) return sendJson(res, 200, { ok: true, authRequired: false, user: null });
   const s = auth.sessionFor(req.headers.cookie);
   sendJson(res, 200, {
-    ok: true, authRequired: true, user: s ? s.user : null, expires: s ? s.expires : null,
+    ok: true, authRequired: true,
+    user: s ? s.user : null, role: s ? s.role : null, expires: s ? s.expires : null,
     // Only someone already signed in is told the password is still the default.
-    passwordIsDefault: s ? auth.passwordIsDefault : undefined,
+    passwordIsDefault: s ? !!s.account.passwordIsDefault : undefined,
   });
+}
+
+// ---- Profile and user management -------------------------------------------
+// Everything under /api needs a session; the /api/users/* half needs an admin.
+function handleApi(req, res, urlPath, session) {
+  if (!AUTH_ON) return sendJson(res, 501, { ok: false, error: 'user management needs the sign-in enabled (JEDI_AUTH is off)' });
+  if (!session) return sendJson(res, 401, { ok: false, error: 'not signed in' });
+  const me = session.account;
+  const isAdmin = me.role === 'admin';
+  const body = (cb) => readJson(req, res, 1e5, cb);
+
+  // — own profile —
+  if (req.method === 'GET' && urlPath === '/api/profile') {
+    return sendJson(res, 200, {
+      ok: true,
+      profile: authlib.publicUser(me),
+      collector: auth.getCollector(me.id),
+      userCount: auth.users.length,
+    });
+  }
+
+  // The collector panel writes here on every edit, so a session resumes with the
+  // destination the last one was pointed at.
+  if (req.method === 'PUT' && urlPath === '/api/profile/collector') {
+    return body((p) => {
+      const r = auth.setCollector(me.id, p.collector || p);
+      sendJson(res, r.ok ? 200 : 400, r);
+    });
+  }
+
+  if (req.method === 'POST' && urlPath === '/api/profile/password') {
+    return body((p) => {
+      const r = auth.changeOwnPassword(me.id, p.current, p.next, session.sid);
+      if (r.ok) console.log(`  🔑 "${me.user}" changed their own password`);
+      sendJson(res, r.ok ? 200 : 400, r);
+    });
+  }
+
+  // Re-enrolling your own second factor also asks for the password: the point of
+  // the factor is lost if a borrowed session can silently swap it.
+  if (req.method === 'POST' && urlPath === '/api/profile/totp') {
+    return body((p) => {
+      if (!auth.verifyPassword(me.id, p.password)) {
+        return sendJson(res, 400, { ok: false, error: 'Enter your current password to reset the second factor' });
+      }
+      const r = auth.resetTotp(me.id);
+      console.log(`  🔑 "${me.user}" reset their own second factor`);
+      sendJson(res, 200, r);
+    });
+  }
+
+  // — user management —
+  if (urlPath.startsWith('/api/users')) {
+    if (!isAdmin) return sendJson(res, 403, { ok: false, error: 'That needs an admin account' });
+
+    if (req.method === 'GET' && urlPath === '/api/users') {
+      return sendJson(res, 200, { ok: true, users: auth.list(), me: me.id });
+    }
+    if (req.method === 'POST' && urlPath === '/api/users') {
+      return body((p) => {
+        const r = auth.createUser(p.user, p.password, p.role);
+        if (r.ok) console.log(`  🔑 "${me.user}" created the account "${r.user.user}" (${r.user.role})`);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+    }
+
+    // /api/users/<id>[/password|/totp|/role]
+    const parts = urlPath.split('/').filter(Boolean);   // ['api','users',id,action?]
+    const id = parts[2];
+    const action = parts[3];
+    const target = id ? auth.byId(id) : null;
+    if (!target) return sendJson(res, 404, { ok: false, error: 'No such user' });
+
+    if (req.method === 'DELETE' && !action) {
+      const r = auth.deleteUser(id, me.id);
+      if (r.ok) console.log(`  🔑 "${me.user}" deleted the account "${target.user}"`);
+      return sendJson(res, r.ok ? 200 : 400, r);
+    }
+    if (req.method === 'POST' && action === 'password') {
+      return body((p) => {
+        const r = auth.setPassword(id, p.password);
+        if (r.ok) console.log(`  🔑 "${me.user}" set a new password for "${target.user}"`);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+    }
+    if (req.method === 'POST' && action === 'totp') {
+      const r = auth.resetTotp(id);
+      console.log(`  🔑 "${me.user}" reset the second factor for "${target.user}"`);
+      // An admin resetting someone else is told nothing secret: that user enrols
+      // from the QR their own next sign-in shows them.
+      return sendJson(res, 200, { ok: r.ok, user: target.user });
+    }
+    if (req.method === 'POST' && action === 'role') {
+      return body((p) => {
+        const r = auth.setRole(id, p.role, me.id);
+        if (r.ok) console.log(`  🔑 "${me.user}" made "${target.user}" a ${r.user.role}`);
+        sendJson(res, r.ok ? 200 : 400, r);
+      });
+    }
+  }
+
+  sendJson(res, 404, { ok: false, error: `no such endpoint: ${req.method} ${urlPath}` });
 }
 
 function handleForward(req, res) {
@@ -388,19 +494,32 @@ function runCli(argv) {
   const has = (f) => argv.includes(f);
   if (!argv.length) return false;
 
+  // Non-flag arguments that follow a flag, e.g. --set-password alice hunter2222
+  const after = (flag) => {
+    const out = [];
+    for (let i = argv.indexOf(flag) + 1; i < argv.length && !argv[i].startsWith('--'); i++) out.push(argv[i]);
+    return out;
+  };
+  const fail = (msg) => { console.log(`\n  ✗ ${msg}\n`); process.exitCode = 1; return true; };
+
   if (has('--help') || has('-h')) {
     console.log(`
   APEX JediSyslogger — backend
 
-    node server.js                        serve the app on ${PORT} (PORT=n to change)
-    node server.js --show-auth            who can sign in, and whether 2FA is enrolled
-    node server.js --set-password <pw>    replace the sign-in password
-    node server.js --reset-2fa            issue a new TOTP secret (lost authenticator)
-    node server.js --reset-auth           back to the documented defaults, new 2FA secret
-    node auth.js   --selftest             check the Base32/TOTP maths against the RFCs
+    node server.js                             serve the app on ${PORT} (PORT=n to change)
+    node server.js --list-users                every account, its role and 2FA state
+    node server.js --add-user <name> <pw> [--admin]
+    node server.js --delete-user <name>
+    node server.js --set-password [user] <pw>  replace a password (default: the first admin)
+    node server.js --reset-2fa [user]          issue a new TOTP secret (lost authenticator)
+    node server.js --reset-auth                wipe every account back to the default admin
+    node auth.js   --selftest                  check the Base32/TOTP maths against the RFCs
+    node js/qr.js  --selftest                  check the QR encoder against ISO/IEC 18004
 
   JEDI_AUTH=off          run with no sign-in at all (local throwaway use)
   JEDI_SECURE_COOKIE=1   add Secure to the session cookie (behind a TLS proxy)
+
+  Users are also managed in the app: sign in as an admin and open Account.
 `);
     return true;
   }
@@ -408,48 +527,66 @@ function runCli(argv) {
   if (has('--reset-auth')) {
     try { fs.unlinkSync(authlib.STORE); } catch (e) {}
     const a = new authlib.Auth(true);
-    console.log(`\n  ✓ credentials reset to the documented defaults`);
-    printCredentials(a, true);
+    console.log(`\n  ✓ every account wiped; back to the documented default admin`);
+    printAccounts(a, true);
+    return true;
+  }
+
+  const a = new authlib.Auth(true);
+  const firstAdmin = () => a.admins()[0] || a.users[0];
+
+  if (has('--list-users')) { printAccounts(a, false); return true; }
+
+  if (has('--add-user')) {
+    const [name, pw, ...rest] = after('--add-user');
+    if (!name || !pw) return fail(`usage: node server.js --add-user <name> '<password>' [--admin]`);
+    const r = a.createUser(name, pw, has('--admin') || rest.includes('admin') ? 'admin' : 'user');
+    if (!r.ok) return fail(r.error);
+    console.log(`\n  ✓ created "${r.user.user}" (${r.user.role}) — they enrol their own second factor on first sign-in`);
+    console.log(`    Restart the server to apply it.\n`);
+    return true;
+  }
+
+  if (has('--delete-user')) {
+    const [name] = after('--delete-user');
+    if (!name) return fail(`usage: node server.js --delete-user <name>`);
+    const u = a.byName(name);
+    if (!u) return fail(`no such user: ${name}`);
+    const r = a.deleteUser(u.id, null);
+    if (!r.ok) return fail(r.error);
+    console.log(`\n  ✓ deleted "${u.user}"`);
+    console.log(`    Restart the server to apply it.\n`);
     return true;
   }
 
   if (has('--set-password')) {
-    const pw = argv[argv.indexOf('--set-password') + 1];
-    if (!pw || pw.startsWith('--')) {
-      console.log(`\n  ✗ usage: node server.js --set-password '<new password>'\n`);
-      process.exitCode = 1;
-      return true;
-    }
-    if (pw.length < 8) {
-      console.log(`\n  ✗ that password is ${pw.length} characters — use at least 8\n`);
-      process.exitCode = 1;
-      return true;
-    }
-    const a = new authlib.Auth(true);
-    a.setPassword(pw);
-    console.log(`\n  ✓ password updated for "${a.user}"`);
+    const args = after('--set-password');
+    // One argument is the password for the first admin; two name the user too.
+    const [name, pw] = args.length >= 2 ? args : [null, args[0]];
+    if (!pw) return fail(`usage: node server.js --set-password [user] '<new password>'`);
+    const u = name ? a.byName(name) : firstAdmin();
+    if (!u) return fail(`no such user: ${name}`);
+    const r = a.setPassword(u.id, pw);
+    if (!r.ok) return fail(r.error);
+    console.log(`\n  ✓ password updated for "${u.user}"`);
     console.log(`    Restart the server to apply it — a running process keeps the old`);
     console.log(`    credentials in memory, and its open sessions stay valid until then.\n`);
     return true;
   }
 
   if (has('--reset-2fa')) {
-    const a = new authlib.Auth(true);
-    const e = a.resetTotp();
-    console.log(`\n  ✓ new TOTP secret issued for "${a.user}" — the old authenticator entry is dead`);
+    const [name] = after('--reset-2fa');
+    const u = name ? a.byName(name) : firstAdmin();
+    if (!u) return fail(`no such user: ${name}`);
+    const e = a.resetTotp(u.id);
+    console.log(`\n  ✓ new TOTP secret issued for "${u.user}" — the old authenticator entry is dead`);
     printEnrolment(e);
     return true;
   }
 
-  if (has('--show-auth')) {
-    const a = new authlib.Auth(true);
-    printCredentials(a, false);
-    return true;
-  }
+  if (has('--show-auth')) { printAccounts(a, false); return true; }
 
-  console.log(`\n  ✗ unknown option: ${argv.find((x) => x.startsWith('--')) || argv[0]} — try --help\n`);
-  process.exitCode = 1;
-  return true;
+  return fail(`unknown option: ${argv.find((x) => x.startsWith('--')) || argv[0]} — try --help`);
 }
 
 function printEnrolment(e) {
@@ -470,14 +607,26 @@ function printEnrolment(e) {
 `);
 }
 
-function printCredentials(a, showPassword) {
-  console.log(`
-    sign-in user   ${a.user}
-    password       ${showPassword ? authlib.DEFAULT_PASSWORD + '   ← the documented default, change it' : (a.passwordIsDefault ? 'still the documented default — change it' : 'set (not the default)')}
-    second factor  ${a.totpConfirmed ? 'enrolled' : 'NOT yet enrolled — the next sign-in shows the secret'}
-    stored in      ${authlib.STORE}
-`);
-  if (!a.totpConfirmed) printEnrolment(a.enrolment);
+function printAccounts(a, showDefaultPassword) {
+  const pad = (s, n) => String(s).padEnd(n);
+  console.log(`\n    ${pad('user', 20)}${pad('role', 8)}${pad('password', 22)}second factor`);
+  console.log(`    ${'─'.repeat(66)}`);
+  for (const u of a.list()) {
+    console.log(`    ${pad(u.user, 20)}${pad(u.role, 8)}` +
+      `${pad(u.passwordIsDefault ? 'DEFAULT — change it' : 'set', 22)}` +
+      `${u.totpConfirmed ? 'enrolled' : 'not enrolled yet'}`);
+  }
+  console.log(`\n    stored in ${authlib.STORE}`);
+  if (showDefaultPassword) console.log(`    default password: ${authlib.DEFAULT_PASSWORD}`);
+  console.log('');
+  // Anyone still unenrolled needs their secret, and a headless install has no
+  // other way to see it.
+  for (const p of a.list()) {
+    if (p.totpConfirmed) continue;
+    const u = a.byId(p.id);
+    console.log(`    "${u.user}" has no second factor yet:`);
+    printEnrolment(a.enrolmentFor(u));
+  }
 }
 
 // A credential-management argument runs and exits; otherwise, serve.
@@ -486,21 +635,28 @@ if (!runCli(process.argv.slice(2))) start();
 function start() {
   auth = new authlib.Auth(AUTH_ON);
   server.listen(PORT, () => {
-  console.log(`\n  ⚔️  APEX JediSyslogger running → http://localhost:${PORT}`);
-  console.log(`      POST /forward relays syslog to your configured collector (UDP/TCP/Splunk HEC).`);
-  if (!AUTH_ON) {
-    console.log(`      🔓 JEDI_AUTH=off — NO SIGN-IN REQUIRED, anyone who can reach this port is in.`);
-  } else {
-    console.log(`      🔒 Sign-in required: user "${auth.user}" + a 6-digit authenticator code.`);
-    if (auth.passwordIsDefault) {
-      console.log(`      ⚠  Password is still the documented default (${authlib.DEFAULT_PASSWORD}).`);
-      console.log(`         Change it:  node server.js --set-password '<new password>'`);
+    console.log(`\n  ⚔️  APEX JediSyslogger running → http://localhost:${PORT}`);
+    console.log(`      POST /forward relays syslog to your configured collector (UDP/TCP/Splunk HEC).`);
+    if (!AUTH_ON) {
+      console.log(`      🔓 JEDI_AUTH=off — NO SIGN-IN REQUIRED, anyone who can reach this port is in.`);
+      console.log(`      Press Ctrl+C to stop.\n`);
+      return;
     }
-    if (!auth.totpConfirmed) {
-      console.log(`      ⚠  Two-factor is not enrolled yet — enrol on the first sign-in, or now:`);
-      printEnrolment(auth.enrolment);
+    const accounts = auth.list();
+    const admins = accounts.filter((u) => u.role === 'admin').length;
+    console.log(`      🔒 Sign-in required: ${accounts.length} account(s), ${admins} admin(s),` +
+      ` each with a 6-digit authenticator code.`);
+    const stale = accounts.filter((u) => u.passwordIsDefault);
+    if (stale.length) {
+      console.log(`      ⚠  Still on the documented default password (${authlib.DEFAULT_PASSWORD}):` +
+        ` ${stale.map((u) => `"${u.user}"`).join(', ')}`);
+      console.log(`         Change it in the app (Account) or:  node server.js --set-password '<new password>'`);
     }
-  }
-  console.log(`      Press Ctrl+C to stop.\n`);
+    // A headless install has no other way to see an enrolment secret.
+    for (const p of accounts.filter((u) => !u.totpConfirmed)) {
+      console.log(`      ⚠  "${p.user}" has no second factor yet — enrol on the next sign-in, or now:`);
+      printEnrolment(auth.enrolmentFor(auth.byId(p.id)));
+    }
+    console.log(`      Press Ctrl+C to stop.\n`);
   });
 }

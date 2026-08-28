@@ -230,6 +230,7 @@
       // resolves a name for UDP/TCP forwarding just the same.
       const ok = /^(\d{1,3}\.){3}\d{1,3}$/.test(ip) || /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(ip);
       ipEl.classList.toggle('invalid', !ok);
+      saveCollector();
     };
     ipEl.addEventListener('input', applyCollector);
     portEl.addEventListener('input', applyCollector);
@@ -254,7 +255,7 @@
     $('#cfg-usefile').addEventListener('change', (e) => syslogger.setFileMode(e.target.checked));
 
     const hecEls = ['token', 'index', 'sourcetype', 'tls', 'insecure'].map((k) => $('#cfg-hec-' + k));
-    const applyHec = () => syslogger.setHec(readHec());
+    const applyHec = () => { syslogger.setHec(readHec()); saveCollector(); };
     hecEls.forEach((el) => { el.addEventListener('input', applyHec); el.addEventListener('change', applyHec); });
     applyHec();
 
@@ -267,6 +268,7 @@
       if (proto !== 'hec' && portEl.value.trim() === '8088') portEl.value = '514';
       $('#cfg-hec-row').hidden = proto !== 'hec';
       applyCollector();
+      saveCollector();
     });
     $('#cfg-forward').addEventListener('change', (e) => { syslogger.setForwarding(e.target.checked); renderForward(); });
     $('#cfg-test').addEventListener('click', runConnectivityTest);
@@ -309,9 +311,61 @@
         : '';
       $('#auth-user').innerHTML = who + warn;
       badge.hidden = false;
+      loadCollector();
     } catch (e) {
       // Static hosting has no /auth/session — leave the badge hidden.
     }
+  }
+
+  // ── The collector lives in the signed-in user's profile ──────────────
+  // Each account keeps its own destination, so two people testing at once do not
+  // overwrite each other, and a session resumes where the last one left off.
+  let collectorLoaded = false;   // stays false until the saved values are in place
+  let collectorTimer = null;
+
+  function saveCollector() {
+    if (!collectorLoaded) return;   // never save back what we just applied
+    clearTimeout(collectorTimer);
+    collectorTimer = setTimeout(() => {
+      fetch('/api/profile/collector', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          collector: {
+            ip: $('#cfg-ip').value.trim(),
+            port: $('#cfg-port').value.trim(),
+            proto: $('#cfg-proto').value,
+            hec: readHec(),
+          },
+        }),
+      }).catch(() => {});   // a dropped save is not worth interrupting the run for
+    }, 600);
+  }
+
+  async function loadCollector() {
+    let c = null;
+    try {
+      const d = await (await fetch('/api/profile')).json();
+      if (d && d.ok) c = d.collector;
+    } catch (e) { /* static hosting, or JEDI_AUTH=off — nothing to resume */ }
+    if (!c) return;
+    const fire = (node, type) => node.dispatchEvent(new Event(type, { bubbles: true }));
+    // Protocol first: its handler may swap the port default, and the saved port
+    // has to be the one that survives.
+    $('#cfg-proto').value = c.proto || 'udp';
+    fire($('#cfg-proto'), 'change');
+    $('#cfg-ip').value = c.ip || '';
+    $('#cfg-port').value = String(c.port || 514);
+    fire($('#cfg-ip'), 'input');
+    fire($('#cfg-port'), 'input');
+    const hec = c.hec || {};
+    $('#cfg-hec-token').value = hec.token || '';
+    $('#cfg-hec-index').value = hec.index || '';
+    $('#cfg-hec-sourcetype').value = hec.sourcetype || 'syslog';
+    $('#cfg-hec-tls').checked = hec.ssl !== false;
+    $('#cfg-hec-insecure').checked = hec.insecure !== false;
+    fire($('#cfg-hec-token'), 'input');
+    collectorLoaded = true;
   }
 
   // Current Splunk HEC settings, read straight off the config bar.
