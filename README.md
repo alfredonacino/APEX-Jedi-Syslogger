@@ -217,9 +217,8 @@ Two things it deliberately does not do:
 - **Static hosting has no sign-in.** `python3 -m http.server` just serves files;
   there is no process to check a session, no accounts, and no saved collector.
   Only `node server.js` enforces or remembers anything.
-- **The session cookie is not `Secure`** — the app speaks plain HTTP, and a
-  `Secure` cookie would simply never be stored. Behind a TLS proxy, set
-  `JEDI_SECURE_COOKIE=1`. On an untrusted network, put it behind HTTPS.
+- **Over plain HTTP the session cookie is not `Secure`** — such a cookie would
+  never be stored. Turn on [HTTPS](#https) and it is set automatically.
 
 To turn sign-in off for a throwaway local run: `JEDI_AUTH=off node server.js`.
 The banner says so in the clear, and per-user collector storage goes with it.
@@ -250,6 +249,73 @@ firewall notes.
 
 > **Use `setsid`, not `nohup`, when starting it over SSH** — a plain `nohup … &`
 > keeps the session's stdout attached and hangs the SSH channel.
+
+### HTTPS
+
+Passwords and authenticator codes should not cross a network in the clear. Put a
+certificate and key in `certs/` next to `server.js` and the listener is HTTPS —
+no flag, no proxy, no dependency (`https` is a Node core module):
+
+```
+certs/server.crt      certificate
+certs/server.key      private key (chmod 600)
+```
+
+Or point `JEDI_TLS_CERT` / `JEDI_TLS_KEY` somewhere else. With neither present it
+serves plain HTTP exactly as before, and says so at startup.
+
+A self-signed certificate for a host with no DNS name:
+
+```bash
+mkdir -p certs && chmod 700 certs
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout certs/server.key -out certs/server.crt \
+  -subj "/CN=<your-ip-or-hostname>" \
+  -addext "subjectAltName=IP:<your-ip>,DNS:localhost,IP:127.0.0.1"
+chmod 600 certs/server.key
+```
+
+Browsers will warn once for a self-signed certificate — that is what "signed by
+nobody" means, and clicking through still gets you an encrypted connection. For a
+warning-free one you need a DNS name and something like Let's Encrypt; public
+CAs do not issue for bare IP addresses.
+
+What turning it on changes:
+
+- the session cookie gains **`Secure`** automatically — no `JEDI_SECURE_COOKIE` needed;
+- `http://` on the TLS port stops working (it is not a protocol the port speaks).
+  Set `JEDI_HTTP_REDIRECT_PORT=<n>` for a second listener that does nothing but
+  send `http://…:<n>` to `https://…:<PORT>`;
+- `certs/` is gitignored, never rsynced, and refused by the static handler even
+  for a signed-in user — the private key is not app content.
+
+Each host generates its own key. Never copy one between machines, and restart the
+backend after replacing a certificate — `certs/` is deliberately not watched.
+
+### Running it under pm2
+
+`ecosystem.config.js` is the process definition — pm2 reads it, the app never
+does, and it installs nothing:
+
+```bash
+cd ~/apex-jedi-syslogger
+pm2 start ecosystem.config.js     # file-watching on, PORT 8099
+pm2 save                          # remember it across reboots
+pm2 startup                       # prints one sudo command — run it, once
+```
+
+**Watching is a whitelist on purpose.** `auth.json` is rewritten on every
+sign-in, every collector edit and every history entry; a watcher that included it
+would restart the backend — signing everyone out — several times a minute. The
+config watches the source only, and lists `auth.json` in `ignore_watch` as a
+second guard.
+
+`pm2 startup` registers a systemd unit (`pm2-<user>`) that runs `pm2 resurrect` at
+boot, restoring whatever `pm2 save` last recorded. Re-run `pm2 save` after adding
+or removing an app.
+
+> **`--set-password` needs a `pm2 restart` to take effect**, and the watcher will
+> not do it for you: `auth.json` is deliberately not watched.
 
 Updating an existing deployment is just the `rsync`: static files are served from
 disk, so a UI/rule change needs **no restart**. Only a change to `server.js`

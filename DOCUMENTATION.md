@@ -955,9 +955,47 @@ the QR in the console, for a password manager or a device with no camera.
 | Lockout | 5 failed attempts → that account is refused for 5 minutes, correct password included |
 | Pending token | 3 minutes between the password step and the code step |
 
-The cookie has no `Secure` flag by default because the app speaks plain HTTP and
-a `Secure` cookie would never be stored. Behind a TLS terminator, set
+The cookie carries `Secure` as soon as the backend is serving HTTPS (§13.1) — it
+is omitted over plain HTTP only because such a cookie would never be stored.
+Behind a TLS terminator that the backend itself cannot see, force it with
 `JEDI_SECURE_COOKIE=1`.
+
+### 13.1 HTTPS
+
+`server.js` serves TLS itself when a certificate and key are present; `https` is a
+Node core module, so this adds no dependency and needs no proxy.
+
+| | |
+|---|---|
+| Certificate | `JEDI_TLS_CERT`, default `certs/server.crt` |
+| Key | `JEDI_TLS_KEY`, default `certs/server.key` |
+| Neither present | plain HTTP, and the banner says so |
+| Redirector | `JEDI_HTTP_REDIRECT_PORT=<n>` — a plain listener that 301s to the HTTPS port |
+
+Both files are read once at startup, so **replacing a certificate needs a
+restart**; `certs/` is deliberately outside the pm2 watch list.
+
+Three things follow automatically from TLS being on:
+
+1. `SECURE_COOKIE` flips true, so the session cookie carries `Secure`.
+2. The startup banner prints `https://` and names the certificate in use.
+3. `certs/` joins `auth.json` in what `serveStatic()` refuses — checked per path
+   segment, so an encoded `..` traversal is refused too, for signed-in users as
+   much as anonymous ones.
+
+For a host with no DNS name, a self-signed certificate is the practical option:
+
+```bash
+openssl req -x509 -newkey rsa:2048 -nodes -days 825 \
+  -keyout certs/server.key -out certs/server.crt \
+  -subj "/CN=<ip-or-hostname>" \
+  -addext "subjectAltName=IP:<ip>,DNS:localhost,IP:127.0.0.1"
+```
+
+Browsers show one interstitial for it — unavoidable for a certificate no CA
+signed — and the connection is encrypted regardless. Public CAs do not issue for
+bare IP addresses, so a warning-free certificate means giving the host a DNS
+name first.
 
 ### Command line
 
@@ -1055,6 +1093,42 @@ secret to enrol — capture it from `apex.log` when you start it detached.
 > `nohup node server.js > apex.log 2>&1 &` leaves the server's stdout attached to
 > the SSH session, so the channel never closes and the command appears to hang.
 > `setsid` with stdin redirected from `/dev/null` fully detaches it.
+
+### Under pm2
+
+`ecosystem.config.js` holds the process definition. It is not a dependency — pm2
+reads it, the app never does, and nothing is installed by its presence.
+
+```bash
+cd <project dir>
+pm2 start ecosystem.config.js     # watching on, PORT 8099
+pm2 save                          # freeze the list for boot
+pm2 startup                       # prints one sudo command; run it once
+```
+
+| Setting | Why |
+|---------|-----|
+| `watch` | A **whitelist** of source paths — `server.js`, `auth.js`, `js/`, `css/`, the HTML pages |
+| `ignore_watch` | `auth\.json`, `apex\.log`, `.git`, `node_modules`, `samples` |
+| `watch_delay` | 1000 ms, so a burst of file writes is one restart |
+| `env.PORT` | 8099 |
+
+**Why the whitelist matters:** `auth.json` is rewritten on every sign-in, every
+collector edit and every history entry. A watcher that included it would restart
+the backend — and, since sessions live in memory, sign everyone out — several
+times a minute. It is excluded twice over: it is not in `watch`, and it is in
+`ignore_watch`.
+
+The corollary is that credential changes made on disk are **not** picked up by the
+watcher. After `--set-password`, `--add-user`, `--reset-2fa` or any other CLI
+command, run `pm2 restart <name>`.
+
+`pm2 startup` writes a systemd unit named `pm2-<user>` whose `ExecStart` is
+`pm2 resurrect`; at boot it restores whatever `pm2 save` last wrote to
+`~/.pm2/dump.pm2`. Check it with `systemctl is-enabled pm2-<user>`. Because the
+unit runs as a specific user, generate it for the account that owns the app
+(`pm2 startup systemd -u <user> --hp /home/<user>`) and run the printed `sudo`
+command from an account that has sudo.
 
 **Updating a running deployment** needs only the `rsync` above — `server.js` serves
 the static files from disk on each request, so a change to `js/`, `css/`, or the
@@ -1165,6 +1239,9 @@ silently** — a harness that asserts on alerts is the only thing that catches i
 | Test shows `Connection refused` | Host reachable, nothing listening on that port/proto — enable the SIEM's syslog input. |
 | Test shows `timed out` | Firewall/routing dropping traffic between the hosts. |
 | Forwarding foot says "backend not running" | You opened the app statically (python/`file://`). Serve it with `node server.js`. |
+| The browser warns about the certificate | Expected for a self-signed one. Click through, or give the host a DNS name and use a CA-issued certificate. |
+| `http://` stopped working after enabling TLS | That port speaks TLS now. Use `https://`, or set `JEDI_HTTP_REDIRECT_PORT`. |
+| A new certificate has not taken effect | Certificates are read at startup and `certs/` is not watched — `pm2 restart` (or restart the process). |
 | Port 8099 in use | `PORT=9000 node server.js`. |
 | Nothing happens on Start | Rate slider at 0, or a volume cap already reached — check the volume foot. |
 

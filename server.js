@@ -13,6 +13,8 @@
  *   3. Gates all of it behind a password + TOTP two-factor sign-in, with
  *      multiple accounts, per-user Log Collector settings, and a management
  *      API for admins (auth.js).
+ *   4. Serves over HTTPS when a certificate and key are present — passwords and
+ *      authenticator codes should not cross a network in the clear.
  *
  * Run:  node server.js            (then open http://localhost:8099)
  *       PORT=9000 node server.js
@@ -34,7 +36,29 @@ const PORT = parseInt(process.env.PORT, 10) || 8099;
 // Auth is on unless explicitly disabled. JEDI_AUTH=off restores the old
 // no-sign-in behaviour for a throwaway local run.
 const AUTH_ON = String(process.env.JEDI_AUTH || '').toLowerCase() !== 'off';
-const SECURE_COOKIE = process.env.JEDI_SECURE_COOKIE === '1';
+
+// TLS: point these at a certificate and key, or drop them in certs/ next to this
+// file. With both present the listener is HTTPS; with neither it is plain HTTP,
+// exactly as before.
+const TLS_CERT = process.env.JEDI_TLS_CERT || path.join(ROOT, 'certs', 'server.crt');
+const TLS_KEY = process.env.JEDI_TLS_KEY || path.join(ROOT, 'certs', 'server.key');
+// Optional second listener that does nothing but bounce http:// to https://.
+const REDIRECT_PORT = parseInt(process.env.JEDI_HTTP_REDIRECT_PORT, 10) || 0;
+
+let tls = null;                 // the loaded key pair, or null for plain HTTP
+// A Secure cookie is never stored over plain HTTP, so it can only be set once
+// TLS is actually on. JEDI_SECURE_COOKIE forces it for a TLS proxy in front.
+let SECURE_COOKIE = process.env.JEDI_SECURE_COOKIE === '1';
+
+function loadTls() {
+  try {
+    if (!fs.existsSync(TLS_CERT) || !fs.existsSync(TLS_KEY)) return null;
+    return { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) };
+  } catch (e) {
+    console.log(`  ⚠ TLS files unreadable (${e.code || e.message}) — serving plain HTTP instead`);
+    return null;
+  }
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8', '.css': 'text/css', '.js': 'text/javascript',
@@ -51,7 +75,7 @@ let auth = null;
 // the endpoints that hand out a session in the first place.
 const PUBLIC_PATHS = new Set(['/login.html', '/js/login.js', '/js/qr.js', '/css/styles.css', '/auth/login', '/auth/totp', '/auth/logout', '/auth/session']);
 
-const server = http.createServer((req, res) => {
+function handleRequest(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
@@ -76,7 +100,7 @@ const server = http.createServer((req, res) => {
     return res.end(JSON.stringify({ ok: true, backend: 'jedisyslogger', forwarded: totalForwarded }));
   }
   return serveStatic(req, res);
-});
+}
 
 // A browser navigating to a page gets sent to the sign-in form; anything else
 // (fetch, curl, the forwarding relay) gets a JSON 401 it can act on.
@@ -495,6 +519,7 @@ function testHec(p, cb) {
 // Files that must never be served, however the request is spelled: auth.json
 // holds the password hash and the TOTP secret, and a dotfile is never app content.
 const PRIVATE_FILES = new Set(['auth.json']);
+const PRIVATE_DIRS = new Set(['certs']);
 
 function serveStatic(req, res) {
   let urlPath = decodeURIComponent(req.url.split('?')[0]);
@@ -503,6 +528,11 @@ function serveStatic(req, res) {
   if (!filePath.startsWith(ROOT)) { res.writeHead(403); return res.end('forbidden'); }
   const base = path.basename(filePath);
   if (PRIVATE_FILES.has(base) || base.startsWith('.')) { res.writeHead(403); return res.end('forbidden'); }
+  // The TLS private key lives under the served root; never hand it out.
+  if (path.relative(ROOT, filePath).split(path.sep).some((seg) => PRIVATE_DIRS.has(seg))) {
+    res.writeHead(403);
+    return res.end('forbidden');
+  }
   fs.readFile(filePath, (err, data) => {
     if (err) { res.writeHead(404, { 'Content-Type': 'text/plain' }); return res.end('not found'); }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(filePath).toLowerCase()] || 'application/octet-stream' });
@@ -538,8 +568,10 @@ function runCli(argv) {
     node auth.js   --selftest                  check the Base32/TOTP maths against the RFCs
     node js/qr.js  --selftest                  check the QR encoder against ISO/IEC 18004
 
-  JEDI_AUTH=off          run with no sign-in at all (local throwaway use)
-  JEDI_SECURE_COOKIE=1   add Secure to the session cookie (behind a TLS proxy)
+  JEDI_AUTH=off               run with no sign-in at all (local throwaway use)
+  JEDI_TLS_CERT / _KEY        certificate and key (default: certs/server.crt|.key)
+  JEDI_HTTP_REDIRECT_PORT=n   also listen on n and bounce http:// to https://
+  JEDI_SECURE_COOKIE=1        force Secure on the cookie (TLS proxy in front)
 
   Users are also managed in the app: sign in as an admin and open Account.
 `);
@@ -656,8 +688,21 @@ if (!runCli(process.argv.slice(2))) start();
 
 function start() {
   auth = new authlib.Auth(AUTH_ON);
+  tls = loadTls();
+  if (tls) SECURE_COOKIE = true;   // the cookie can finally carry it
+  const scheme = tls ? 'https' : 'http';
+  const server = tls ? https.createServer(tls, handleRequest) : http.createServer(handleRequest);
+  if (tls && REDIRECT_PORT) startRedirector();
+
   server.listen(PORT, () => {
-    console.log(`\n  ⚔️  APEX JediSyslogger running → http://localhost:${PORT}`);
+    console.log(`\n  ⚔️  APEX JediSyslogger running → ${scheme}://localhost:${PORT}`);
+    if (tls) {
+      console.log(`      🔐 TLS on — certificate ${TLS_CERT}`);
+      if (REDIRECT_PORT) console.log(`         http://…:${REDIRECT_PORT} redirects here.`);
+    } else {
+      console.log(`      🔓 Plain HTTP — passwords and authenticator codes cross the`);
+      console.log(`         network in the clear. See "HTTPS" in README.md.`);
+    }
     console.log(`      POST /forward relays syslog to your configured collector (UDP/TCP/Splunk HEC).`);
     if (!AUTH_ON) {
       console.log(`      🔓 JEDI_AUTH=off — NO SIGN-IN REQUIRED, anyone who can reach this port is in.`);
@@ -680,5 +725,17 @@ function start() {
       printEnrolment(auth.enrolmentFor(auth.byId(p.id)));
     }
     console.log(`      Press Ctrl+C to stop.\n`);
+  });
+}
+
+// Anyone who bookmarked the http:// URL lands on a TLS port and gets a protocol
+// error, not a page. This gives them somewhere to land instead.
+function startRedirector() {
+  http.createServer((req, res) => {
+    const host = String(req.headers.host || '').replace(/:\d+$/, '');
+    res.writeHead(301, { Location: `https://${host}:${PORT}${req.url}` });
+    res.end();
+  }).listen(REDIRECT_PORT, () => {
+    console.log(`      ↪ http://…:${REDIRECT_PORT} → https://…:${PORT}`);
   });
 }

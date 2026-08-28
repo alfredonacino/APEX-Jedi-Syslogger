@@ -4,3 +4,6 @@ CLAUDE.md
 
 # Local credential store — password hash + TOTP secret, never commit it
 auth.json
+
+# TLS material — private key, never commit it
+certs/
