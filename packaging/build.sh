@@ -2,7 +2,15 @@
 # build.sh — produce the distributable artefacts.
 #
 #   ./packaging/build.sh              portable archives + the single-file build
+#   ./packaging/build.sh --deb        also a .deb for Debian/Ubuntu
 #   ./packaging/build.sh --sea        also a standalone binary for THIS platform
+#   ./packaging/build.sh --all        everything this host can build
+#
+# Arch/CachyOS and RPM packages are built by their own native tooling from the
+# tarball this produces, because those toolchains do the right thing and a
+# hand-rolled substitute would not:
+#   makepkg -si                                    (from packaging/, Arch & CachyOS)
+#   rpmbuild -ta dist/apex-jedisyslogger-<ver>.tar.gz   (RHEL, Rocky, Alma, Fedora)
 #
 # The portable archives need nothing but Node on the target and are what most
 # people should use. The --sea build produces an executable with Node baked in
@@ -25,16 +33,23 @@ say() { printf '  %s\n' "$*"; }
 
 rm -rf "$STAGE"
 mkdir -p "$STAGE" dist
+# Artefacts from earlier versions, so dist/ only ever holds one release. The
+# signer refuses to mix versions anyway; this keeps it from having to.
+find dist -maxdepth 1 \( -name 'apex-jedisyslogger*' -o -name 'jedi-*' -o -name 'SHA256SUMS' \) \
+  ! -name "*$VERSION*" -exec rm -rf {} + 2>/dev/null || true
+rm -rf dist/publish dist/deb
 
 # ---- 1. Portable archive -------------------------------------------------
 # The whole application, minus per-install state and build output. It runs as
 # the terminal app (bin/jedi) and, if you want the browser UI on that machine,
 # as the web app too (node server.js) — one artefact, both faces.
 say "staging $NAME-$VERSION"
-for item in jedi-cli.js server.js auth.js forward.js ecosystem.config.js \
+# packaging/ ships too: the distro manifests build *from this tarball*, so the
+# spec, the PKGBUILD and the systemd unit have to be inside it.
+for item in jedi-cli.js server.js auth.js forward.js updater.js ecosystem.config.js \
             index.html login.html account.html about.html \
             README.md DOCUMENTATION.md CONNECTORS.md LICENSE \
-            js css bin samples types jsconfig.json; do
+            js css bin samples types packaging jsconfig.json; do
   [ -e "$item" ] && cp -R "$item" "$STAGE/" || true
 done
 # Never ship per-install state or private key material.
@@ -74,8 +89,13 @@ fi
 # One .js you can scp to a box and run. Same sources, folded together.
 node packaging/bundle.js "dist/jedi-$VERSION.js"
 
-# ---- 3. Standalone binary (optional) -------------------------------------
-if [ "${1:-}" = "--sea" ]; then
+# ---- 3. Debian package (optional) ----------------------------------------
+if [ "${1:-}" = "--deb" ] || [ "${1:-}" = "--all" ]; then
+  ./packaging/build-deb.sh
+fi
+
+# ---- 4. Standalone binary (optional) -------------------------------------
+if [ "${1:-}" = "--sea" ] || [ "${1:-}" = "--all" ]; then
   NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]")
   if [ "$NODE_MAJOR" -lt 20 ]; then
     echo "  --sea needs Node 20 or newer (this is $(node -v))" >&2; exit 1
@@ -113,11 +133,11 @@ if [ "${1:-}" = "--sea" ]; then
   rm -f dist/jedi-sea-entry.js dist/jedi-sea.blob
 fi
 
-# ---- 4. Checksums --------------------------------------------------------
-( cd dist && ls | grep -vE "^($NAME-$VERSION|SHA256SUMS)$" | while read -r f; do
+# ---- 5. Checksums --------------------------------------------------------
+( cd dist && find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%P\n' | sort | while read -r f; do
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$f"; else shasum -a 256 "$f"; fi
   done > SHA256SUMS )
 
 echo
 say "version $VERSION — the same version the web app reports"
-ls -lh dist | sed 's/^/  /'
+find dist -maxdepth 1 -type f -printf '  %-46f %s bytes\n' | sort

@@ -587,15 +587,52 @@ load, so there is no second implementation of a scenario or a rule to drift.
 
 | Platform | Install |
 |---|---|
-| macOS (Apple silicon & Intel) | `brew install --formula ./packaging/apex-jedisyslogger.rb`, or unpack the archive and `./bin/jedi` |
-| Windows 10/11 | unpack the archive, run `bin\jedi.cmd` (add `bin\` to PATH to get `jedi`) |
-| Arch / Manjaro | `makepkg -si` in `packaging/` |
-| RHEL / Rocky / Alma / Fedora | `rpmbuild -ta apex-jedisyslogger-<ver>.tar.gz` |
-| Any Linux, or no package manager | unpack the archive; `sudo ln -s "$PWD/bin/jedi" /usr/local/bin/jedi` |
+| **macOS** (Apple silicon & Intel) | `brew install --formula ./packaging/apex-jedisyslogger.rb`, or unpack the archive and run `./bin/jedi` |
+| **Windows** 10/11 | `powershell -ExecutionPolicy Bypass -File .\packaging\install.ps1` — installs to `%LOCALAPPDATA%` and puts `jedi` on PATH, no admin needed. Or run `bin\jedi.cmd` straight from the unpacked archive |
+| **Debian** / Ubuntu / Mint / Raspberry Pi OS | `sudo apt install ./apex-jedisyslogger_<ver>_all.deb` |
+| **RHEL** / Rocky / Alma / Fedora | `rpmbuild -ta apex-jedisyslogger-<ver>.tar.gz`, then `sudo dnf install` the result |
+| **Arch** / **CachyOS** / Manjaro / EndeavourOS | `makepkg -si` from `packaging/` |
+| Any other Linux | unpack the archive; `sudo ln -s "$PWD/bin/jedi" /usr/local/bin/jedi` |
 | One file, nothing else | copy `dist/jedi-<ver>.js` anywhere and `node jedi-<ver>.js` |
 
-Build the artefacts yourself with `./packaging/build.sh` (add `--sea` for a
-standalone binary with Node baked in, for hosts that have no Node at all).
+The package is `Architecture: all` / `arch=any` — it is JavaScript, so one build
+serves x86-64 and ARM alike, Apple silicon included.
+
+Build the artefacts with `./packaging/build.sh` (`--deb` adds the Debian package,
+`--sea` a standalone binary with Node baked in for hosts that have none, `--all`
+everything this host can produce). Arch/CachyOS and RPM packages come from their
+own native tooling — `makepkg` and `rpmbuild` — reading the tarball it produces.
+
+### Staying current
+
+```bash
+jedi update          # exit 0 up to date, 10 if newer available, 1 on error
+```
+
+The manifest is served from `https://atlasupdate.cybercontrol.tech/` and signed
+with Ed25519. Every build carries the **public** key, so the update server is
+untrusted: it can serve any bytes it likes, but a manifest it did not sign with
+the matching private key is rejected before a version is even compared.
+
+`jedi update` **reports; it never installs.** Upgrading is done by whatever
+installed the copy — apt, dnf, pacman, brew, or unpacking the archive. An
+updater that can replace its own binary is a remote-code-execution feature with a
+friendly name, and this application has no business owning one.
+
+**Publishing a release** (maintainers):
+
+```bash
+packaging/version.sh --set 1.1.0      # stamps app, CLI and every package manifest
+./packaging/build.sh --all
+node packaging/sign.js --notes "..."  # signs dist/ into dist/publish/
+# upload dist/publish/ to the web root, keeping stable.json at the top level
+```
+
+The signing key is read from `$JEDI_PUBLISH_KEY_FILE` or
+`~/.config/apex-jedisyslogger/publish.key` (mode 600) — **never** from a command
+line, where it would land in `ps`, shell history and CI logs. `sign.js` derives
+the public key from it and refuses to sign if it does not match the one builds
+trust, so a manifest that would verify nowhere cannot be published by accident.
 
 **Commands**
 

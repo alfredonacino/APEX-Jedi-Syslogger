@@ -10,3 +10,9 @@ certs/
 
 # Build output — regenerate with packaging/build.sh, never commit
 dist/
+
+# Update-channel signing key. The private half must never be committed, and a
+# key that reaches a public repo is a key that can sign updates for everyone.
+publish.key
+*.key
+!certs/*.key

@@ -95,7 +95,8 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `jedi-cli.js` | The terminal build — live dashboard and headless CLI over the same engine (§16) |
 | `forward.js` | The wire: UDP/TCP relays, the Splunk HEC poster, and the three connectivity probes. Required by both `server.js` and `jedi-cli.js` |
 | `bin/jedi`, `bin/jedi.cmd` | Launchers for POSIX and Windows |
-| `packaging/` | `build.sh`, `bundle.js`, `version.sh`, `PKGBUILD`, the RPM spec, the Homebrew formula, the systemd unit |
+| `updater.js` | The update client: fetch, **verify the Ed25519 signature**, then compare versions (§16.6) |
+| `packaging/` | `build.sh`, `build-deb.sh`, `bundle.js`, `version.sh`, `sign.js`, `install.ps1`, `PKGBUILD`, the RPM spec, the Homebrew formula, the systemd unit |
 | `jsconfig.json` | Editor typecheck settings — read by the editor, never shipped |
 | `types/globals.d.ts` | Ambient declarations for `window.JS` and Node globals |
 
@@ -1426,9 +1427,22 @@ is: `--set`, commit, `git tag -a vX.Y.Z`, `git push --follow-tags`.
 | Artefact | For |
 |---|---|
 | `apex-jedisyslogger-<ver>.tar.gz` / `.zip` | any OS with Node 18+ — the whole app, terminal *and* web |
+| `apex-jedisyslogger_<ver>_all.deb` (`--deb`) | Debian, Ubuntu, Mint, Raspberry Pi OS |
 | `jedi-<ver>.js` | one self-contained file to copy anywhere |
 | `jedi-<ver>-<platform>` (`--sea`) | hosts with no Node at all |
 | `SHA256SUMS` | all of the above |
+
+Everything is `Architecture: all` / `arch=any`: the application is JavaScript, so
+one build serves x86-64 and ARM equally — Apple silicon, a Raspberry Pi and a
+Graviton instance take the same file.
+
+`build-deb.sh` deliberately does **not** need `dpkg-dev`. A `.deb` is an `ar`
+archive of three members in a fixed order — `debian-binary`, `control.tar.gz`,
+`data.tar.gz` — so `ar` and `tar` suffice, and the package can be built from a
+machine that is not Debian (this project is developed on CachyOS). `dpkg-deb` is
+used instead when it happens to be present, because it also runs its own checks.
+The package installs the systemd unit but does **not** start it: this generates
+network traffic, and no package should begin doing that on its own.
 
 The single-file build comes from `packaging/bundle.js`, ~50 lines that wrap each
 module in a function and resolve the literal relative specifiers through a small
@@ -1441,12 +1455,76 @@ in the project that reaches outside it, because Node's SEA needs `postject` to
 inject the blob. **Cross-building is not possible**: the binary embeds that
 platform's `node`, so each target must be built on that platform or in CI.
 
-Distribution manifests: `PKGBUILD` (Arch), `apex-jedisyslogger.spec` (RHEL,
-Rocky, Alma, Fedora), `apex-jedisyslogger.rb` (Homebrew, macOS arm64 and x86_64),
-and `apex-jedisyslogger.service` (systemd, headless forwarding with `DynamicUser`
-and a restricted sandbox). None of them declares a licence, because the
-repository does not declare one — add a `LICENSE` file and set the field before
-publishing any of these.
+Distribution manifests: `PKGBUILD` (Arch, **CachyOS**, Manjaro, EndeavourOS —
+they are the same package), `apex-jedisyslogger.spec` (RHEL, Rocky, Alma,
+Fedora), `apex-jedisyslogger.rb` (Homebrew, macOS arm64 and x86_64),
+`install.ps1` (Windows, per-user, no administrator rights) and
+`apex-jedisyslogger.service` (systemd, headless forwarding with `DynamicUser` and
+a restricted sandbox). None of them declares a licence, because the repository
+does not declare one — add a `LICENSE` file and set the field before publishing
+any of these.
+
+A note on `set -e` in `package()`: `makepkg` runs it with errexit, so a trailing
+`[ -f LICENSE ] && install …` fails the whole build when the file is absent.
+Use an `if` block. That exact line cost a build here.
+
+### 16.6 The update channel
+
+`jedi update` asks `https://atlasupdate.cybercontrol.tech/<channel>.json` whether
+a newer version exists. The server is **untrusted**. It can serve any bytes it
+likes; what it cannot do is produce an Ed25519 signature over them without the
+private key, and every build carries the public half
+(`UPDATE_PUBKEY` in `js/version.js` — a public key is meant to ship in every
+copy).
+
+The order in `updater.js` is fixed:
+
+```
+fetch  →  verify signature  →  parse  →  compare versions
+```
+
+Nothing downstream of the check runs on unverified bytes. Details that matter:
+
+- **The signature covers the served bytes exactly.** The manifest is transported
+  as `{"manifest": "<json string>", "signature": "<base64>"}` and the signature
+  is over that string, not over a re-serialised object. Signing a parsed and
+  re-encoded structure would let two different byte strings share one signature.
+- **The body is capped at 64 KB while streaming**, not after buffering.
+- **HTTPS is required**, except against `localhost` for testing.
+- **Redirects are followed at most three times**, and never to a downgraded
+  scheme.
+- **`jedi update` never installs anything.** It prints the version, the notes,
+  the artefact URL and its SHA-256. Upgrading is the package manager's job. An
+  updater that can replace its own binary is remote code execution with a
+  friendly name.
+
+Exit codes: `0` current, `10` an update is available, `1` the check failed —
+including a signature that did not verify, which is a failure and not a "no".
+
+**Publishing.** `packaging/sign.js` builds the manifest and signs it:
+
+```bash
+packaging/version.sh --set 1.1.0
+./packaging/build.sh --all
+node packaging/sign.js --notes "what changed"
+# upload dist/publish/ to the web root, <channel>.json at the top level
+```
+
+The private key is read from `$JEDI_PUBLISH_KEY`, `$JEDI_PUBLISH_KEY_FILE`, or
+`~/.config/apex-jedisyslogger/publish.key`, and the file must not be group- or
+world-readable. **It is never accepted on the command line** — argv is visible in
+`ps`, in shell history and in CI logs. `sign.js` then derives the public key from
+it and aborts unless it matches `UPDATE_PUBKEY`; publishing a manifest signed
+with the wrong key would break updates for every installed copy, so that is fatal
+at release time rather than discovered in the field. It also verifies its own
+signature before writing anything, and refuses to sign artefacts that do not
+belong to the current version — a manifest saying 1.1.0 while pointing at the
+1.0.0 tarball is worse than no manifest, because clients would verify it, trust
+it, and download the wrong thing.
+
+`node packaging/sign.js --generate` produces a fresh keypair, writing the private
+half to **stdout only** so it can be redirected straight into a `chmod 600` file
+without ever appearing on a terminal.
 
 ---
 

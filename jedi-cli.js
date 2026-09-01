@@ -27,6 +27,7 @@ require('./js/syslogger.js');
 require('./js/jedi.js');
 const { Syslogger, Jedi } = JS;
 const wire = require('./forward.js');
+const updater = require('./updater.js');
 
 // ── Arguments ────────────────────────────────────────────────────────────
 // A hand-rolled parser rather than a dependency: the grammar is `command
@@ -35,6 +36,7 @@ const wire = require('./forward.js');
 const FLAGS_WITH_VALUE = new Set([
   'eps', 'format', 'forward', 'duration', 'max', 'appliance', 'source',
   'hec-token', 'hec-index', 'hec-sourcetype', 'filter', 'every',
+  'update-url', 'update-key', 'channel',
 ]);
 const BOOL_FLAGS = new Set([
   'json', 'quiet', 'loop', 'test', 'ascii', 'no-color', 'color', 'help',
@@ -257,6 +259,43 @@ function cmdList(what, flags) {
   }
   const a = rows.filter((r) => r.kind === 'attack').length, p = rows.length - a;
   process.stderr.write(`\n${a ? `${a} attack scenarios` : ''}${a && p ? ', ' : ''}${p ? `${p} appliance sources` : ''}\n`);
+}
+
+// `jedi update` reports; it never installs. Replacing your own binary from the
+// network is a remote-code-execution feature with a friendly name, and the
+// package manager that installed this is the thing that should replace it.
+function cmdUpdate(flags) {
+  updater.check({ url: flags['update-url'], channel: flags.channel, pubkey: flags['update-key'] }, (err, r) => {
+    if (err) {
+      if (flags.json) process.stdout.write(JSON.stringify({ error: err.message }) + '\n');
+      else process.stderr.write(`${C.red}update check failed${C.reset}: ${err.message}\n`);
+      process.exit(1);
+    }
+    if (flags.json) { process.stdout.write(JSON.stringify(r, null, 2) + '\n'); process.exit(r.upToDate ? 0 : 10); }
+
+    if (r.ahead) {
+      process.stdout.write(`${C.grey}This build (${r.current}) is newer than the published ${r.latest} — a local or pre-release build.${C.reset}\n`);
+      process.exit(0);
+    }
+    if (r.upToDate) {
+      process.stdout.write(`${C.green}Up to date${C.reset} — ${NAME} ${r.current} (channel ${r.channel}, signature verified)\n`);
+      process.exit(0);
+    }
+    process.stdout.write(`${C.bold}${C.yellow}Update available${C.reset}  ${r.current} → ${C.bold}${r.latest}${C.reset}` +
+      (r.released ? ` ${C.grey}(${r.released})${C.reset}` : '') + '\n');
+    if (r.notes) process.stdout.write(`\n${r.notes.trim()}\n`);
+    process.stdout.write(`\n${C.grey}signature verified against this build's key${C.reset}\n`);
+    const a = r.artifact;
+    if (a) {
+      process.stdout.write(`\nFor ${r.platform}:\n  ${a.url}\n  sha256 ${a.sha256}\n`);
+    } else {
+      process.stdout.write(`\nNo artefact published for ${r.platform}. Available:\n`);
+      for (const [k, v] of Object.entries(r.artifacts)) process.stdout.write(`  ${k.padEnd(14)} ${v.file}\n`);
+    }
+    process.stdout.write(`\n${C.dim}Install it the way you installed this copy — apt, dnf, pacman, brew,\n` +
+      `or by unpacking the archive. This command does not self-update on purpose.${C.reset}\n`);
+    process.exit(10);
+  });
 }
 
 function cmdTest(flags) {
@@ -624,6 +663,7 @@ ${b('COMMANDS')}
   appliance <source…>        emit one burst from an appliance source, exit
   replay <file>              replay a log file through the engine
   list [scenarios|appliances|rules]
+  update                     check for a newer version (signature-verified)
   version | help
 
 ${b('OPTIONS')}
@@ -644,6 +684,8 @@ ${b('OPTIONS')}
   --json                     machine-readable output (NDJSON when streaming)
   --no-detect                generate only, run no detection rules
   --ascii --no-color         plain output for limited terminals
+  --channel NAME             update channel to check (default: stable)
+  --update-url URL           override the update server (testing)
 
 ${b('EXAMPLES')}
   jedi                                       live dashboard
@@ -675,6 +717,7 @@ function main() {
   switch (cmd) {
     case 'version': return void process.stdout.write(`${NAME} ${VERSION}\n`);
     case 'list': return cmdList(rest[0], flags);
+    case 'update': return cmdUpdate(flags);
     case 'attack': return cmdAttack(rest, flags, 'attack');
     case 'appliance': return cmdAttack(rest, flags, 'appliance');
     case 'replay': {

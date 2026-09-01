@@ -27,5 +27,7 @@ class ApexJedisyslogger < Formula
   test do
     assert_match version.to_s, shell_output("#{bin}/jedi --version")
     assert_match "72 attack scenarios", shell_output("#{bin}/jedi list scenarios 2>&1")
+    # The update check must reach the channel and verify its signature.
+    assert_match(/Up to date|Update available|not be published/, shell_output("#{bin}/jedi update 2>&1", 1))
   end
 end

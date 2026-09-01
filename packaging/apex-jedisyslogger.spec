@@ -37,7 +37,7 @@ dashboard needs no browser; the same tree also serves the optional web UI.
 
 %install
 mkdir -p %{buildroot}%{appdir}
-cp -r jedi-cli.js forward.js server.js auth.js js css bin samples types \
+cp -r jedi-cli.js forward.js updater.js server.js auth.js js css bin samples types \
       index.html login.html account.html about.html ecosystem.config.js \
       %{buildroot}%{appdir}/
 

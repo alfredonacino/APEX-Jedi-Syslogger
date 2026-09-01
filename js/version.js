@@ -17,5 +17,20 @@
     VERSION: '1.0.0',
     RELEASED: '2026-09-02',
     NAME: 'APEX JediSyslogger',
+
+    // ---- Update channel ---------------------------------------------------
+    // Where a build asks whether it is current, and the Ed25519 key it checks
+    // the answer with. A public key is not a secret — it is *meant* to ship in
+    // every copy, and it is what makes the update server untrusted: the server
+    // can serve any bytes it likes, and a manifest it did not sign with the
+    // matching private key is rejected before a version is even compared.
+    //
+    // The private half never appears in this repository, in any package, or in
+    // any build log. `packaging/sign.js` reads it from JEDI_PUBLISH_KEY or from
+    // a file outside the tree, and refuses to run if it does not match the key
+    // below. See DOCUMENTATION.md §16.6.
+    UPDATE_URL: 'https://atlasupdate.cybercontrol.tech/',
+    UPDATE_PUBKEY: '5n-pji7b1FvJEpjhgpjyu8sUFL7TOcgFQ34-93PuVh0',
+    UPDATE_CHANNEL: 'stable',
   };
 });

@@ -756,10 +756,11 @@ format = string
       <table>
         <thead><tr><th>Platform</th><th>Install</th></tr></thead>
         <tbody>
-          <tr><td>macOS (Apple silicon &amp; Intel)</td><td><code>brew install --formula ./packaging/apex-jedisyslogger.rb</code>, or unpack the archive and run <code>./bin/jedi</code></td></tr>
-          <tr><td>Windows 10/11</td><td>unpack the archive, run <code>bin\jedi.cmd</code> (put <code>bin\</code> on PATH for a bare <code>jedi</code>)</td></tr>
-          <tr><td>Arch / Manjaro</td><td><code>makepkg -si</code> in <code>packaging/</code></td></tr>
-          <tr><td>RHEL / Rocky / Alma / Fedora</td><td><code>rpmbuild -ta apex-jedisyslogger-&lt;ver&gt;.tar.gz</code></td></tr>
+          <tr><td><strong>macOS</strong> (Apple silicon &amp; Intel)</td><td><code>brew install --formula ./packaging/apex-jedisyslogger.rb</code>, or unpack the archive and run <code>./bin/jedi</code></td></tr>
+          <tr><td><strong>Windows</strong> 10/11</td><td><code>powershell -ExecutionPolicy Bypass -File .\packaging\install.ps1</code> — per-user, no admin, puts <code>jedi</code> on PATH. Or run <code>bin\jedi.cmd</code> from the unpacked archive</td></tr>
+          <tr><td><strong>Debian</strong> / Ubuntu / Mint / Raspberry&nbsp;Pi&nbsp;OS</td><td><code>sudo apt install ./apex-jedisyslogger_&lt;ver&gt;_all.deb</code></td></tr>
+          <tr><td><strong>RHEL</strong> / Rocky / Alma / Fedora</td><td><code>rpmbuild -ta apex-jedisyslogger-&lt;ver&gt;.tar.gz</code>, then <code>dnf install</code> the result</td></tr>
+          <tr><td><strong>Arch</strong> / <strong>CachyOS</strong> / Manjaro / EndeavourOS</td><td><code>makepkg -si</code> from <code>packaging/</code></td></tr>
           <tr><td>Any other Linux</td><td>unpack, then <code>sudo ln -s "$PWD/bin/jedi" /usr/local/bin/jedi</code></td></tr>
           <tr><td>One file, nothing else</td><td>copy <code>dist/jedi-&lt;ver&gt;.js</code> anywhere and <code>node jedi-&lt;ver&gt;.js</code></td></tr>
         </tbody>
@@ -786,6 +787,23 @@ format = string
 sudo systemctl enable --now apex-jedisyslogger</code></pre>
       <p>It is a <em>simulator</em>: whatever you point <code>JEDI_TARGET</code> at
       will fill up with synthetic events, so choose it deliberately.</p>
+
+      <h3>Staying current</h3>
+      <pre><code>jedi update      # 0 = current, 10 = newer available, 1 = check failed</code></pre>
+      <p>The version manifest is served from
+      <code>https://atlasupdate.cybercontrol.tech/</code> and signed with
+      <strong>Ed25519</strong>. Every build carries the <em>public</em> key, which
+      makes the update server untrusted by design: it can serve whatever bytes it
+      likes, but a manifest it did not sign with the matching private key is
+      rejected before a version is even compared. The order is fixed — fetch,
+      verify, parse, compare — so nothing downstream ever runs on unverified
+      bytes.</p>
+      <div class="callout">⚠️ <strong><code>jedi update</code> reports; it never
+      installs.</strong> It prints the new version, the notes, the download URL
+      and its SHA-256, and stops there. Upgrading is done by whatever installed
+      this copy — apt, dnf, pacman, brew, or unpacking the archive. An updater
+      that can replace its own binary is a remote-code-execution feature with a
+      friendly name, and this application has no business owning one.</div>
     </section>
 
     <section>
