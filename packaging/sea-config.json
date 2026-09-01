@@ -1,0 +1,7 @@
+{
+  "main": "dist/jedi-sea-entry.js",
+  "output": "dist/jedi-sea.blob",
+  "disableExperimentalSEAWarning": true,
+  "useSnapshot": false,
+  "useCodeCache": false
+}

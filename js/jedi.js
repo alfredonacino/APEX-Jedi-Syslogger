@@ -1136,4 +1136,5 @@
   }
 
   global.JS.Jedi = Jedi;
-})(window);
+  if (typeof module === 'object' && module.exports) module.exports = global.JS;
+})(typeof window !== 'undefined' ? window : globalThis);

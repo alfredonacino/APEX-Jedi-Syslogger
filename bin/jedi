@@ -1,0 +1,37 @@
+#!/bin/sh
+# APEX JediSyslogger — POSIX launcher (macOS, Linux, BSD).
+#
+# Finds the app whether this script was run in place, symlinked into
+# /usr/local/bin, or installed from a package into /usr/share. Override with
+# JEDI_HOME=/path/to/app if you keep it somewhere else entirely.
+set -e
+
+# Resolve symlinks without readlink -f, which macOS does not have.
+target=$0
+while [ -L "$target" ]; do
+  link=$(ls -ld -- "$target" | sed 's/.*-> //')
+  case $link in
+    /*) target=$link ;;
+    *)  target=$(dirname -- "$target")/$link ;;
+  esac
+done
+here=$(cd -- "$(dirname -- "$target")" && pwd)
+
+for candidate in "$JEDI_HOME" "$here/.." "$here" /usr/share/apex-jedisyslogger /usr/local/share/apex-jedisyslogger; do
+  [ -n "$candidate" ] || continue
+  if [ -f "$candidate/jedi-cli.js" ]; then app=$candidate; break; fi
+done
+
+if [ -z "${app:-}" ]; then
+  echo "jedi: cannot find jedi-cli.js — set JEDI_HOME to the install directory" >&2
+  exit 1
+fi
+
+node=${JEDI_NODE:-node}
+if ! command -v "$node" >/dev/null 2>&1; then
+  echo "jedi: Node.js 18 or newer is required and 'node' is not on PATH" >&2
+  echo "      install it from https://nodejs.org or your package manager, or set JEDI_NODE" >&2
+  exit 1
+fi
+
+exec "$node" "$app/jedi-cli.js" "$@"

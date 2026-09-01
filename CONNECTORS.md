@@ -566,7 +566,20 @@ The point of the simulator is that you can test the collector, the parser and th
 rule **before** any of the above is finished — and then again afterwards, to
 prove the real feed produces the same result.
 
-**Test the transport, end to end:**
+**From a terminal, on the collector itself** — no browser, no backend, and the
+fastest way to answer "can this box reach that collector at all":
+
+```bash
+jedi --forward tcp://10.0.0.50:514 --test        # probe: exit 1 if unreachable
+jedi appliance m365 --forward tcp://10.0.0.50:514 --raw   # one real burst
+jedi --forward udp://10.0.0.50:514 --eps 20 --every 30 --quiet   # sustained
+```
+
+The terminal build sends the datagram itself, so what you are testing is the
+path from *that host* — not from the machine running a browser. See
+[README.md § Terminal build](README.md#terminal-build).
+
+**Or from the dashboard, end to end:**
 
 1. Run the backend — a browser page cannot open a raw socket:
    `node server.js` → <http://localhost:8099> (see `README.md` for sign-in).

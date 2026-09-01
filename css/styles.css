@@ -329,3 +329,9 @@ h1, h2, h3, h4 { margin: 0; font-weight: 600; }
 
 /* Light theme fallback (the app is designed dark-first) */
 :root[data-theme="light"] { color-scheme: light; }
+
+/* Version chip in the page header — stamped from js/version.js, never typed
+   into the markup, so the web app and the terminal build cannot disagree. */
+.ver-chip { display: inline-block; margin-left: 6px; padding: 1px 6px; border-radius: 999px;
+  background: rgba(125, 211, 252, .12); border: 1px solid rgba(125, 211, 252, .28);
+  color: var(--text-dim); font-size: 10px; letter-spacing: .04em; vertical-align: middle; }

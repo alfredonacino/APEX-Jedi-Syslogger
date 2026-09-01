@@ -20,7 +20,8 @@ formats, the HTTP API, configuration, and deployment.
 - [13. Accounts, sign-in and per-user settings](#13-accounts-sign-in-and-per-user-settings)
 - [14. Deployment](#14-deployment)
 - [15. Extending the app](#15-extending-the-app)
-- [16. Troubleshooting](#16-troubleshooting)
+- [16. The terminal build](#16-the-terminal-build)
+- [17. Troubleshooting](#17-troubleshooting)
 
 ---
 
@@ -90,12 +91,30 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `server.js` | Optional backend: static host + `/forward` relay + `/test` probe + the sign-in gate |
 | `samples/sample.log` | Example mixed-format log for the file-replay demo |
 | `CONNECTORS.md` | How to configure the agent- and API-relayed sources for real: agent config, connector design, Microsoft 365 / Entra / Defender, permissions |
+| `js/version.js` | The one version number. Dual-mode: a browser global and a `require()` for Node. Everything else reads it (§16.4) |
+| `jedi-cli.js` | The terminal build — live dashboard and headless CLI over the same engine (§16) |
+| `forward.js` | The wire: UDP/TCP relays, the Splunk HEC poster, and the three connectivity probes. Required by both `server.js` and `jedi-cli.js` |
+| `bin/jedi`, `bin/jedi.cmd` | Launchers for POSIX and Windows |
+| `packaging/` | `build.sh`, `bundle.js`, `version.sh`, `PKGBUILD`, the RPM spec, the Homebrew formula, the systemd unit |
 | `jsconfig.json` | Editor typecheck settings — read by the editor, never shipped |
 | `types/globals.d.ts` | Ambient declarations for `window.JS` and Node globals |
 
 The three engine modules are plain IIFEs that attach to a global `JS` namespace —
-no build step, no bundler, no npm dependencies. Load order is data → syslogger →
-jedi → ui.
+no build step, no bundler, no npm dependencies. Load order is version → data →
+syslogger → jedi → ui, though only the last three actually depend on order:
+`js/version.js` and `js/data.js` both *merge* into `JS` rather than replacing it.
+
+Each engine module ends with the same two lines:
+
+```js
+  if (typeof module === 'object' && module.exports) module.exports = global.JS;
+})(typeof window !== 'undefined' ? window : globalThis);
+```
+
+That is what lets `jedi-cli.js` `require()` the identical files the browser loads
+(§16). There is no Node-specific copy of the generator or the rules, and there is
+no bundler in between — the terminal build cannot drift from the web app because
+it *is* the web app's engine.
 
 `jsconfig.json` and `types/globals.d.ts` are editor-only: VS Code's bundled
 TypeScript service reads them to typecheck the JavaScript in place, so no
@@ -1310,7 +1329,128 @@ silently** — a harness that asserts on alerts is the only thing that catches i
 
 ---
 
-## 16. Troubleshooting
+## 16. The terminal build
+
+`jedi-cli.js` is the application without a browser. It exists because the two
+places you most want this tool — a collector you are commissioning, and a server
+with no desktop — are exactly the places a browser dashboard cannot go. It also
+removes the backend from the forwarding path: the browser cannot open a socket
+and has to `POST /forward` to `server.js` first, whereas the terminal build calls
+`forward.js` directly and puts the datagram on the wire itself.
+
+### 16.1 How it stays identical to the web app
+
+It `require()`s `js/data.js`, `js/syslogger.js` and `js/jedi.js` — the same files,
+unmodified, that `index.html` loads with `<script>` tags. Nothing is ported,
+re-implemented or bundled at runtime. A new scenario or rule appears in both
+builds the moment it is added, and a burst that raises one alert in the browser
+raises one alert here.
+
+Three small changes made that possible, and they are the reason each file ends the
+way it does:
+
+1. **Dual-mode tails.** Each engine module closes over
+   `typeof window !== 'undefined' ? window : globalThis` and sets `module.exports`
+   when Node is loading it. In a browser both are no-ops.
+2. **An additive namespace.** `js/data.js` used to assign `global.JS = {…}`, which
+   would have wiped anything `js/version.js` had already put there. It now merges.
+3. **An unref'd timer.** The Syslogger's forward-flush interval keeps Node's event
+   loop alive forever, which would hang every one-shot CLI run. It is `unref()`ed
+   where that method exists — Node only.
+
+`js/ui.js` is *not* required: it is the DOM front end, and the terminal has its own.
+
+### 16.2 Commands and flags
+
+| | |
+|---|---|
+| `jedi` | live dashboard (the default when stdout is a terminal) |
+| `jedi attack <id…>` | inject scenarios, print what fired, exit |
+| `jedi appliance <id…>` | one burst from an appliance source, exit |
+| `jedi replay <file>` | push a log file through the engine |
+| `jedi list scenarios\|appliances\|rules` | what is available |
+
+Flags: `--eps`, `--format`, `--appliance`, `--forward`, `--test`, `--hec-token`,
+`--hec-index`, `--hec-sourcetype`, `--hec-plain`, `--hec-verify`, `--duration`,
+`--max`, `--every`, `--loop`, `--quiet`, `--raw`, `--json`, `--no-detect`,
+`--ascii`, `--no-color`. `jedi --help` is the authoritative list.
+
+Behaviours worth knowing:
+
+- **It degrades on purpose.** No TTY (piped, redirected, under systemd) means the
+  dashboard is skipped and the headless path runs instead, so `jedi > out.log`
+  never fills a file with escape codes.
+- **`attack` waits for quiet, not for a clock.** `injectScenario()` spreads a
+  burst 30–90 ms per event and a burst can be twenty events long, so the command
+  waits until the stream has been silent for 300 ms. A fixed delay truncated long
+  scenarios and their correlation rules never fired.
+- **A forwarding failure is loud.** If nothing could be sent, the summary says so
+  and the exit status is 1. UDP is the exception and always exits 0 — it is
+  fire-and-forget, and the tool must not claim a delivery it cannot observe.
+- **The scheme decides TLS.** `hec://` is HTTPS, `hec+http://` is not. The HEC
+  config object deliberately carries no `ssl` key so it cannot override the URL.
+
+### 16.3 The dashboard
+
+Rendered with ANSI escapes and nothing else. The alternate screen buffer is
+entered on start and left on exit, so your scrollback survives. Keys: `s`
+start/stop, `a` attack picker, `x` appliance picker, `+`/`-` rate, `r` reset, `c`
+clear detections, `q` quit. Both pickers filter as you type.
+
+Every frame row is built to one measured width. Two rules keep it from tearing:
+borders are sized from `vislen()` of the pieces rather than arithmetic on a label
+length, and the picker overlay is drawn **opaque** — splicing a coloured row
+underneath it by visible width cuts an ANSI escape in half.
+
+### 16.4 One version, everywhere
+
+`js/version.js` is the single source of truth. The dashboard stamps it into the
+page header, `server.js` prints it in its banner, the terminal build reports it
+in `--version`, and the packaging manifests carry a copy because a `PKGBUILD` is
+not JavaScript.
+
+```bash
+packaging/version.sh              # print it
+packaging/version.sh --check      # every file agrees, or exit 1
+packaging/version.sh --set 1.1.0  # stamp app + CLI + all three packages
+```
+
+`build.sh` runs `--check` before it packages anything, so a build whose manifest
+claims a different version from the code inside it cannot be produced. Releasing
+is: `--set`, commit, `git tag -a vX.Y.Z`, `git push --follow-tags`.
+
+### 16.5 Packaging
+
+`packaging/build.sh` produces, from `dist/`:
+
+| Artefact | For |
+|---|---|
+| `apex-jedisyslogger-<ver>.tar.gz` / `.zip` | any OS with Node 18+ — the whole app, terminal *and* web |
+| `jedi-<ver>.js` | one self-contained file to copy anywhere |
+| `jedi-<ver>-<platform>` (`--sea`) | hosts with no Node at all |
+| `SHA256SUMS` | all of the above |
+
+The single-file build comes from `packaging/bundle.js`, ~50 lines that wrap each
+module in a function and resolve the literal relative specifiers through a small
+`require` shim, falling through to the real `require` for core modules. It is
+hand-rolled for the same reason everything else here is: the project takes no
+dependencies, and this particular module graph is six files.
+
+`--sea` uses Node's own single-executable feature. It is opt-in and the only path
+in the project that reaches outside it, because Node's SEA needs `postject` to
+inject the blob. **Cross-building is not possible**: the binary embeds that
+platform's `node`, so each target must be built on that platform or in CI.
+
+Distribution manifests: `PKGBUILD` (Arch), `apex-jedisyslogger.spec` (RHEL,
+Rocky, Alma, Fedora), `apex-jedisyslogger.rb` (Homebrew, macOS arm64 and x86_64),
+and `apex-jedisyslogger.service` (systemd, headless forwarding with `DynamicUser`
+and a restricted sandbox). None of them declares a licence, because the
+repository does not declare one — add a `LICENSE` file and set the field before
+publishing any of these.
+
+---
+
+## 17. Troubleshooting
 
 | Symptom | Cause / fix |
 |---------|-------------|

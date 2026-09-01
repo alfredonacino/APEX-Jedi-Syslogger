@@ -7,3 +7,6 @@ auth.json
 
 # TLS material — private key, never commit it
 certs/
+
+# Build output — regenerate with packaging/build.sh, never commit
+dist/

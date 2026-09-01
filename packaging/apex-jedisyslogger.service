@@ -1,0 +1,37 @@
+# Headless log generation and forwarding, for a collector you are testing.
+#
+#   sudo systemctl edit apex-jedisyslogger    # set the target in a drop-in
+#   sudo systemctl enable --now apex-jedisyslogger
+#
+# This runs the terminal build with no dashboard: it generates, detects, and
+# puts the lines on the wire. It is a *simulator* — pointing it at a production
+# collector will fill that collector with synthetic events, so set JEDI_TARGET
+# deliberately.
+[Unit]
+Description=APEX JediSyslogger — synthetic log source and forwarder
+Documentation=file:/usr/share/doc/apex-jedisyslogger/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+Environment=JEDI_TARGET=udp://127.0.0.1:514
+Environment=JEDI_EPS=8
+ExecStart=/usr/bin/jedi --quiet --eps ${JEDI_EPS} --forward ${JEDI_TARGET} --every 60
+Restart=on-failure
+RestartSec=5
+
+# It needs the network and nothing else.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6
+MemoryMax=256M
+
+[Install]
+WantedBy=multi-user.target

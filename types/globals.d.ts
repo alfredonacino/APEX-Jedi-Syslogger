@@ -17,6 +17,7 @@ declare module 'dgram';
 declare module 'net';
 declare module 'fs';
 declare module 'path';
+declare module 'readline';
 
 declare var require: any;
 declare var module: any;

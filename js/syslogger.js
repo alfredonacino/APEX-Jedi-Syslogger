@@ -3165,7 +3165,12 @@
       this.forwardError = null;
       this._fwdQueue = [];
       this._fwdBusy = false;
-      setInterval(() => this._flushForward(), 500);
+      // Under Node a bare interval keeps the process alive forever, which would
+      // hang every one-shot run of the terminal build. No-op in the browser,
+      // where setInterval hands back a number and there is nothing to unref.
+      const fwdTimer = /** @type {any} */ (setInterval(() => this._flushForward(), 500));
+      this._fwdTimer = fwdTimer;
+      if (fwdTimer && typeof fwdTimer.unref === 'function') fwdTimer.unref();
     }
 
     setEps(v) { this.eps = Math.max(0, v); }
@@ -3317,4 +3322,5 @@
   }
 
   global.JS.Syslogger = Syslogger;
-})(window);
+  if (typeof module === 'object' && module.exports) module.exports = global.JS;
+})(typeof window !== 'undefined' ? window : globalThis);

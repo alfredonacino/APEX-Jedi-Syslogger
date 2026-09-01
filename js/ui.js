@@ -86,6 +86,10 @@
 
   // ── Boot ─────────────────────────────────────────────────────────────
   function init() {
+    // One version for the dashboard, the terminal build and the packages; it
+    // lives in js/version.js and nothing hard-codes a copy of it.
+    const ver = $('#app-version');
+    if (ver && global.JS.VERSION) { ver.textContent = `v${global.JS.VERSION}`; ver.title = `released ${global.JS.RELEASED}`; }
     buildScenarioButtons();
     buildSeverityRows();
     wireControls();

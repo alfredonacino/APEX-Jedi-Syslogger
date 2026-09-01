@@ -21,6 +21,32 @@ not answer to just anyone who can reach the port.
 
 ![APEX JediSyslogger dashboard — live event stream, MITRE ATT&CK detections, and threat level](images/apex_jedisyslogger.png)
 
+## Two builds, one version
+
+| | Runs | Needs |
+|---|---|---|
+| **Web dashboard** | `node server.js` → a browser | Node 18+, a browser |
+| **Terminal build** | `jedi` → a live dashboard in the terminal, or headless | Node 18+ |
+
+Both load the *same* engine (`js/data.js`, `js/syslogger.js`, `js/jedi.js`), so a
+scenario raises the same detection in either, and both report the same version —
+there is one version number, in `js/version.js`, and
+`packaging/version.sh --check` fails the build if any package disagrees.
+
+The terminal build is the one to run on a collector, a jump box, or anywhere
+without a browser: it opens the socket itself, so **no backend is needed** to
+forward.
+
+```bash
+./bin/jedi                                     # live dashboard
+./bin/jedi --forward udp://10.0.0.50:514 --eps 20 --quiet
+./bin/jedi attack m365-mail-exfil --json | jq '.[0].alerts'
+./bin/jedi --help
+```
+
+See [Terminal build](#terminal-build) below for the full command set, and
+[DOCUMENTATION.md §16](DOCUMENTATION.md#16-the-terminal-build) for how it works.
+
 ## Install on a new machine
 
 The app is a static web front-end plus an optional **zero-dependency Node
@@ -552,6 +578,59 @@ dashboard badges them and every button reports its transport on hover.
 Snare is Windows Event Log over a different wire format, so it reuses the existing
 `windows-threat` rule — same event IDs (4624/4625/4688), no duplicate rule.
 
+## Terminal build
+
+Same engine, no browser. `jedi-cli.js` `require()`s the very files the pages
+load, so there is no second implementation of a scenario or a rule to drift.
+
+**Install** — Node 18+ is the only requirement, on every platform:
+
+| Platform | Install |
+|---|---|
+| macOS (Apple silicon & Intel) | `brew install --formula ./packaging/apex-jedisyslogger.rb`, or unpack the archive and `./bin/jedi` |
+| Windows 10/11 | unpack the archive, run `bin\jedi.cmd` (add `bin\` to PATH to get `jedi`) |
+| Arch / Manjaro | `makepkg -si` in `packaging/` |
+| RHEL / Rocky / Alma / Fedora | `rpmbuild -ta apex-jedisyslogger-<ver>.tar.gz` |
+| Any Linux, or no package manager | unpack the archive; `sudo ln -s "$PWD/bin/jedi" /usr/local/bin/jedi` |
+| One file, nothing else | copy `dist/jedi-<ver>.js` anywhere and `node jedi-<ver>.js` |
+
+Build the artefacts yourself with `./packaging/build.sh` (add `--sea` for a
+standalone binary with Node baked in, for hosts that have no Node at all).
+
+**Commands**
+
+```bash
+jedi                          # live dashboard: stream, detections, threat level
+jedi attack <scenario…>       # inject, print what fired, exit
+jedi appliance <source…>      # one burst in a vendor's real wire format
+jedi replay <file> --loop     # push a real log file through the engine
+jedi list scenarios|appliances|rules
+```
+
+**Options that matter**
+
+| Flag | Does |
+|---|---|
+| `--forward udp://h:514` | send live — also `tcp://`, `hec://`, `hec+http://` |
+| `--test` | probe the `--forward` target and exit (exit 1 if unreachable) |
+| `--eps N` `--format rfc5424` | rate and syslog format |
+| `--appliance id,id` | scope the stream to those sources |
+| `--every S` | inject a random scenario every S seconds |
+| `--duration S` `--max N` | stop after a time or an event count |
+| `--json` | NDJSON while streaming, a JSON report for `attack` |
+| `--raw` | just the syslog lines, for piping |
+| `--quiet` | no dashboard (automatic when stdout is not a terminal) |
+
+In the dashboard: `s` start/stop, `a` attack picker (type to filter), `x`
+appliance picker, `+`/`-` rate, `r` reset, `c` clear detections, `q` quit.
+
+**On a server**, the packaged systemd unit runs it headless:
+
+```bash
+sudo systemctl edit apex-jedisyslogger     # set JEDI_TARGET / JEDI_EPS
+sudo systemctl enable --now apex-jedisyslogger
+```
+
 ## Project layout
 
 ```
@@ -573,6 +652,12 @@ samples/sample.log  example mixed-format log for the file-replay demo
 jsconfig.json     editor typecheck settings (no install needed, ships nothing)
 types/globals.d.ts  ambient declarations for window.JS and Node globals
 CONNECTORS.md     how to configure the agent- and API-relayed sources for real
+jedi-cli.js       the terminal build: dashboard + headless CLI
+forward.js        the wire: UDP/TCP/HEC relays and probes, shared by server + CLI
+js/version.js     the one version number, read by every build and package
+bin/jedi          POSIX launcher   ·   bin/jedi.cmd  Windows launcher
+packaging/        build.sh, bundle.js, version.sh, PKGBUILD, RPM spec,
+                  Homebrew formula, systemd unit
 ```
 
 ## Extending it

@@ -799,8 +799,12 @@
     return `<${pri}>${bsdTimestamp(d)} ${ev.host} ${tag}: ${ev.message}`;
   }
 
-  global.JS = {
+  // Additive, so load order between this file and version.js does not matter.
+  global.JS = Object.assign(global.JS || {}, {
     rand, SEVERITY, FACILITY, HOSTS, USERS, BAD_USERS, URLS, AGENTS,
     DOMAINS, THREAT_INTEL, formatSyslog, isoTimestamp, bsdTimestamp, utcTimestamp, VENDOR_FORMATTERS,
-  };
-})(window);
+  });
+  // The terminal app (jedi-cli.js) require()s the same engine the browser runs,
+  // so the two can never drift apart. Nothing here touches the DOM.
+  if (typeof module === 'object' && module.exports) module.exports = global.JS;
+})(typeof window !== 'undefined' ? window : globalThis);

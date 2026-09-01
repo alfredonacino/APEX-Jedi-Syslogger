@@ -9,5 +9,5 @@
     "strict": false,
     "noImplicitAny": false
   },
-  "include": ["js/**/*.js", "server.js", "auth.js", "types/**/*.d.ts"]
+  "include": ["js/**/*.js", "server.js", "auth.js", "forward.js", "jedi-cli.js", "packaging/bundle.js", "types/**/*.d.ts"]
 }

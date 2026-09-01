@@ -67,7 +67,7 @@
       <span class="brand-mark">⚔️</span>
       <div>
         <h1><span class="brand-apex">APEX</span> Jedi<span class="brand-accent">Syslogger</span></h1>
-        <p class="brand-sub">About &amp; Instructions</p>
+        <p class="brand-sub">About &amp; Instructions <span id="app-version" class="ver-chip"></span></p>
       </div>
     </div>
     <div class="controls">
@@ -724,8 +724,72 @@ format = string
       body (<code>DeviceName</code>, <code>SiteUrl</code>, <code>MailboxOwnerUPN</code>).</div>
     </section>
 
+
     <section>
-      <h2><span class="num">11</span>Project layout</h2>
+      <h2><span class="num">11</span>Terminal build <span class="tag">no browser</span></h2>
+      <p>The same application, without a browser. <code>jedi-cli.js</code>
+      <code>require()</code>s the very files this page's dashboard loads
+      (<code>js/data.js</code>, <code>js/syslogger.js</code>, <code>js/jedi.js</code>),
+      so a scenario raises the same detection in both and there is no second
+      implementation to drift. It also drops the backend out of the forwarding
+      path: a browser cannot open a socket and has to POST to
+      <code>server.js</code> first, while the terminal build sends the datagram
+      itself — which is why it is the one to run <em>on</em> a collector.</p>
+
+      <pre><code>./bin/jedi                                   live dashboard
+./bin/jedi --forward udp://10.0.0.50:514 --eps 20 --quiet
+./bin/jedi --forward tcp://10.0.0.50:514 --test
+./bin/jedi attack m365-mail-exfil --json | jq '.[0].alerts'
+./bin/jedi appliance defender entra          one burst from each
+./bin/jedi replay /var/log/syslog --loop
+./bin/jedi list appliances
+./bin/jedi --help</code></pre>
+
+      <p>In the dashboard: <code>s</code> start/stop, <code>a</code> attack picker
+      (type to filter), <code>x</code> appliance picker, <code>+</code>/<code>-</code>
+      rate, <code>r</code> reset, <code>c</code> clear detections, <code>q</code> quit.
+      With no terminal attached — piped, redirected, or under systemd — it skips the
+      dashboard and runs headless instead, so <code>jedi &gt; out.log</code> never
+      fills a file with escape codes.</p>
+
+      <h3>Installing it</h3>
+      <table>
+        <thead><tr><th>Platform</th><th>Install</th></tr></thead>
+        <tbody>
+          <tr><td>macOS (Apple silicon &amp; Intel)</td><td><code>brew install --formula ./packaging/apex-jedisyslogger.rb</code>, or unpack the archive and run <code>./bin/jedi</code></td></tr>
+          <tr><td>Windows 10/11</td><td>unpack the archive, run <code>bin\jedi.cmd</code> (put <code>bin\</code> on PATH for a bare <code>jedi</code>)</td></tr>
+          <tr><td>Arch / Manjaro</td><td><code>makepkg -si</code> in <code>packaging/</code></td></tr>
+          <tr><td>RHEL / Rocky / Alma / Fedora</td><td><code>rpmbuild -ta apex-jedisyslogger-&lt;ver&gt;.tar.gz</code></td></tr>
+          <tr><td>Any other Linux</td><td>unpack, then <code>sudo ln -s "$PWD/bin/jedi" /usr/local/bin/jedi</code></td></tr>
+          <tr><td>One file, nothing else</td><td>copy <code>dist/jedi-&lt;ver&gt;.js</code> anywhere and <code>node jedi-&lt;ver&gt;.js</code></td></tr>
+        </tbody>
+      </table>
+      <p><strong>Node.js 18 or newer is the only requirement</strong>, on every one
+      of those. Nothing is compiled and nothing is installed —
+      <code>./packaging/build.sh</code> builds the archives and the single-file
+      version, and <code>--sea</code> additionally bakes Node into a standalone
+      binary for hosts that have none. That last one cannot be cross-built: the
+      executable embeds that platform's <code>node</code>, so each target is built
+      on its own platform or in CI.</p>
+
+      <div class="callout"><strong>One version, everywhere.</strong> The number in
+      this page's header, the server's startup banner, <code>jedi --version</code>
+      and all three package manifests come from <code>js/version.js</code>. Release
+      with <code>packaging/version.sh --set X.Y.Z</code>, which stamps every one of
+      them together; <code>--check</code> runs before any build and fails it if they
+      have drifted, so a package can never claim a version different from the code
+      inside it.</div>
+
+      <p>On a server, the packaged systemd unit runs it headless — it generates,
+      detects and forwards, with <code>DynamicUser</code> and a restricted sandbox:</p>
+      <pre><code>sudo systemctl edit apex-jedisyslogger      # set JEDI_TARGET and JEDI_EPS
+sudo systemctl enable --now apex-jedisyslogger</code></pre>
+      <p>It is a <em>simulator</em>: whatever you point <code>JEDI_TARGET</code> at
+      will fill up with synthetic events, so choose it deliberately.</p>
+    </section>
+
+    <section>
+      <h2><span class="num">12</span>Project layout</h2>
       <pre><code>index.html          markup + panel scaffold
 login.html          password + two-factor sign-in page
 account.html        profile, password, second factor, user management
@@ -742,11 +806,17 @@ auth.js             password (scrypt) + TOTP two-factor, sessions, lockout
 auth.json           generated per install: password hash + TOTP secret (0600, gitignored)
 server.js           optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
 samples/sample.log  example mixed-format log for the file-replay demo
-CONNECTORS.md       configuring the agent- and API-relayed sources for real</code></pre>
+CONNECTORS.md       configuring the agent- and API-relayed sources for real
+jedi-cli.js         the terminal build: dashboard + headless CLI
+forward.js          UDP/TCP/HEC relays and probes, shared by server and CLI
+js/version.js       the one version number, read by every build and package
+bin/jedi            POSIX launcher   ·   bin/jedi.cmd   Windows launcher
+packaging/          build.sh, bundle.js, version.sh, PKGBUILD, RPM spec,
+                    Homebrew formula, systemd unit</code></pre>
     </section>
 
     <section>
-      <h2><span class="num">12</span>Extending it</h2>
+      <h2><span class="num">13</span>Extending it</h2>
       <ul>
         <li><strong>Add a log source</strong>: add a builder to <code>BASELINE</code> in
         <code>syslogger.js</code> and a <code>SOURCE_META</code> entry in <code>ui.js</code>.</li>
@@ -774,5 +844,12 @@ CONNECTORS.md       configuring the agent- and API-relayed sources for real</cod
     <a href="https://www.alfredonacino.com" target="_blank" rel="noopener">www.alfredonacino.com</a> ·
     <a href="mailto:alfredo@nacino.net">alfredo@nacino.net</a></span>
   </footer>
+  <script src="js/version.js"></script>
+  <script>
+    // The About page loads no engine, only the version, so the number here can
+    // never disagree with the dashboard's.
+    var v = document.getElementById('app-version');
+    if (v && window.JS && window.JS.VERSION) { v.textContent = 'v' + JS.VERSION; v.title = 'released ' + JS.RELEASED; }
+  </script>
 </body>
 </html>
