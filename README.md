@@ -5,7 +5,7 @@ practice. It has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **41 appliance formats** (firewalls and NGFW, IDS/NDR, proxies, DNS/DDI, mail and email security, VPN gateways, a PAM vault, hypervisor, backup, and cloud/SaaS control planes — Palo Alto, FortiGate, Cisco ASA/FTD/IOS/ISE/ESA/Meraki/Umbrella, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, NetScaler, Ivanti Connect Secure, Snort 3, Suricata, Zeek, HAProxy, Squid, BIND 9, Infoblox NIOS, Postfix, CyberArk, Veeam, VMware ESXi, Windows Event Log via Snare, Sysmon, Linux auditd, AWS CloudTrail, Azure Activity, Microsoft 365, Entra ID, Okta, CrowdStrike, Kubernetes audit, and generic CEF/LEEF) from simulated infrastructure at a configurable *events-per-second*, injects **60 attack scenarios** on demand, and can replay a log file in a loop. |
+| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **42 appliance formats** (firewalls and NGFW, IDS/NDR, proxies, DNS/DDI, mail and email security, VPN gateways, a PAM vault, hypervisor, backup, endpoint EDR, and cloud/SaaS control planes — Palo Alto, FortiGate, Cisco ASA/FTD/IOS/ISE/ESA/Meraki/Umbrella, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, NetScaler, Ivanti Connect Secure, Snort 3, Suricata, Zeek, HAProxy, Squid, BIND 9, Infoblox NIOS, Postfix, CyberArk, Veeam, VMware ESXi, Windows Event Log via Snare, Sysmon, Linux auditd, AWS CloudTrail, Azure Activity, Microsoft 365, Entra ID, Defender for Endpoint, Okta, CrowdStrike, Kubernetes audit, and generic CEF/LEEF) from simulated infrastructure at a configurable *events-per-second*, injects **72 attack scenarios** on demand, and can replay a log file in a loop. |
 | **Jedi**      | A miniature SIEM engine. Ingests every event, keeps rolling statistics, and runs a **stateful detection-rule engine** that raises **MITRE ATT&CK-tagged** alerts. |
 
 The dashboard runs entirely in the browser. An optional **zero-dependency Node
@@ -326,7 +326,7 @@ itself does.
 1. **Start Ingestion** — begins benign baseline traffic. Drag the **Rate** slider
    (0–60 eps) to change volume.
 2. **Attack ›** — inject a burst of malicious activity and watch **Detections**
-   correlate it. **Appliance logs ›** — emit any of the 41 sources in its real
+   correlate it. **Appliance logs ›** — emit any of the 42 sources in its real
    wire format, from firewalls (Palo Alto, FortiGate, Cisco ASA/FTD) to an IDS
    (Snort), network monitoring (Zeek), a load balancer (HAProxy), DNS (BIND 9),
    mail (Postfix), agent-relayed hosts (Windows via Snare, Sysmon, Linux auditd)
@@ -399,15 +399,15 @@ Batches go to `/services/collector/event` every 500 ms, up to 1000 events each.
 | DNS Tunneling | Very long DNS label / known-bad domain (BIND, Infoblox, Umbrella) | T1071.004 |
 | Privilege Escalation | `sudo … USER=root` / Windows EventID 4672 | T1068 |
 | IDS Malware Signature | Suricata/ET trojan / exploit hit | T1204 |
-| Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA / metadata SSRF | T1190 · T1059 · T1083 · T1505.003 · T1595 · T1552.005 |
+| Web Application Attack | Log4Shell / Exchange ProxyNotShell / XSS / traversal / web shell / scanner UA / metadata SSRF | T1190 · T1059 · T1083 · T1505.003 · T1595 · T1552.005 |
 | Windows Security Event | RDP brute / spray / Kerberoasting / AS-REP roast / Golden Ticket / DCSync / new admin / log-clear / PtH / PsExec | T1110 · T1558.001 · T1558.003 · T1558.004 · T1003.006 · T1136 · T1070.001 · T1550.002 · T1021.002 |
 | Credential Dumping (LSASS) | Sysmon 10 handle into `lsass.exe` with dump rights, or a known dumper | T1003.001 |
 | Persistence Mechanism Created | `CurrentVersion\Run` write, scheduled task, or service install | T1547.001 · T1053.005 · T1543.003 |
 | LOLBin Download / Proxy Execution | `certutil -urlcache`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` | T1105 · T1218 |
-| Security Tooling Disabled | Defender real-time protection off, AMSI patched, exclusion added | T1562.001 |
+| Security Tooling Disabled | Defender real-time protection off, AMSI patched, exclusion added, or Defender's own tamper alert (protection off, sensor stopped) | T1562.001 |
 | Active Directory Enumeration | SharpHound / AdFind on disk, or ≥ 10 LDAP object reads / account / 60s | T1087.002 |
-| Cloud Control-Plane Abuse | CloudTrail `StopLogging`, IAM key/admin-policy creation, public S3; Azure diagnostic-settings delete, Owner role assignment, `listKeys`, key-vault policy write; Microsoft 365 external forwarding rule | T1562.008 · T1098.001 · T1098.003 · T1530 · T1078.004 · T1552.001 · T1555 · T1114.003 |
-| Identity Provider Threat | Okta sign-ins from 2 countries / hour, MFA factor or policy change | T1078.004 · T1098.003 |
+| Cloud Control-Plane Abuse | CloudTrail `StopLogging`, IAM key/admin-policy creation, public S3; Azure diagnostic-settings delete, Owner role assignment, `listKeys`, key-vault policy write; Microsoft 365 forwarding and transport rules, audit logging off, anonymous sharing, external Teams guests, eDiscovery export, Power Automate exfil flows, mailbox-sync and mass-download bursts | T1562.008 · T1098.001 · T1098.003 · T1530 · T1078.004 · T1552.001 · T1555 · T1114.002 · T1114.003 · T1199 · T1213 · T1213.002 · T1567 |
+| Identity Provider Threat | Okta sign-ins from 2 countries / hour, MFA factor or policy change; Entra legacy-auth bypass, OAuth consent, and directory audits — a rogue MFA method registered or a Conditional Access policy weakened | T1078.004 · T1098.003 · T1528 · T1556.006 · T1556.009 |
 | MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, and the approval that follows | T1621 |
 | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | Suspicious PowerShell | `powershell -enc` / `FromBase64String` / hidden window | T1059.001 |
@@ -417,7 +417,7 @@ Batches go to `/services/collector/event` every 500 ms, up to 1000 events each.
 | Phishing Email | SPF/DKIM/DMARC fail + risky attachment, or the email gateway's own verdict | T1566 |
 | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` auth failures from one MAC / 60s | T1110 |
 | Root Shell From Unprivileged Login | auditd `SYSCALL`, `auid` set & ≠0, `uid=0`, `key="rootshell"` | T1548 |
-| Appliance IPS / WAF Signature | any appliance threat/violation signature | T1190 (mapped by signature) |
+| Appliance IPS / WAF Signature | any appliance threat/violation signature; an EDR that names its own technique (Defender) keeps that mapping | T1190 (mapped by signature) |
 | Process Injection | Sysmon 10 access with `CreateRemoteThread` rights | T1055 |
 | Credentials From Password Store | Browser `Login Data` + `Local State` read together, or ≥ 4 CyberArk safes checked out by one holder / 2 min | T1555.003 · T1555.005 |
 | Masquerading System Binary | A `System32` binary name running from a user-writable path | T1036.005 |
@@ -431,12 +431,12 @@ Batches go to `/services/collector/event` every 500 ms, up to 1000 events each.
 | Kubernetes Cluster Abuse | Privileged / `hostPID` pod create, or anonymous `pods/exec` | T1611 |
 | Remote Execution (WMI / WinRM) | Connect to 135 / 5985 followed by a remote process create | T1047 · T1021.006 |
 
-**Scenarios** — 60 attacks (`Attack ›`) and 41 appliance formats (`Appliance logs ›`).
+**Scenarios** — 72 attacks (`Attack ›`) and 42 appliance formats (`Appliance logs ›`).
 Every scenario is wired to a detection, so each button demonstrably lights up the
 dashboard. The **Threat Level** meter aggregates recent alerts (last 2 min) weighted
 by severity, DEFCON-style: `GUARDED → ELEVATED → HIGH → SEVERE → CRITICAL`.
 
-## Attack scenarios (60)
+## Attack scenarios (72)
 
 Injected from the **Attack ›** menu; each button fires a burst built to trip a
 detection. Full detail — burst sizes, payloads, and the rule each one fires — is
@@ -452,8 +452,17 @@ in [DOCUMENTATION.md §5](DOCUMENTATION.md#5-attack-scenarios).
 - **Identity provider** — Impossible Travel · MFA Fatigue (Push Bombing) · Legacy Auth MFA Bypass · OAuth Consent Phishing
 - **Gateway / edge** — Citrix Gateway Exploit · VPN Credential Stuffing
 - **Email** — Phishing Email
+- **Microsoft 365 / Office** — Exchange Online Mailbox Exfil · Exchange Transport Rule Tamper · SharePoint Mass Download · OneDrive Anonymous Sharing · Teams External Access Abuse · M365 Audit Logging Disabled · eDiscovery Search Abuse · Power Automate Exfil Flow
+- **Microsoft identity & endpoint** — Rogue MFA Method Registered · Conditional Access Weakened · Defender EDR Tampering · Exchange ProxyNotShell
 
-## Appliance log formats (41)
+The last twelve are the **product pack**: bursts aimed at one product's own log
+source, in the record shape it really writes — eight on the Office 365 unified
+audit log, two on the Entra ID directory audit, one on Defender for Endpoint's
+alert feed, one on on-prem Exchange. See
+[DOCUMENTATION.md §5.1](DOCUMENTATION.md#51-the-product-pack), and
+[`CONNECTORS.md`](CONNECTORS.md) for how to collect these feeds for real.
+
+## Appliance log formats (42)
 
 Injected from the **Appliance logs ›** menu — each event is rendered in the
 vendor's real wire format (syslog `<PRI>` + native payload). Full example lines
@@ -499,6 +508,7 @@ and detection mapping: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-appliance-log-f
 | Microsoft 365 audit `api` | unified-audit JSON | `cloud-threat` |
 | Microsoft Entra ID `api` | `SigninLogs` JSON | `identity-threat` |
 | CrowdStrike Falcon `api` | `DetectionSummaryEvent` JSON | `appliance-threat` |
+| Defender for Endpoint `api` | Defender XDR `AlertInfo` JSON | `appliance-threat` |
 | Kubernetes audit `api` | `audit.k8s.io/v1` JSON | `k8s-threat` |
 | CEF (generic) | ArcSight CEF | `appliance-threat` |
 | LEEF (generic) | QRadar LEEF | `appliance-threat` |
@@ -518,7 +528,7 @@ into LSASS caught by `cred-dumping`), and **BIND 9**, **Infoblox** and **Umbrell
 (DGA-length and known-bad queries caught by `dns-tunneling`).
 
 **Transport matters.** 29 sources are **native syslog** — the device emits the format
-itself. Twelve are not, and say so with a badge on their button:
+itself. Thirteen are not, and say so with a badge on their button:
 
 - `agent` — **Snare** (Windows has no syslog; the agent relays the Event Log),
   **Sysmon** (its own Windows channel, relayed by NXLog), **auditd** (needs the
@@ -527,9 +537,14 @@ itself. Twelve are not, and say so with a badge on their button:
   and **Microsoft 365** (Event Hub / Management Activity API), **Entra ID**
   (`SigninLogs` via Graph), **Okta** (the System Log is polled from
   `/api/v1/logs`), **Cisco Umbrella** (CSV into a managed S3 bucket),
-  **CrowdStrike** (the Falcon SIEM Connector) and **Kubernetes audit** (a file or
-  webhook from the API server). None of them speaks syslog at all; a
+  **CrowdStrike** (the Falcon SIEM Connector), **Defender for Endpoint** (the
+  Defender XDR streaming API into an Event Hub) and **Kubernetes audit** (a file
+  or webhook from the API server). None of them speaks syslog at all; a
   connector re-emits their JSON.
+
+  **Standing these up for real** — agent config files, connector design, the
+  Microsoft 365 / Entra ID / Defender feeds and the exact permissions each needs
+  — is [`CONNECTORS.md`](CONNECTORS.md).
 
 Presenting these as native syslog devices would teach something false, so the
 dashboard badges them and every button reports its transport on hover.
@@ -557,6 +572,7 @@ server.js         optional Node backend: static host + /forward relay (UDP/TCP/H
 samples/sample.log  example mixed-format log for the file-replay demo
 jsconfig.json     editor typecheck settings (no install needed, ships nothing)
 types/globals.d.ts  ambient declarations for window.JS and Node globals
+CONNECTORS.md     how to configure the agent- and API-relayed sources for real
 ```
 
 ## Extending it
@@ -571,12 +587,14 @@ types/globals.d.ts  ambient declarations for window.JS and Node globals
   `ctx.window()` / `ctx.windowSet()` / `ctx.cooldown()` for stateful correlation.
   Check the existing rules first — a source carrying telemetry another rule already
   reads should reuse it (Snare reuses `windows-threat`) rather than clone it.
-- **Add a scenario**: add an entry to `SCENARIOS` in `syslogger.js`. Make a burst
+- **Add a scenario**: add an entry to `SCENARIOS` in `syslogger.js` — or to
+  `PRODUCT_ATTACKS` when it targets one product's own log source. Make a burst
   raise **one** alert, not one per line: tag only its final event with `threatSig`,
   or let a stateful rule correlate it.
 
 Counts are load-bearing here and in `DOCUMENTATION.md` — update them when adding
-or removing a scenario, format, or rule.
+or removing a scenario, format, or rule. A new `agent` or `api` source also needs
+an entry in `CONNECTORS.md`, or the tool shows a feed nobody can stand up.
 
 ---
 

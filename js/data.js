@@ -585,6 +585,29 @@
     entra(ev) {
       const pri = ev.facility * 8 + ev.severity;
       const d = new Date(ev.ts);
+      // One connector carries two categories: SignInLogs (who authenticated) and
+      // AuditLogs (what changed in the directory). Only the second has
+      // targetResources / modifiedProperties, so it gets its own shape.
+      if (ev.entraCategory === 'AuditLogs') {
+        const rec = {
+          time: utcTimestamp(d, true), resourceId: `/tenants/${ev.tenantId}/providers/Microsoft.aadiam`,
+          operationName: ev.auditOperation, category: 'AuditLogs', tenantId: ev.tenantId,
+          resultType: ev.auditResult || 'success', resultDescription: ev.resultDescription,
+          properties: {
+            id: ev.eventUuid, activityDateTime: utcTimestamp(d, true),
+            activityDisplayName: ev.auditOperation, category: ev.auditCategory,
+            loggedByService: ev.loggedBy, operationType: ev.operationType,
+            result: ev.auditResult || 'success',
+            initiatedBy: { user: { id: ev.actorId, userPrincipalName: ev.user, ipAddress: ev.srcIp } },
+            targetResources: [{
+              type: ev.targetType, displayName: ev.targetName,
+              userPrincipalName: ev.targetUpn || null, id: ev.targetId,
+              modifiedProperties: ev.modified || [],
+            }],
+          },
+        };
+        return `<${pri}>${bsdTimestamp(d)} ${ev.host} entra_audit: ${JSON.stringify(rec)}`;
+      }
       const rec = {
         time: utcTimestamp(d, true), resourceId: `/tenants/${ev.tenantId}/providers/Microsoft.aadiam`,
         operationName: 'Sign-in activity', category: 'SignInLogs', tenantId: ev.tenantId,
@@ -627,6 +650,28 @@
         },
       };
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} falcon_siem: ${JSON.stringify(rec)}`;
+    },
+    // Microsoft Defender for Endpoint — an alert as the Defender XDR streaming
+    // API hands it to an Event Hub (the AlertInfo/AlertEvidence shape, also what
+    // the Graph security API returns). Like Falcon this is a verdict: the
+    // technique is already named, so the raw command line stays in the JSON and
+    // out of `message` where a behavioural rule would re-detect it.
+    defender(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        Timestamp: utcTimestamp(d, true), AlertId: ev.alertId, Title: ev.alertTitle,
+        Description: ev.alertDesc, Category: ev.mdeCategory, Severity: ev.mdeSeverity,
+        ServiceSource: 'Microsoft Defender for Endpoint', DetectionSource: ev.detectionSource,
+        AttackTechniques: ev.techniques || [], Status: ev.alertStatus || 'New',
+        DeviceId: ev.deviceId, DeviceName: ev.host, DeviceLocalIP: ev.hostIp,
+        AccountDomain: 'CORP', AccountName: ev.user,
+        FileName: ev.fileName || null, FolderPath: ev.filePath || null, SHA256: ev.sha256 || null,
+        ProcessCommandLine: ev.cmdLine || null, RemoteIP: ev.remoteIp || null, RemoteUrl: ev.remoteUrl || null,
+        RemediationAction: ev.remediation || 'None',
+        AlertLink: `https://security.microsoft.com/alerts/${ev.alertId}`,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} defender_xdr: ${JSON.stringify(rec)}`;
     },
     // Kubernetes API-server audit event (audit.k8s.io/v1). The whole detection
     // surface is `verb` + `objectRef` + `user.username`, with the RBAC verdict in
@@ -699,6 +744,23 @@
         UserId: ev.user, ObjectId: ev.objectId, Parameters: ev.parameters || null,
         MailboxOwnerUPN: ev.mailboxOwner, ClientAppId: ev.appId,
       };
+      // The unified audit schema is a union, not a fixed record: every workload
+      // bolts its own properties onto the common ones, so emit only what this
+      // record actually carries.
+      if (ev.clientInfo) rec.ClientInfoString = ev.clientInfo;
+      if (ev.mailAccessType) {
+        rec.OperationProperties = [{ Name: 'MailAccessType', Value: ev.mailAccessType }, { Name: 'IsThrottled', Value: 'False' }];
+        rec.Folders = (ev.folders || []).map((f) => ({ Path: `\\${f}`, FolderItems: [{ InternetMessageId: `<${rand.hex(16)}@corp.example>` }] }));
+      }
+      if (ev.siteUrl) {
+        rec.SiteUrl = ev.siteUrl; rec.SourceRelativeUrl = ev.relativeUrl;
+        rec.SourceFileName = ev.fileName; rec.SourceFileExtension = (ev.fileName || '').split('.').pop();
+        rec.ItemType = ev.itemType || 'File'; rec.EventSource = 'SharePoint'; rec.UserAgent = ev.userAgent;
+      }
+      if (ev.targetUser) { rec.TargetUserOrGroupName = ev.targetUser; rec.TargetUserOrGroupType = ev.targetUserType || 'Guest'; }
+      if (ev.teamName) { rec.TeamName = ev.teamName; rec.ChannelName = ev.channelName || null; rec.TeamGuid = ev.teamGuid; }
+      if (ev.flowConnectors) { rec.FlowConnectorNames = ev.flowConnectors; rec.FlowDetailsUrl = `https://make.powerautomate.com/manage/flows/${ev.flowId}/details`; }
+      if (ev.searchQuery) { rec.Query = ev.searchQuery; rec.SearchName = ev.searchName; rec.ExchangeLocations = ev.searchLocations; }
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} o365_audit: ${JSON.stringify(rec)}`;
     },
     cef(ev) {

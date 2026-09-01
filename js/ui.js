@@ -53,6 +53,7 @@
     suricata:   { color: '#e05c2b', label: 'suricata' },
     entra:      { color: '#3b7fd4', label: 'entra id' },
     crowdstrike:{ color: '#fc0032', label: 'crowdstrike' },
+    defender:   { color: '#00a4ef', label: 'defender' },
     k8saudit:   { color: '#326ce5', label: 'k8s audit' },
     ciscoesa:   { color: '#31c9d6', label: 'cisco esa' },
     cyberark:   { color: '#0b8f5a', label: 'cyberark' },
@@ -847,6 +848,10 @@
     ];
     if (ev.threatName) rows.push(['pan_threat', `${ev.threatName} (${ev.threatId})`]);
     if (ev.attack) rows.push(['fortigate_attack', `${ev.attack} (${ev.attackId})`]);
+    // The Microsoft feeds all key on one field the generic rows above don't carry.
+    if (ev.operation) rows.push(['m365_operation', `${ev.operation} (${ev.workload})`]);
+    if (ev.auditOperation) rows.push(['entra_activity', ev.auditOperation]);
+    if (ev.alertTitle) rows.push(['defender_alert', `${ev.alertTitle} [${ev.mdeSeverity}]`]);
     if (alert) {
       rows.unshift(['⚠ detection', `${alert.name} [${alert.severity}]`]);
       rows.push(['mitre', alert.technique]);

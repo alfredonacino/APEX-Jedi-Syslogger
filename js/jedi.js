@@ -13,6 +13,88 @@
   // Correlating rules keep per-source-IP sliding windows; pattern rules fire on
   // a single event. `ctx` carries the shared correlation state + an emit() hook.
   function makeRules() {
+    // Microsoft 365's unified audit log is one feed for a dozen products, so the
+    // verdict has to be keyed on Workload + Operation rather than on message
+    // text. It lives here rather than inline because it is a lookup table, not a
+    // condition — and because every branch of it belongs to `cloud-threat`.
+    function m365Verdict(ev, ctx) {
+      const op = ev.operation || '', wl = ev.workload || '';
+      const params = JSON.stringify(ev.parameters || []);
+      const who = ev.user || 'unknown';
+      const param = (name, value) => new RegExp(`"Name":"${name}","Value":"${value}"`, 'i').test(params);
+      const external = (addr) => !!addr && !/@corp\.(example|local)$/i.test(addr);
+      let hit = null;
+
+      // Forwarding. An inbox rule takes one mailbox; a transport rule takes the
+      // whole tenant and shows up in nobody's Outlook.
+      if (/^(New|Set)-InboxRule$/.test(op) && /ForwardTo|ForwardAsAttachmentTo|RedirectTo/.test(params)) {
+        const hides = /"DeleteMessage","Value":"True"/.test(params);
+        hit = { key: `${who}:inboxrule`, severity: hides ? 'critical' : 'high', tactic: 'Collection',
+          technique: 'T1114.003 · Email Forwarding Rule',
+          what: `forwarding rule created on ${who}'s mailbox` + (hides ? ' — the forwarded copy is deleted from the mailbox' : '') };
+      } else if (/^(New|Set)-TransportRule$/.test(op)) {
+        const copies = /BlindCopyTo|RedirectMessageTo|"Name":"ForwardTo"/.test(params);
+        const bypass = param('SetSCL', '-1');
+        if (copies || bypass) hit = { key: `${ev.tenantId}:transportrule`, severity: 'critical',
+          tactic: copies ? 'Collection' : 'Defense Evasion',
+          technique: copies ? 'T1114.003 · Email Forwarding Rule' : 'T1562.001 · Disable or Modify Tools',
+          what: copies ? `org-wide transport rule "${ev.objectId}" copies every message off the tenant`
+            : `org-wide transport rule "${ev.objectId}" marks external mail as never-spam (SetSCL -1)` };
+      // Switching the unified audit log off is the M365 equivalent of clearing
+      // the Security event log — and it is the last thing that log records.
+      } else if (/^Set-(AdminAuditLogConfig|Mailbox)$/.test(op) &&
+                 (param('UnifiedAuditLogIngestionEnabled', 'False') || param('AuditEnabled', 'False'))) {
+        hit = { key: `${ev.tenantId}:auditoff`, severity: 'critical', tactic: 'Defense Evasion',
+          technique: 'T1562.008 · Disable or Modify Cloud Logs',
+          what: `audit logging switched off (${op})` };
+      // A sharing link needs no account at all: the tenant hands the file to
+      // whoever holds the URL, and the download is not a sign-in.
+      } else if (/^(AnonymousLinkCreated|AnonymousLinkUsed|SecureLinkCreated|AddedToSecureLink)$/.test(op) ||
+                 (op === 'SharingInvitationCreated' && external(ev.targetUser))) {
+        hit = { key: `${ev.fileName || ev.objectId}:sharing`, severity: op === 'AnonymousLinkUsed' ? 'critical' : 'high',
+          tactic: 'Exfiltration', technique: 'T1567 · Exfiltration Over Web Service',
+          what: `${ev.fileName || ev.objectId} shared outside the tenant (${op}${ev.targetUser ? ` → ${ev.targetUser}` : ''})` };
+      } else if (wl === 'MicrosoftTeams' && (param('AllowGuestUser', 'True') || (op === 'MemberAdded' && external(ev.targetUser)))) {
+        hit = { key: `${ev.teamName}:teamsguest`, severity: 'high', tactic: 'Initial Access',
+          technique: 'T1199 · Trusted Relationship',
+          what: op === 'MemberAdded' ? `external guest ${ev.targetUser} added to "${ev.teamName}"`
+            : `guest access enabled on "${ev.teamName}"` };
+      // Content Search is a supported feature that reads every mailbox in the
+      // tenant — the compliance role is itself the collection tool.
+      } else if (wl === 'SecurityComplianceCenter' && /^(SearchCreated|SearchExported|ViewedSearchExported)$/.test(op)) {
+        hit = { key: `${ev.searchName}:ediscovery`, severity: op === 'SearchCreated' ? 'high' : 'critical',
+          tactic: 'Collection', technique: 'T1213 · Data from Information Repositories',
+          what: `eDiscovery ${op} "${ev.searchName}" over ${ev.searchLocations} mailboxes` };
+      // A flow is a forwarding rule that does not live in the mailbox: it runs as
+      // the user, in another product, and a mailbox-rule audit never sees it.
+      } else if (wl === 'MicrosoftFlow' && /^(CreateFlow|EditFlow)$/.test(op) &&
+                 /HTTP|FTP|Dropbox|Azure Blob/i.test((ev.flowConnectors || []).join(','))) {
+        hit = { key: `${who}:flow`, severity: 'high', tactic: 'Exfiltration',
+          technique: 'T1567 · Exfiltration Over Web Service',
+          what: `Power Automate flow "${ev.objectId}" wires ${(ev.flowConnectors || []).join(' + ')} together` };
+      // Sync pulls a whole folder down rather than opening a message. One is a
+      // client caching; a dozen from one address is the mailbox leaving.
+      } else if (op === 'MailItemsAccessed' && ev.mailAccessType === 'Sync') {
+        const w = ctx.window('m365sync', `${who}:${ev.srcIp}`, 600000, ev.ts); w.push(ev.ts);
+        if (w.length >= 8) hit = { key: `${who}:mailsync`, severity: 'high', tactic: 'Collection',
+          technique: 'T1114.002 · Remote Email Collection',
+          what: `${w.length} folder syncs of ${ev.mailboxOwner || who}'s mailbox in 10 min` };
+      // Every one of these downloads is a legitimate operation on its own; only
+      // the rate separates a departing employee from a backup.
+      } else if (/^(FileDownloaded|FileSyncDownloadedFull)$/.test(op)) {
+        const w = ctx.window('m365dl', `${who}:${ev.srcIp}`, 600000, ev.ts); w.push(ev.ts);
+        if (w.length >= 12) hit = { key: `${who}:massdownload`, severity: 'high', tactic: 'Collection',
+          technique: 'T1213.002 · SharePoint',
+          what: `${w.length} files downloaded from ${ev.siteUrl || wl} in 10 min` };
+      }
+      if (!hit || !ctx.cooldown('m365', hit.key, 30000, ev.ts)) return;
+      return {
+        severity: hit.severity, tactic: hit.tactic, technique: hit.technique,
+        message: `Microsoft 365 (${wl}): ${hit.what} — ${who} from ${ev.srcIp}`,
+        srcIp: ev.srcIp, host: ev.host, evidence: [`operation=${op}`, ev.raw || ev.message],
+      };
+    }
+
     return [
       {
         id: 'ssh-bruteforce', name: 'SSH Brute-Force Attempt', severity: 'high',
@@ -200,9 +282,12 @@
           const sig = ev.threatSig;
           if (!sig) return;
           const sev = ev.threatSev || 'high';
-          // Refine ATT&CK mapping from the signature text.
+          // Refine ATT&CK mapping from the signature text — unless the product
+          // already named the cell (Defender ships AttackTechniques with every
+          // alert), in which case its own mapping beats guessing from prose.
           let technique = 'T1190 · Exploit Public-Facing Application', tactic = 'Initial Access';
-          if (/brute|password/i.test(sig)) { technique = 'T1110 · Brute Force'; tactic = 'Credential Access'; }
+          if (ev.threatTechnique) { technique = ev.threatTechnique; tactic = ev.threatTactic || tactic; }
+          else if (/brute|password/i.test(sig)) { technique = 'T1110 · Brute Force'; tactic = 'Credential Access'; }
           else if (/scan|recon/i.test(sig)) { technique = 'T1046 · Network Service Discovery'; tactic = 'Reconnaissance'; }
           else if (/beacon|cobalt|c2|backdoor|botnet/i.test(sig)) { technique = 'T1071 · Application Layer Protocol'; tactic = 'Command and Control'; }
           else if (/xss|cross-site/i.test(sig)) { technique = 'T1059 · Command and Scripting Interpreter'; tactic = 'Execution'; }
@@ -227,6 +312,9 @@
           const ua = (ev.message || '').toLowerCase();
           let sig, technique = 'T1190 · Exploit Public-Facing Application', tactic = 'Initial Access', sev = 'high';
           if (/\$\{jndi:/i.test(ev.url)) { sig = 'Log4Shell JNDI injection (CVE-2021-44228)'; sev = 'critical'; }
+          // The `@` is the whole exploit: it makes the Exchange front-end proxy
+          // the request to the back-end PowerShell endpoint, which runs as SYSTEM.
+          else if (/autodiscover\/autodiscover\.json.*(@|%40)/i.test(u)) { sig = 'Exchange Autodiscover SSRF to back-end PowerShell (ProxyShell / ProxyNotShell)'; sev = 'critical'; }
           else if (/<script>|onerror=|javascript:|%3cscript/i.test(u)) { sig = 'Cross-Site Scripting (XSS)'; technique = 'T1059 · Command and Scripting Interpreter'; tactic = 'Execution'; }
           else if (/\.\.(\/|%2f)|\/etc\/passwd|\/etc\/shadow|win\.ini|boot\.ini/i.test(u)) { sig = 'Path Traversal / LFI'; technique = 'T1083 · File and Directory Discovery'; tactic = 'Discovery'; }
           // The link-local metadata address is only reachable from the instance
@@ -353,7 +441,9 @@
         tactic: 'Defense Evasion', technique: 'T1562.001 · Disable or Modify Tools',
         run(ev, ctx) {
           const m = ev.message || '';
-          if (!/disablerealtimemonitoring|disableantispyware|disableioavprotection|mppreference[^"]*-exclusion|amsiinitfailed|amsiscanbuffer|net(\.exe)? +stop +(windefend|sense)|sc(\.exe)? +(config|delete) +(windefend|sysmon)/i.test(m)) return;
+          // The last four alternatives are how an EDR *reports* the same act:
+          // Defender's own alert titles carry the verdict, not the command line.
+          if (!/disablerealtimemonitoring|disableantispyware|disableioavprotection|mppreference[^"]*-exclusion|amsiinitfailed|amsiscanbuffer|net(\.exe)? +stop +(windefend|sense)|sc(\.exe)? +(config|delete) +(windefend|sysmon)|tamper protection (was )?(turned off|disabled)|scan exclusion added|sensor stopped|device (was )?offboarded/i.test(m)) return;
           if (!ctx.cooldown('sectool', ev.host, 30000, ev.ts)) return;
           return {
             severity: 'high',
@@ -418,21 +508,9 @@
               srcIp: ev.srcIp, host: ev.host, evidence: [`operation=${op}`, ev.raw || ev.message],
             };
           }
-          if (ev.srcType === 'm365') {
-            const op = ev.operation || '';
-            const params = JSON.stringify(ev.parameters || []);
-            if (!/^(New|Set)-InboxRule$/.test(op) || !/ForwardTo|ForwardAsAttachmentTo|RedirectTo/.test(params)) return;
-            if (!ctx.cooldown('cloud', `${ev.user}:inboxrule`, 30000, ev.ts)) return;
-            // Deleting the forwarded copy is what keeps the owner from noticing.
-            const hides = /"DeleteMessage","Value":"True"/.test(params);
-            return {
-              severity: hides ? 'critical' : 'high', tactic: 'Collection',
-              technique: 'T1114.003 · Email Forwarding Rule',
-              message: `Microsoft 365: forwarding rule created on ${ev.user}'s mailbox from ${ev.srcIp}` +
-                (hides ? ' — forwarded mail is deleted from the mailbox' : ''),
-              srcIp: ev.srcIp, host: ev.host, evidence: [`operation=${op}`, ev.raw || ev.message],
-            };
-          }
+          // Microsoft 365 is a dozen products on one audit feed, so its verdict
+          // is a table of Workload + Operation rather than a branch (see above).
+          if (ev.srcType === 'm365') return m365Verdict(ev, ctx);
           if (ev.srcType !== 'cloudtrail') return;
           const n = ev.eventName || '';
           // Nested policy documents come back from JSON.stringify with escaped
@@ -478,6 +556,28 @@
           // the two field sets is present.
           if (ev.srcType === 'entra') {
             const who = ev.user || 'unknown';
+            // AuditLogs is the directory being changed rather than somebody
+            // signing in, so the verdict is activityDisplayName + the property
+            // that moved — a different shape from a sign-in entirely.
+            if (ev.entraCategory === 'AuditLogs') {
+              const act = ev.auditOperation || '';
+              const target = ev.targetName || ev.targetUpn || 'the tenant';
+              let a = null;
+              if (/security info|strong authentication|authentication method|registered device/i.test(act))
+                a = { key: `${ev.targetUpn || target}:mfa`, severity: 'high', tactic: 'Persistence',
+                  technique: 'T1556.006 · Multi-Factor Authentication',
+                  message: `Entra ID: MFA method changed on ${target} (${act}) by ${who} from ${ev.srcIp} — a factor the attacker holds outlives the password reset` };
+              else if (/conditional access policy/i.test(act))
+                a = { key: `${target}:ca`, severity: 'critical', tactic: 'Defense Evasion',
+                  technique: 'T1556.009 · Conditional Access Policies',
+                  message: `Entra ID: Conditional Access policy "${target}" ${/delete/i.test(act) ? 'deleted' : 'weakened'} by ${who} from ${ev.srcIp}` };
+              if (!a || !ctx.cooldown('entra', a.key, 60000, ev.ts)) return;
+              return {
+                severity: a.severity, tactic: a.tactic, technique: a.technique, message: a.message,
+                srcIp: ev.srcIp, host: ev.host,
+                evidence: [`activity=${act}`, `target=${target}`, ev.raw || ev.message],
+              };
+            }
             let hit;
             if (ev.oauthConsent) {
               hit = {

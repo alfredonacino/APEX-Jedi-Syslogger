@@ -85,17 +85,19 @@
           <tr>
             <td><strong>Syslogger</strong></td>
             <td>A synthetic log source. Emits realistic <strong>RFC 3164</strong> and
-            <strong>RFC 5424</strong> syslog plus <strong>41 appliance formats</strong>
+            <strong>RFC 5424</strong> syslog plus <strong>42 appliance formats</strong>
             (firewalls and NGFW, IDS/NDR, proxies, DNS/DDI, mail and email security, VPN
-            gateways, a PAM vault, hypervisor, backup, and cloud/SaaS control planes —
+            gateways, a PAM vault, hypervisor, backup, endpoint EDR, and cloud/SaaS control
+            planes —
             Palo Alto, FortiGate, Cisco ASA/FTD/IOS/ISE/ESA/Meraki/Umbrella, Check Point,
             Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, NetScaler,
             Ivanti Connect Secure, Snort 3, Suricata, Zeek, HAProxy, Squid, BIND 9,
             Infoblox NIOS, Postfix, CyberArk, Veeam, VMware ESXi, Windows Event Log via
             Snare, Sysmon, Linux auditd, AWS CloudTrail, Azure Activity, Microsoft 365,
-            Entra ID, Okta, CrowdStrike, Kubernetes audit, and generic CEF/LEEF) from
+            Entra ID, Defender for Endpoint, Okta, CrowdStrike, Kubernetes audit, and
+            generic CEF/LEEF) from
             simulated infrastructure at a configurable <em>events-per-second</em>, injects
-            <strong>60 attack scenarios</strong> on demand, and can replay a log file in
+            <strong>72 attack scenarios</strong> on demand, and can replay a log file in
             a loop.</td>
           </tr>
           <tr>
@@ -115,7 +117,8 @@
       port, and each account keeps its own Log Collector settings.</p>
       <div class="callout">📖 <strong>Full technical reference:</strong>
       <code>DOCUMENTATION.md</code> — architecture, every scenario &amp; detection rule,
-      the HTTP API, log formats, and deployment.</div>
+      the HTTP API, log formats, and deployment. <strong>Connecting real sources:</strong>
+      <code>CONNECTORS.md</code> — agent and API-connector configuration (section 10).</div>
     </section>
 
     <section>
@@ -451,7 +454,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
           <tr><td>DNS Tunneling</td><td>Very long DNS label / known-bad domain</td><td>T1071.004</td></tr>
           <tr><td>Privilege Escalation</td><td><code>sudo … USER=root</code> / Windows EventID 4672</td><td>T1068</td></tr>
           <tr><td>IDS Malware Signature</td><td>Suricata/ET trojan / exploit hit</td><td>T1204</td></tr>
-          <tr><td>Web Application Attack</td><td>Log4Shell / XSS / traversal / web shell / scanner UA</td><td>T1190 · T1059 · T1083 · T1505.003 · T1595</td></tr>
+          <tr><td>Web Application Attack</td><td>Log4Shell / Exchange ProxyNotShell / XSS / traversal / web shell / scanner UA</td><td>T1190 · T1059 · T1083 · T1505.003 · T1595</td></tr>
           <tr><td>Windows Security Event</td><td>RDP brute / spray / Kerberoasting / DCSync / new admin / log-clear / PtH</td><td>T1110 · T1558.003 · T1003.006 · T1136 · T1070.001 · T1550.002</td></tr>
           <tr><td>Reverse Shell</td><td><code>/dev/tcp/</code>, <code>nc -e</code>, <code>bash -i &gt;&amp;</code></td><td>T1059</td></tr>
           <tr><td>Suspicious PowerShell</td><td><code>powershell -enc</code> / <code>FromBase64String</code> / hidden window</td><td>T1059.001</td></tr>
@@ -461,18 +464,18 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
           <tr><td>Phishing Email</td><td>SPF/DKIM/DMARC fail + risky attachment</td><td>T1566</td></tr>
           <tr><td>RADIUS / 802.1X Brute Force</td><td>≥ 6 Cisco ISE <code>5400</code> auth failures from one MAC / 60s</td><td>T1110</td></tr>
           <tr><td>Root Shell From Unprivileged Login</td><td>auditd <code>SYSCALL</code>, <code>auid</code> set &amp; ≠0, <code>uid=0</code>, <code>key="rootshell"</code></td><td>T1548</td></tr>
-          <tr><td>Appliance IPS / WAF Signature</td><td>any appliance threat/violation signature</td><td>T1190 (mapped by signature)</td></tr>
+          <tr><td>Appliance IPS / WAF Signature</td><td>any appliance threat/violation signature; an EDR that names its own technique (Defender) keeps that mapping</td><td>T1190 (mapped by signature)</td></tr>
           <tr><td>Credential Dumping (LSASS)</td><td>Sysmon <code>10</code> handle into <code>lsass.exe</code> with dump rights, or a known dumper</td><td>T1003.001</td></tr>
           <tr><td>Persistence Mechanism Created</td><td><code>CurrentVersion\Run</code> write, scheduled task, or service install</td><td>T1547.001 · T1053.005 · T1543.003</td></tr>
           <tr><td>LOLBin Download / Proxy Execution</td><td><code>certutil -urlcache</code>, <code>bitsadmin /transfer</code>, <code>mshta http…</code></td><td>T1105 · T1218</td></tr>
-          <tr><td>Security Tooling Disabled</td><td>Defender real-time protection off, AMSI patched, exclusion added</td><td>T1562.001</td></tr>
+          <tr><td>Security Tooling Disabled</td><td>Defender real-time protection off, AMSI patched, exclusion added, or Defender's own tamper alert</td><td>T1562.001</td></tr>
           <tr><td>Active Directory Enumeration</td><td>SharpHound / AdFind on disk, or ≥ 10 LDAP object reads / account / 60s</td><td>T1087.002</td></tr>
-          <tr><td>Cloud Control-Plane Abuse</td><td>CloudTrail <code>StopLogging</code>, IAM key/admin-policy creation, public S3</td><td>T1562.008 · T1098 · T1530 · T1078.004</td></tr>
-          <tr><td>Identity Provider Threat</td><td>Okta sign-ins from 2 countries / hour, MFA factor or policy change</td><td>T1078.004 · T1098.003</td></tr>
+          <tr><td>Cloud Control-Plane Abuse</td><td>CloudTrail <code>StopLogging</code>, IAM key/admin-policy creation, public S3; Azure control-plane abuse; Microsoft 365 forwarding &amp; transport rules, audit logging off, anonymous sharing, external Teams guests, eDiscovery export, exfil flows, mailbox-sync and mass-download bursts</td><td>T1562.008 · T1098 · T1530 · T1078.004 · T1114.002 · T1114.003 · T1199 · T1213.002 · T1567</td></tr>
+          <tr><td>Identity Provider Threat</td><td>Okta sign-ins from 2 countries / hour, MFA factor or policy change; Entra legacy-auth bypass, OAuth consent, rogue MFA method registered, Conditional Access weakened</td><td>T1078.004 · T1098.003 · T1528 · T1556.006 · T1556.009</td></tr>
           <tr><td>MFA Push Bombing</td><td>≥ 6 rejected Okta push prompts / user / 5 min, and the approval that follows</td><td>T1621</td></tr>
         </tbody>
       </table>
-      <p><strong>Scenarios</strong> — 60 attacks (<code>Attack ›</code>) and 41 appliance
+      <p><strong>Scenarios</strong> — 72 attacks (<code>Attack ›</code>) and 42 appliance
       formats (<code>Appliance logs ›</code>). Every scenario is wired to a detection, so
       each button demonstrably lights up the dashboard. The <strong>Threat Level</strong>
       meter aggregates recent alerts (last 2 min) weighted by severity, DEFCON-style:
@@ -480,7 +483,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">8</span>Attack scenarios <span class="tag">60</span></h2>
+      <h2><span class="num">8</span>Attack scenarios <span class="tag">72</span></h2>
       <p>Injected from the <strong>Attack ›</strong> menu; each button fires a burst built
       to trip a detection.</p>
       <ul>
@@ -494,11 +497,20 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
         <li><strong>Identity provider</strong> — Impossible Travel · MFA Fatigue (Push Bombing) · Legacy Auth MFA Bypass · OAuth Consent Phishing</li>
         <li><strong>Gateway / edge</strong> — Citrix Gateway Exploit · VPN Credential Stuffing</li>
         <li><strong>Email</strong> — Phishing Email</li>
+        <li><strong>Microsoft 365 / Office</strong> — Exchange Online Mailbox Exfil · Exchange Transport Rule Tamper · SharePoint Mass Download · OneDrive Anonymous Sharing · Teams External Access Abuse · M365 Audit Logging Disabled · eDiscovery Search Abuse · Power Automate Exfil Flow</li>
+        <li><strong>Microsoft identity &amp; endpoint</strong> — Rogue MFA Method Registered · Conditional Access Weakened · Defender EDR Tampering · Exchange ProxyNotShell</li>
       </ul>
+      <p>The last twelve are the <strong>product pack</strong>: bursts aimed at one
+      product's own log source, in the record shape it really writes — eight on the
+      Office 365 unified audit log, two on the Entra ID directory audit, one on
+      Defender for Endpoint's alert feed, one on on-prem Exchange. Because that feed
+      is one API for a dozen products, the detection keys on
+      <code>Workload</code> + <code>Operation</code> rather than on message text —
+      the same way you would have to write it in a real SIEM.</p>
     </section>
 
     <section>
-      <h2><span class="num">9</span>Appliance log formats <span class="tag">41</span></h2>
+      <h2><span class="num">9</span>Appliance log formats <span class="tag">42</span></h2>
       <p>Injected from the <strong>Appliance logs ›</strong> menu — each event is rendered
       in the vendor's real wire format (syslog <code>&lt;PRI&gt;</code> + native payload).</p>
       <table>
@@ -542,6 +554,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
           <tr><td>Microsoft 365 audit <span class="tag">api</span></td><td>unified-audit JSON</td><td><code>cloud-threat</code></td></tr>
           <tr><td>Microsoft Entra ID <span class="tag">api</span></td><td><code>SigninLogs</code> JSON</td><td><code>identity-threat</code></td></tr>
           <tr><td>CrowdStrike Falcon <span class="tag">api</span></td><td><code>DetectionSummaryEvent</code> JSON</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Defender for Endpoint <span class="tag">api</span></td><td>Defender XDR <code>AlertInfo</code> JSON</td><td><code>appliance-threat</code></td></tr>
           <tr><td>Kubernetes audit <span class="tag">api</span></td><td><code>audit.k8s.io/v1</code> JSON</td><td><code>k8s-threat</code></td></tr>
           <tr><td>CEF (generic)</td><td>ArcSight CEF</td><td><code>appliance-threat</code></td></tr>
           <tr><td>LEEF (generic)</td><td>QRadar LEEF</td><td><code>appliance-threat</code></td></tr>
@@ -559,7 +572,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
       <strong>Sysmon</strong>, <strong>BIND 9</strong>, <strong>Infoblox</strong> and
       <strong>Umbrella</strong>.</p>
       <div class="callout"><strong>Transport matters.</strong> 29 sources are
-      <strong>native syslog</strong>; twelve are not. <code>agent</code> — <strong>Snare</strong>
+      <strong>native syslog</strong>; thirteen are not. <code>agent</code> — <strong>Snare</strong>
       (Windows has no syslog at all), <strong>Sysmon</strong> (its own Windows channel,
       relayed by NXLog), <strong>auditd</strong> (needs the <code>audisp-syslog</code>
       plugin) and <strong>Zeek</strong> (writes log <em>files</em>; Filebeat ships them).
@@ -568,14 +581,151 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
       Management Activity API), <strong>Entra ID</strong> (<code>SigninLogs</code> via
       Graph), <strong>Okta</strong> (the System Log is polled from
       <code>/api/v1/logs</code>), <strong>Cisco Umbrella</strong> (CSV into a managed S3
-      bucket), <strong>CrowdStrike</strong> (the Falcon SIEM Connector) and
-      <strong>Kubernetes audit</strong> (a file or webhook from the API server).
-      Those carry a badge on their button, and every button reports its transport on
-      hover.</div>
+      bucket), <strong>CrowdStrike</strong> (the Falcon SIEM Connector),
+      <strong>Defender for Endpoint</strong> (the Defender XDR streaming API into an
+      Event Hub) and <strong>Kubernetes audit</strong> (a file or webhook from the API
+      server). Those carry a badge on their button, and every button reports its
+      transport on hover — and section 10 is how you configure them for real.</div>
+    </section>
+
+
+    <section>
+      <h2><span class="num">10</span>Connecting real sources <span class="tag">agent + api</span></h2>
+      <p>Twenty-nine of the 42 appliance sources are native syslog: point the device at
+      your collector and you are done. The other thirteen <strong>cannot do that</strong>,
+      and this section is the part that is left. The full guide — config files,
+      connector code, per-product permissions — is <code>CONNECTORS.md</code>.</p>
+
+      <table>
+        <thead><tr><th></th><th>native</th><th>agent</th><th>api</th></tr></thead>
+        <tbody>
+          <tr><td>Who sends</td><td>the device</td><td>a process on the host</td><td>a connector you run</td></tr>
+          <tr><td>Config lives</td><td>on the device</td><td>in the agent's config file</td><td>in an identity (app registration / API token)</td></tr>
+          <tr><td>Fails by</td><td>packet loss</td><td>agent stopped, file rotated</td><td>token expired, quota exhausted, checkpoint lost</td></tr>
+          <tr><td>Latency</td><td>milliseconds</td><td>seconds</td><td><strong>minutes to hours</strong></td></tr>
+          <tr><td>Ordering</td><td>roughly ordered</td><td>roughly ordered</td><td><strong>not ordered</strong> — sort on the record's own timestamp</td></tr>
+          <tr><td>Delivery</td><td>at-most-once (UDP)</td><td>at-least-once</td><td><strong>at-least-once</strong> — deduplicate on the record id</td></tr>
+        </tbody>
+      </table>
+      <p>The last three rows are what catches people. An API feed is a <em>batch</em> feed
+      wearing a stream's clothes: records arrive late, out of order, and sometimes twice.
+      Correlation rules with tight windows that work on syslog quietly stop firing on an
+      API source unless they key on the record's own timestamp rather than ingest time.</p>
+
+      <h3>Agent sources — Windows, Sysmon, auditd, Zeek</h3>
+      <p>The telemetry is already on the host; nothing puts it on the wire. NXLog reading
+      the Security channel <em>and</em> Sysmon in one pass, filtered in Windows itself
+      rather than in the agent:</p>
+      <pre><code>&lt;Input eventlog&gt;
+    Module      im_msvistalog
+    &lt;QueryXML&gt;
+      &lt;QueryList&gt;&lt;Query Id="0"&gt;
+        &lt;Select Path="Security"&gt;*[System[(EventID=4624 or EventID=4625 or EventID=4672
+          or EventID=4688 or EventID=4698 or EventID=4720 or EventID=4732
+          or EventID=4769 or EventID=5136 or EventID=1102)]]&lt;/Select&gt;
+        &lt;Select Path="Microsoft-Windows-Sysmon/Operational"&gt;*&lt;/Select&gt;
+      &lt;/Query&gt;&lt;/QueryList&gt;
+    &lt;/QueryXML&gt;
+&lt;/Input&gt;
+
+&lt;Output collector&gt;
+    Module      om_tcp          # om_ssl for TLS on 6514
+    Host        10.0.0.50
+    Port        514
+    Exec        to_syslog_bsd();
+&lt;/Output&gt;</code></pre>
+      <p>Linux auditd needs the dispatcher plugin turned on, and rules are useless without
+      a <code>key=</code> — that key is what a detection matches on:</p>
+      <pre><code># /etc/audit/plugins.d/syslog.conf
+active = yes
+direction = out
+path = /sbin/audisp-syslog
+type = always
+args = LOG_LOCAL6
+format = string
+
+# /etc/audit/rules.d/detect.rules
+-a always,exit -F arch=b64 -S execve -F euid=0 -F auid&gt;=1000 -F auid!=4294967295 -k rootshell
+-w /etc/shadow -p wa -k identity</code></pre>
+      <p>Zeek writes log <em>files</em> and rotates them hourly, so the shipper must follow
+      the <em>path</em>, not the inode, or it silently stops at the top of every hour.</p>
+      <div class="callout"><strong>What actually goes wrong with agents.</strong> UDP with a
+      1024-byte receiver limit decapitates exactly the long Sysmon command lines the rules
+      match on — use TCP and raise the max message size. Turn on the agent's disk queue, or
+      a collector restart loses data. Run NTP everywhere: every rule here is time-windowed.
+      And alert on <em>silence</em> — a source that has sent nothing for an hour is the most
+      valuable detection you will write.</div>
+
+      <h3>API sources — every connector is the same six steps</h3>
+      <pre><code>1. authenticate (client credentials / API token)
+2. subscribe, or list content since &lt;checkpoint&gt;
+3. page through the results
+4. fetch each content blob
+5. normalise → your event model, then ship
+6. persist the new checkpoint — only after a successful ship</code></pre>
+      <p>Step 6 gets written last and matters most: persist the checkpoint <em>after</em>
+      the batch is safely handed off. Crash between the two and you would rather re-send a
+      batch (deduplicated on the record id) than lose one. A connector also needs backoff
+      that honours HTTP 429, and a health signal of its own — last successful poll, records
+      shipped, current lag.</p>
+
+      <h3>The Microsoft estate</h3>
+      <p>Five products, five feeds, five permission models — and <strong>none of them
+      speaks syslog</strong>. Read this before promising anyone "we ingest Office 365".</p>
+      <table>
+        <thead><tr><th>Product</th><th>Feed</th><th>Permission</th></tr></thead>
+        <tbody>
+          <tr><td>Office 365 (Exchange, SharePoint, OneDrive, Teams, Purview, Power Automate)</td><td>Office 365 Management Activity API — <code>start</code> a subscription per content type, then poll <code>/content</code> and fetch each blob</td><td><code>ActivityFeed.Read</code> (application) + admin consent</td></tr>
+          <tr><td>Microsoft Entra ID</td><td>Diagnostic settings → Event Hub (<code>SignInLogs</code> <em>and</em> <code>AuditLogs</code>), or Graph <code>/auditLogs/*</code></td><td>Event Hubs Data Receiver, or <code>AuditLog.Read.All</code> + <code>Directory.Read.All</code></td></tr>
+          <tr><td>Defender for Endpoint / XDR</td><td>Streaming API → Event Hub (<code>AlertInfo</code>, <code>AlertEvidence</code>), or the alerts API</td><td>Event Hubs Data Receiver, or <code>Alert.Read.All</code></td></tr>
+          <tr><td>Azure control plane</td><td>Activity log → diagnostic setting → Event Hub (<code>Administrative</code> is the category that matters)</td><td>Monitoring Contributor to configure, Event Hubs Data Receiver to read</td></tr>
+          <tr><td>Windows / Sysmon</td><td><em>agent</em> — see above</td><td>—</td></tr>
+        </tbody>
+      </table>
+      <p><strong>Office 365 is one API for a dozen products.</strong> Exchange Online,
+      SharePoint, OneDrive, Teams, Purview and Power Automate all arrive on the same feed,
+      told apart only by <code>Workload</code> + <code>Operation</code> — which is exactly
+      why the detection here is a lookup table on those two fields. Three things to know
+      before you build on it: content is retained for <strong>7 days</strong> (a connector
+      down longer has lost data permanently), nothing is collected until you
+      <code>start</code> a subscription per content type, and the schema is a
+      <strong>union</strong> — only the common fields are always present.</p>
+      <p><strong>Entra ID is two categories on one connector.</strong>
+      <code>SignInLogs</code> says who authenticated; <code>AuditLogs</code> says what
+      changed in the directory. Most teams collect the first and miss the second — which is
+      where account takeover becomes persistence, and what the
+      <em>Rogue MFA Method Registered</em> and <em>Conditional Access Weakened</em>
+      scenarios are built from.</p>
+      <div class="callout"><strong>Least privilege, every time.</strong> No connector needs
+      write access to anything. Prefer a certificate over a client secret; where you cannot,
+      put the secret's expiry in the same calendar as your TLS certificates — an expired
+      credential is the most common cause of a feed that "just stopped". One identity per
+      connector, so revoking one is not an outage for the rest.</div>
+
+      <h3>Proving the path with this tool</h3>
+      <ol>
+        <li>Run <code>node server.js</code> — a browser page cannot open a raw socket.</li>
+        <li><strong>Log Collector</strong> → set protocol, host and port → <strong>Test</strong>.
+        A green result means the packet path and the firewalls in between are good.</li>
+        <li>Turn <strong>Forward live</strong> on.</li>
+        <li>Click the source you are onboarding under <strong>Appliance logs ›</strong> —
+        the stream narrows to just that source, in its real wire format. Confirm your
+        collector parses the fields into the right places, not into one message blob.</li>
+        <li>Fire the matching scenario under <strong>Attack ›</strong>, and check your own
+        SIEM raises the equivalent alert from the forwarded copy. If it does not, the gap is
+        in your parser or your rule — and you found it without waiting for an attacker.</li>
+        <li>Then test the failure modes: stop the collector for a minute (does anything
+        alert on the silence?), point it at a wrong port, and push a burst at 60 EPS over
+        UDP to watch what a lossy path does to a correlation rule.</li>
+      </ol>
+      <div class="callout">⚠️ For every API source the syslog <em>host</em> is the
+      <strong>connector</strong>, not the machine the event happened on. Grouping an API
+      feed by syslog host puts a whole tenant on one box — map the device from the record
+      body (<code>DeviceName</code>, <code>SiteUrl</code>, <code>MailboxOwnerUPN</code>).</div>
     </section>
 
     <section>
-      <h2><span class="num">10</span>Project layout</h2>
+      <h2><span class="num">11</span>Project layout</h2>
       <pre><code>index.html          markup + panel scaffold
 login.html          password + two-factor sign-in page
 account.html        profile, password, second factor, user management
@@ -591,11 +741,12 @@ js/account.js       the Account page: profile, collector, users
 auth.js             password (scrypt) + TOTP two-factor, sessions, lockout
 auth.json           generated per install: password hash + TOTP secret (0600, gitignored)
 server.js           optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
-samples/sample.log  example mixed-format log for the file-replay demo</code></pre>
+samples/sample.log  example mixed-format log for the file-replay demo
+CONNECTORS.md       configuring the agent- and API-relayed sources for real</code></pre>
     </section>
 
     <section>
-      <h2><span class="num">11</span>Extending it</h2>
+      <h2><span class="num">12</span>Extending it</h2>
       <ul>
         <li><strong>Add a log source</strong>: add a builder to <code>BASELINE</code> in
         <code>syslogger.js</code> and a <code>SOURCE_META</code> entry in <code>ui.js</code>.</li>

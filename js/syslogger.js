@@ -310,6 +310,31 @@
     riskState: 'none', authRequirement: 'multiFactorAuthentication', clientApp: 'Browser',
     appName: 'Office 365 Exchange Online', appId: '00000002-0000-0ff1-ce00-000000000000',
   }, fields || {});
+  // Entra ID directory-audit record — the other half of the same connector:
+  // SignInLogs say who authenticated, AuditLogs say what changed in the tenant.
+  const entAudit = (fields) => Object.assign({
+    srcType: 'entra', vendor: 'entra', host: 'entra-connector-01', facility: FACILITY.local6,
+    program: 'entra_audit', severity: 3, tenantId: ENTRA_TENANT, eventUuid: rand.uuid(),
+    actorId: rand.uuid(), entraCategory: 'AuditLogs', auditResult: 'success',
+    operationType: 'Update', loggedBy: 'Core Directory', auditCategory: 'UserManagement',
+  }, fields || {});
+  // Office 365 unified-audit record (Management Activity API). One record shape
+  // carries every workload — Exchange, SharePoint, OneDrive, Teams, Power
+  // Automate, Purview — which is exactly why `Workload` + `Operation` is the
+  // pair a rule has to key on.
+  const o365 = (fields) => Object.assign({
+    srcType: 'm365', vendor: 'm365', host: 'o365-connector-01', facility: FACILITY.local6,
+    program: 'o365_audit', proto: 'tcp', severity: 4, tenantId: ENTRA_TENANT,
+    eventUuid: rand.uuid(), resultStatus: 'Succeeded', userKey: rand.hex(24).toUpperCase(),
+    appId: rand.uuid(), recordType: 1, workload: 'Exchange',
+  }, fields || {});
+  // Microsoft Defender for Endpoint alert (Defender XDR streaming API).
+  const mde = (fields) => Object.assign({
+    srcType: 'defender', vendor: 'defender', facility: FACILITY.local5, program: 'defender_xdr',
+    proto: 'tcp', severity: 3, alertStatus: 'New', detectionSource: 'EDR', mdeSeverity: 'High',
+    alertId: `da${rand.int(600000000, 699999999)}_${rand.hex(8)}`, deviceId: rand.hex(40),
+    sha256: rand.hex(64), remediation: 'None',
+  }, fields || {});
   // Squid access.log record.
   const sqd = (fields) => Object.assign({
     srcType: 'squid', vendor: 'squid', host: 'proxy-01', hostIp: '10.10.0.8',
@@ -1218,6 +1243,369 @@
     },
   };
   Object.assign(SCENARIOS, MORE_ATTACKS);
+
+  // ---- Product-targeted scenarios -------------------------------------------
+  // These bursts are aimed at one product's own log source rather than at a
+  // generic technique: the Office 365 unified audit log, the Entra ID directory
+  // audit, Defender for Endpoint alerts, on-prem Exchange. Each emits the record
+  // shape the product really writes, so a rule written against one of these
+  // transfers to the live feed unchanged — which is the point of practising on
+  // them. Every scenario here leans on `Workload` + `Operation` (M365),
+  // `activityDisplayName` (Entra) or the alert `Title` (Defender), because that
+  // is all a real SIEM gets to key on.
+  const PRODUCT_ATTACKS = {
+    // ---- Microsoft 365 / Office ----------------------------------------------
+    'm365-mail-exfil': {
+      label: 'Exchange Online Mailbox Exfil', category: 'attack',
+      build() {
+        const user = `${rand.pick(['jdoe', 'asmith', 'mchen'])}@corp.example`;
+        const a = rand.pick(THREAT_INTEL.ips);
+        const folders = ['Inbox', 'Sent Items', 'Archive', 'Deleted Items', 'Finance', 'Legal'];
+        const evs = [];
+        // MailAccessType=Sync is a client pulling a whole folder down rather than
+        // a user opening a message. One or two are an Outlook client caching; a
+        // dozen from one foreign address is the mailbox leaving the tenant.
+        for (let i = 0, n = rand.int(9, 14); i < n; i++) {
+          const f = rand.pick(folders);
+          evs.push(o365({
+            operation: 'MailItemsAccessed', workload: 'Exchange', recordType: 2, severity: 4,
+            user, mailboxOwner: user, srcIp: a, objectId: `${user}\\${f}`,
+            mailAccessType: 'Sync', folders: [f],
+            clientInfo: 'Client=WebServices;Action=Sync;Microsoft Office/16.0 (Exchange Web Services)',
+            message: `MailItemsAccessed (Sync) ${user}\\${f} from ${a}`,
+          }));
+        }
+        return evs;
+      },
+    },
+    'm365-transport-rule': {
+      label: 'Exchange Transport Rule Tamper', category: 'attack',
+      build() {
+        const admin = `${rand.pick(['helpdesk', 'svc_mail', 'asmith'])}@corp.example`;
+        const drop = `${rand.pick(['journal-archive', 'mx-backup', 'mail-sync'])}@${rand.pick(['proton.me', 'mail.ru', 'outlook.com'])}`;
+        const a = rand.pick(THREAT_INTEL.ips);
+        // An inbox rule steals one mailbox. A transport rule sits in front of the
+        // whole tenant, and nothing in any user's Outlook shows that it exists.
+        return [
+          o365({
+            operation: 'New-TransportRule', workload: 'Exchange', recordType: 1, severity: 2,
+            user: admin, srcIp: a, objectId: 'Journal Backup',
+            parameters: [
+              { Name: 'Name', Value: 'Journal Backup' },
+              { Name: 'BlindCopyTo', Value: drop },
+              { Name: 'Enabled', Value: 'True' },
+              { Name: 'Priority', Value: '0' },
+            ],
+            message: `New-TransportRule "Journal Backup" — BlindCopyTo ${drop}, applies to every message, by ${admin}`,
+          }),
+          o365({
+            operation: 'Set-TransportRule', workload: 'Exchange', recordType: 1, severity: 3,
+            user: admin, srcIp: a, objectId: 'Inbound Allow List',
+            parameters: [
+              { Name: 'Identity', Value: 'Inbound Allow List' },
+              { Name: 'SetSCL', Value: '-1' },
+              { Name: 'FromScope', Value: 'NotInOrganization' },
+            ],
+            message: `Set-TransportRule "Inbound Allow List" — SetSCL -1 for external senders by ${admin}`,
+          }),
+        ];
+      },
+    },
+    'm365-sharepoint-download': {
+      label: 'SharePoint Mass Download', category: 'attack',
+      build() {
+        const user = `${rand.pick(['jdoe', 'contractor', 'kwalsh'])}@corp.example`;
+        const a = rand.chance(0.6) ? rand.pick(THREAT_INTEL.ips) : rand.ip();
+        const site = 'https://corp.sharepoint.com/sites/Finance';
+        const files = ['FY26-forecast.xlsx', 'Board-pack-Q3.pptx', 'Payroll-2026.xlsx',
+          'Acquisition-shortlist.docx', 'Customer-master.csv', 'Salary-bands.xlsx',
+          'Contract-Acme.pdf', 'Pricing-model.xlsx'];
+        const evs = [];
+        // The leaving-employee shape: a whole document library pulled down in a
+        // few minutes. Every single download is a legitimate operation, so only
+        // the rate gives it away.
+        for (let i = 0, n = rand.int(14, 20); i < n; i++) {
+          const f = rand.pick(files);
+          const op = rand.chance(0.25) ? 'FileSyncDownloadedFull' : 'FileDownloaded';
+          evs.push(o365({
+            operation: op, workload: 'SharePoint', recordType: 6, severity: 4,
+            user, mailboxOwner: user, srcIp: a, siteUrl: `${site}/`,
+            relativeUrl: `Shared Documents/${f}`, fileName: f,
+            objectId: `${site}/Shared Documents/${f}`,
+            userAgent: 'Microsoft SkyDriveSync 24.086.0428.0003',
+            message: `${op} ${f} from ${site} by ${user} (${a})`,
+          }));
+        }
+        return evs;
+      },
+    },
+    'm365-anon-sharing': {
+      label: 'OneDrive Anonymous Sharing', category: 'attack',
+      build() {
+        const who = rand.pick(['jdoe', 'asmith']);
+        const user = `${who}@corp.example`;
+        const ext = `${rand.pick(['recruiter', 'partner', 'accounts'])}@${rand.pick(['gmail.com', 'proton.me', 'outlook.com'])}`;
+        const f = rand.pick(['Customer-master.csv', 'Payroll-2026.xlsx', 'Source-licences.zip']);
+        const site = `https://corp-my.sharepoint.com/personal/${who}_corp_example/`;
+        const base = { workload: 'OneDrive', recordType: 14, severity: 3, user, siteUrl: site,
+          relativeUrl: `Documents/${f}`, fileName: f, objectId: `${site}Documents/${f}` };
+        // An anonymous link is a URL that needs no account at all. Nothing is
+        // "hacked": the tenant hands the file to whoever holds the link.
+        return [
+          o365(Object.assign({}, base, {
+            operation: 'AnonymousLinkCreated', srcIp: rand.pick(THREAT_INTEL.ips),
+            parameters: [{ Name: 'SharingType', Value: 'Anonymous Edit' }, { Name: 'ExpirationDate', Value: '' }],
+            message: `AnonymousLinkCreated on ${f} — Anonymous Edit, no expiry, by ${user}`,
+          })),
+          o365(Object.assign({}, base, {
+            operation: 'SharingInvitationCreated', srcIp: rand.pick(THREAT_INTEL.ips),
+            targetUser: ext, targetUserType: 'Guest',
+            message: `SharingInvitationCreated — ${f} shared with external address ${ext}`,
+          })),
+          o365(Object.assign({}, base, {
+            operation: 'AnonymousLinkUsed', srcIp: rand.pick(THREAT_INTEL.ips), user: 'anonymous',
+            message: `AnonymousLinkUsed — ${f} downloaded by an unauthenticated caller`,
+          })),
+        ];
+      },
+    },
+    'm365-teams-external': {
+      label: 'Teams External Access Abuse', category: 'attack',
+      build() {
+        const admin = `${rand.pick(['jdoe', 'asmith'])}@corp.example`;
+        const guest = `${rand.pick(['support', 'it-helpdesk', 'onboarding'])}@${rand.pick(['outlook.com', 'proton.me', 'gmail.com'])}`;
+        const team = rand.pick(['Finance Leadership', 'Project Falcon (M&A)', 'Security Operations']);
+        const guid = rand.uuid();
+        const a = rand.pick(THREAT_INTEL.ips);
+        // Guest access turns a private team into a room an outsider sits in, with
+        // its whole message and file history — no exploit, one settings change.
+        return [
+          o365({
+            operation: 'TeamSettingChanged', workload: 'MicrosoftTeams', recordType: 25, severity: 3,
+            user: admin, srcIp: a, teamName: team, teamGuid: guid, objectId: team,
+            parameters: [{ Name: 'AllowGuestUser', Value: 'True' }, { Name: 'TeamAccessType', Value: 'Public' }],
+            message: `TeamSettingChanged "${team}" — guest access enabled and team set Public by ${admin}`,
+          }),
+          o365({
+            operation: 'MemberAdded', workload: 'MicrosoftTeams', recordType: 25, severity: 3,
+            user: admin, srcIp: a, teamName: team, teamGuid: guid, objectId: team,
+            targetUser: guest, targetUserType: 'Guest',
+            message: `MemberAdded — external guest ${guest} added to "${team}" by ${admin}`,
+          }),
+        ];
+      },
+    },
+    'm365-audit-disabled': {
+      label: 'M365 Audit Logging Disabled', category: 'attack',
+      build() {
+        const admin = `${rand.pick(['svc_mail', 'helpdesk'])}@corp.example`;
+        const victim = `${rand.pick(['jdoe', 'asmith', 'mchen'])}@corp.example`;
+        const a = rand.pick(THREAT_INTEL.ips);
+        // Switching the unified audit log off is the M365 equivalent of clearing
+        // the Security event log — and it is itself the last thing it records.
+        return [
+          o365({
+            operation: 'Set-AdminAuditLogConfig', workload: 'Exchange', recordType: 1, severity: 2,
+            user: admin, srcIp: a, objectId: 'corp.example\\Admin Audit Log Settings',
+            parameters: [{ Name: 'UnifiedAuditLogIngestionEnabled', Value: 'False' }],
+            message: `Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled False by ${admin}`,
+          }),
+          o365({
+            operation: 'Set-Mailbox', workload: 'Exchange', recordType: 1, severity: 2,
+            user: admin, mailboxOwner: victim, srcIp: a, objectId: victim,
+            parameters: [{ Name: 'Identity', Value: victim }, { Name: 'AuditEnabled', Value: 'False' }],
+            message: `Set-Mailbox ${victim} -AuditEnabled False by ${admin}`,
+          }),
+        ];
+      },
+    },
+    'm365-ediscovery': {
+      label: 'eDiscovery Search Abuse', category: 'attack',
+      build() {
+        const admin = `${rand.pick(['helpdesk', 'svc_compliance'])}@corp.example`;
+        const name = rand.pick(['Q3 Review', 'HR Case 4471', 'Legal Hold 2026-08']);
+        const q = '(c:c)(subject:"password" OR subject:"invoice" OR body:"wire transfer")';
+        const a = rand.pick(THREAT_INTEL.ips);
+        const base = { workload: 'SecurityComplianceCenter', recordType: 24, severity: 3,
+          user: admin, srcIp: a, objectId: name, searchName: name, searchQuery: q, searchLocations: 'All' };
+        // Content Search is a supported, audited feature that reads every mailbox
+        // in the tenant. Nothing needs to be compromised twice — the compliance
+        // role is the exfiltration tool.
+        return [
+          o365(Object.assign({}, base, {
+            operation: 'SearchCreated',
+            message: `eDiscovery SearchCreated "${name}" across All mailboxes — ${q}`,
+          })),
+          o365(Object.assign({}, base, {
+            operation: 'SearchStarted',
+            message: `eDiscovery SearchStarted "${name}" — ${rand.int(2000, 9000)} items matched`,
+          })),
+          o365(Object.assign({}, base, {
+            operation: 'SearchExported', severity: 2,
+            message: `eDiscovery SearchExported "${name}" — results downloaded by ${admin}`,
+          })),
+        ];
+      },
+    },
+    'm365-power-automate': {
+      label: 'Power Automate Exfil Flow', category: 'attack',
+      build() {
+        const user = `${rand.pick(['jdoe', 'asmith'])}@corp.example`;
+        const url = `https://${rand.pick(THREAT_INTEL.domains)}/collect`;
+        const flowId = rand.uuid();
+        const a = rand.pick(THREAT_INTEL.ips);
+        // A flow is a forwarding rule the mail admin never sees: it lives in
+        // Power Automate, runs as the user, and survives a mailbox rule audit.
+        return [
+          o365({
+            operation: 'CreateFlow', workload: 'MicrosoftFlow', recordType: 30, severity: 3,
+            user, srcIp: a, objectId: 'Mail Sync', flowId,
+            flowConnectors: ['Office 365 Outlook', 'HTTP'],
+            parameters: [
+              { Name: 'FlowDisplayName', Value: 'Mail Sync' },
+              { Name: 'TriggerName', Value: 'When a new email arrives (V3)' },
+              { Name: 'ActionName', Value: `HTTP POST ${url}` },
+            ],
+            message: `CreateFlow "Mail Sync" by ${user} — trigger: new mail, action: HTTP POST ${url}`,
+          }),
+          o365({
+            operation: 'EditFlow', workload: 'MicrosoftFlow', recordType: 30, severity: 3,
+            user, srcIp: a, objectId: 'Mail Sync', flowId,
+            flowConnectors: ['Office 365 Outlook', 'HTTP'],
+            parameters: [
+              { Name: 'FlowDisplayName', Value: 'Mail Sync' },
+              { Name: 'IncludeAttachments', Value: 'True' },
+              { Name: 'Folder', Value: 'All' },
+            ],
+            message: `EditFlow "Mail Sync" by ${user} — widened to all folders, attachments included`,
+          }),
+        ];
+      },
+    },
+
+    // ---- Entra ID -------------------------------------------------------------
+    'entra-mfa-tamper': {
+      label: 'Rogue MFA Method Registered', category: 'attack',
+      build() {
+        const victim = rand.pick(['jdoe@corp.local', 'asmith@corp.local', 'mchen@corp.local']);
+        const a = rand.pick(THREAT_INTEL.ips);
+        const id = rand.uuid();
+        // With the password already phished, registering an authenticator of
+        // their own is how the attacker keeps the account — a second factor they
+        // hold survives the password reset that follows.
+        return [
+          entAudit({
+            user: victim, srcIp: a, auditOperation: 'User registered security info',
+            loggedBy: 'Authentication Methods', operationType: 'Update',
+            targetType: 'User', targetName: victim.split('@')[0], targetUpn: victim, targetId: id,
+            modified: [{ displayName: 'StrongAuthenticationMethod', oldValue: '[]',
+              newValue: '[{"MethodType":"PhoneAppNotification","Default":true}]' }],
+            message: `User registered security info — Microsoft Authenticator added to ${victim} from ${a}`,
+          }),
+          entAudit({
+            user: victim, srcIp: a, auditOperation: 'User deleted security info',
+            loggedBy: 'Authentication Methods', operationType: 'Delete', severity: 2,
+            targetType: 'User', targetName: victim.split('@')[0], targetUpn: victim, targetId: id,
+            modified: [{ displayName: 'StrongAuthenticationMethod',
+              oldValue: '[{"MethodType":"OneWaySMS","Default":true}]', newValue: '[]' }],
+            message: `User deleted security info — the account's original SMS method removed (${victim})`,
+          }),
+        ];
+      },
+    },
+    'entra-ca-tamper': {
+      label: 'Conditional Access Weakened', category: 'attack',
+      build() {
+        const admin = rand.pick(['helpdesk@corp.local', 'svc_admin@corp.local']);
+        const policy = rand.pick(['CA001: Require MFA for all users',
+          'CA004: Block legacy authentication', 'CA007: Require compliant device']);
+        const victim = rand.uuid();
+        // Conditional Access *is* the control. Excluding one account and dropping
+        // the policy to report-only leaves the portal looking green while the
+        // requirement no longer applies to the account that matters.
+        return [
+          entAudit({
+            user: admin, srcIp: rand.pick(THREAT_INTEL.ips), severity: 2,
+            auditOperation: 'Update conditional access policy', auditCategory: 'Policy',
+            loggedBy: 'Conditional Access', operationType: 'Update',
+            targetType: 'Policy', targetName: policy, targetId: rand.uuid(),
+            modified: [{
+              displayName: 'ConditionalAccessPolicy',
+              oldValue: '{"state":"enabled","conditions":{"users":{"excludeUsers":[]}}}',
+              newValue: `{"state":"enabledForReportingButNotEnforced","conditions":{"users":{"excludeUsers":["${victim}"]}}}`,
+            }],
+            message: `Update conditional access policy "${policy}" — set to report-only and one account excluded, by ${admin}`,
+          }),
+        ];
+      },
+    },
+
+    // ---- Defender for Endpoint / Exchange Server -------------------------------
+    'mde-tamper': {
+      label: 'Defender EDR Tampering', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows);
+        const u = rand.pick(['Administrator', 'svc_admin']);
+        const dev = rand.hex(40);
+        const common = { host: h.name, hostIp: h.ip, deviceId: dev, user: u };
+        // Defender's own alerts about Defender being switched off. The commands
+        // stay in ProcessCommandLine where the sensor put them, so the burst
+        // reads as one tamper story rather than three separate findings.
+        return [
+          mde(Object.assign({}, common, {
+            alertTitle: 'Tamper protection was turned off', mdeCategory: 'DefenseEvasion',
+            mdeSeverity: 'High', detectionSource: 'EDR', techniques: ['T1562.001'],
+            fileName: 'powershell.exe', filePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+            cmdLine: 'powershell -c Set-MpPreference -DisableTamperProtection $true -DisableRealtimeMonitoring $true',
+            alertDesc: 'Tamper protection was disabled on this device, leaving antivirus settings writable.',
+            message: `Defender alert: Tamper protection was turned off on ${h.name} (High)`,
+          })),
+          mde(Object.assign({}, common, {
+            alertTitle: 'Antivirus scan exclusion added', mdeCategory: 'DefenseEvasion',
+            mdeSeverity: 'Medium', detectionSource: 'Antivirus', techniques: ['T1562.001'], severity: 4,
+            fileName: 'powershell.exe', filePath: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0',
+            cmdLine: 'powershell -c Add-MpPreference -ExclusionPath C:\\Users\\Public\\Libraries',
+            alertDesc: 'A scan exclusion was added for a user-writable directory.',
+            message: `Defender alert: Antivirus scan exclusion added on ${h.name} — C:\\Users\\Public\\Libraries`,
+          })),
+          mde(Object.assign({}, common, {
+            alertTitle: 'Defender for Endpoint sensor stopped', mdeCategory: 'DefenseEvasion',
+            mdeSeverity: 'High', detectionSource: 'EDR', techniques: ['T1562.001'],
+            fileName: 'sc.exe', filePath: 'C:\\Windows\\System32',
+            cmdLine: 'sc.exe config sense start= disabled',
+            alertDesc: 'The Defender for Endpoint sensor service was disabled; the device stopped reporting.',
+            message: `Defender alert: sensor stopped on ${h.name} — the device is no longer reporting`,
+          })),
+        ];
+      },
+    },
+    'exchange-proxynotshell': {
+      label: 'Exchange ProxyNotShell', category: 'attack',
+      build() {
+        const h = { name: 'exch-01', ip: '10.10.1.25' };
+        const a = rand.pick(THREAT_INTEL.ips);
+        const shell = '/owa/auth/errorEE.aspx';
+        // CVE-2022-41040 + CVE-2022-41082: the `@` makes the Autodiscover
+        // front-end proxy the request to the back-end PowerShell endpoint, which
+        // runs whatever it is handed as SYSTEM. The shell dropped into the OWA
+        // auth directory is what the attacker comes back through.
+        return [
+          web(h, 3, a, 'POST', `/autodiscover/autodiscover.json?@corp.example/powershell/?X-Rps-CAT=${rand.hex(24)}`, {
+            status: 200, program: 'w3wp',
+            message: `${a} - - "POST /autodiscover/autodiscover.json?@corp.example/powershell/ HTTP/1.1" 200 1024 "-" "python-requests/2.31.0"`,
+          }),
+          sym({ name: 'EXCH-01', ip: h.ip }, 3, 11, 'File created', {
+            image: 'C:\\Windows\\System32\\inetsrv\\w3wp.exe', userDomain: 'NT AUTHORITY\\SYSTEM',
+            sysmonFields: ['TargetFilename="C:\\Program Files\\Microsoft\\Exchange Server\\V15\\FrontEnd\\HttpProxy\\owa\\auth\\errorEE.aspx"',
+              'CreationUtcTime="2026-09-01 09:14:22.117"'],
+            message: 'File created: w3wp.exe wrote C:\\Program Files\\Microsoft\\Exchange Server\\V15\\FrontEnd\\HttpProxy\\owa\\auth\\errorEE.aspx',
+          }),
+          web(h, 2, a, 'GET', `${shell}?cmd=whoami`, { status: 200, program: 'w3wp' }),
+        ];
+      },
+    },
+  };
+  Object.assign(SCENARIOS, PRODUCT_ATTACKS);
 
   // ---- Appliance log sources ------------------------------------------------
   // The most common security-appliance formats. Each burst mixes benign traffic
@@ -2256,6 +2644,73 @@
           disposition: 'Prevention, process killed.',
           threatSig: `${det[0]} (${det[2]})`, threatSev: 'critical',
           message: `${det[0]} — ${det[3]} killed (Critical)`,
+        }));
+        return evs;
+      },
+    },
+    defender: {
+      // Defender for Endpoint publishes alerts through the Defender XDR
+      // streaming API (Event Hub / storage) or the Graph security API — there is
+      // no syslog anywhere in the product, so this source declares 'api'.
+      label: 'Defender for Endpoint', category: 'appliance', transport: 'api',
+      build() {
+        const h = rand.pick(HOSTS.windows);
+        const dev = rand.hex(40);
+        const base = () => ({
+          srcType: 'defender', vendor: 'defender', host: h.name, hostIp: h.ip,
+          facility: FACILITY.local5, program: 'defender_xdr', proto: 'tcp',
+          deviceId: dev, user: rand.pick(USERS), alertStatus: 'New',
+          alertId: `da${rand.int(600000000, 699999999)}_${rand.hex(8)}`, sha256: rand.hex(64),
+          remediation: 'None',
+        });
+        const evs = [];
+        // Most of what an EDR emits is low-severity and already handled — the
+        // informational alerts are the background a real analyst filters past.
+        const low = [
+          ['Suspicious sequence of exploration activities', 'Discovery', 'Informational', 'EDR',
+            ['T1087.002'], 'net.exe', 'C:\\Windows\\System32', 'net.exe group "domain admins" /domain'],
+          ['Unwanted software was detected', 'UnwantedSoftware', 'Low', 'Antivirus',
+            ['T1204.002'], 'toolbar_setup.exe', 'C:\\Users\\Public\\Downloads', 'toolbar_setup.exe /S'],
+          ['Anomalous ASEP registry modification', 'Persistence', 'Low', 'EDR',
+            ['T1547.001'], 'reg.exe', 'C:\\Windows\\System32', 'reg.exe add HKCU\\...\\Run /v Updater /d updater.exe'],
+        ];
+        for (const l of low) {
+          evs.push(Object.assign(base(), {
+            severity: l[2] === 'Informational' ? 6 : 5, alertTitle: l[0], mdeCategory: l[1],
+            mdeSeverity: l[2], detectionSource: l[3], techniques: l[4],
+            fileName: l[5], filePath: l[6], cmdLine: l[7],
+            alertDesc: `${l[0]} on ${h.name}.`,
+            message: `Defender alert: ${l[0]} — ${l[5]} (${l[2]})`,
+          }));
+        }
+        // The verdict. As with Falcon, `message` carries only what the sensor
+        // concluded — the command line stays in the JSON, so the behavioural
+        // rules don't re-detect a finding Defender has already blocked.
+        const det = rand.pick([
+          ['Suspicious credential dumping activity', 'CredentialAccess', 'Credential Access',
+            'T1003.001 · LSASS Memory', 'rundll32.exe',
+            'rundll32.exe comsvcs.dll, MiniDump 712 C:\\Windows\\Temp\\out.dmp full', 'Process blocked'],
+          ['Cobalt Strike command-and-control activity', 'CommandAndControl', 'Command and Control',
+            'T1071.001 · Web Protocols', 'rundll32.exe',
+            'rundll32.exe C:\\ProgramData\\beacon.dll,Start', 'Connection blocked'],
+          ['Malicious credential theft tool execution', 'CredentialAccess', 'Credential Access',
+            'T1003 · OS Credential Dumping', 'wce.exe', 'wce.exe -w', 'File quarantined'],
+          ['Human-operated attack: backup deletion attempt', 'Impact', 'Impact',
+            'T1490 · Inhibit System Recovery', 'vssadmin.exe',
+            'vssadmin.exe delete shadows /all /quiet', 'Process blocked'],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 2, alertTitle: det[0], mdeCategory: det[1], mdeSeverity: 'High',
+          detectionSource: 'EDR', techniques: [det[3].split(' ')[0]], fileName: det[4],
+          filePath: 'C:\\Windows\\System32', cmdLine: det[5], remediation: det[6],
+          // The remote end lives in its own field: an EDR verdict is not a flow,
+          // so it must not read like one to the network rules.
+          remoteIp: rand.pick(THREAT_INTEL.ips), remoteUrl: `https://${rand.pick(THREAT_INTEL.domains)}/`,
+          alertDesc: `${det[0]} on ${h.name}. ${det[6]}.`,
+          // The sensor has already named the ATT&CK cell — hand it to the rule
+          // rather than making it guess from the signature text.
+          threatSig: det[0], threatSev: 'critical', threatTactic: det[2], threatTechnique: det[3],
+          message: `Defender alert: ${det[0]} — ${det[4]}, ${det[6].toLowerCase()} (High)`,
         }));
         return evs;
       },

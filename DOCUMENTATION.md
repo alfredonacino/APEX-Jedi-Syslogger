@@ -32,7 +32,7 @@ has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 41 appliance formats (29 native syslog + 4 agent-relayed + 8 API-relayed), at a configurable rate, with 60 injectable attack scenarios and file replay. |
+| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 42 appliance formats (29 native syslog + 4 agent-relayed + 9 API-relayed), at a configurable rate, with 72 injectable attack scenarios and file replay. |
 | **Jedi**      | Miniature SIEM — parses every event, keeps rolling stats, and runs a stateful, MITRE ATT&CK-tagged detection-rule engine. |
 
 Everything renders in the browser. The optional `server.js` backend serves the
@@ -89,6 +89,7 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `auth.json` | Generated per install: every account plus its saved collector (`0600`, gitignored, never served) |
 | `server.js` | Optional backend: static host + `/forward` relay + `/test` probe + the sign-in gate |
 | `samples/sample.log` | Example mixed-format log for the file-replay demo |
+| `CONNECTORS.md` | How to configure the agent- and API-relayed sources for real: agent config, connector design, Microsoft 365 / Entra / Defender, permissions |
 | `jsconfig.json` | Editor typecheck settings — read by the editor, never shipped |
 | `types/globals.d.ts` | Ambient declarations for `window.JS` and Node globals |
 
@@ -112,7 +113,7 @@ sees it. Common fields:
 |-------|---------|
 | `id` | Random unique id |
 | `ts` | Epoch ms timestamp |
-| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 41 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `sysmon`, `zeek`, `cloudtrail`, `okta`, `ciscoesa`, `cyberark`, `ivanti`, `infoblox`, `veeam`, `umbrella`, `azure`, `m365`, …), or `file` |
+| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 42 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `sysmon`, `zeek`, `cloudtrail`, `okta`, `ciscoesa`, `cyberark`, `ivanti`, `infoblox`, `veeam`, `umbrella`, `azure`, `m365`, `entra`, `defender`, …), or `file` |
 | `host` / `hostIp` | Device name / management IP |
 | `facility` / `severity` | Syslog numeric facility (0–23) and severity (0–7) |
 | `program` / `pid` | Process / tag |
@@ -184,15 +185,16 @@ appliance events always use their native vendor format.
 
 ## 5. Attack scenarios
 
-**60** scenarios live under the **Attack ›** menu. Each scenario's `build()`
+**72** scenarios live under the **Attack ›** menu. Each scenario's `build()`
 returns a *burst* of event partials crafted to trip a specific detection rule, so
 every button demonstrably lights up the dashboard. A burst can be injected even
 while the baseline generator is stopped, and its events are spread 30–90 ms apart
 so the correlation windows see them as live traffic.
 
-Scenarios are defined in `js/syslogger.js` in two objects that are merged into a
-single `SCENARIOS` map: the original set in `SCENARIOS` and the rest in
-`MORE_ATTACKS`. The **ID** column below is the internal key passed to
+Scenarios are defined in `js/syslogger.js` in three objects that are merged into a
+single `SCENARIOS` map: the original set in `SCENARIOS`, the bulk of the
+techniques in `MORE_ATTACKS`, and the product-targeted pack in `PRODUCT_ATTACKS`
+(§5.1). The **ID** column below is the internal key passed to
 `injectScenario(id)`; it is what the `Attack ›` buttons call.
 
 | ID | Scenario | What the burst emits | Fires rule | ATT&CK |
@@ -257,11 +259,51 @@ single `SCENARIOS` map: the original set in `SCENARIOS` and the rest in
 | `gpo-modification` | GPO Modification | Windows **5136** modifying a `groupPolicyContainer` object | `windows-threat` | T1484.001 |
 | `adcs-esc1` | ADCS Certificate Theft (ESC1) | Windows **4887** issuing a certificate whose subject is a different (privileged) account | `windows-threat` | T1649 |
 | `wmi-lateral` | WMI Lateral Movement | Sysmon **3** connect to 135/DCOM followed by the remote process create | `lateral-exec` | T1047 |
+| `m365-mail-exfil` | Exchange Online Mailbox Exfil | 9–14 unified-audit `MailItemsAccessed` records with `MailAccessType: Sync` across six folders, all from one threat-intel IP | `cloud-threat` | T1114.002 |
+| `m365-transport-rule` | Exchange Transport Rule Tamper | `New-TransportRule` with `BlindCopyTo` an external address, then `Set-TransportRule` `SetSCL -1` for external senders | `cloud-threat` | T1114.003 |
+| `m365-sharepoint-download` | SharePoint Mass Download | 14–20 `FileDownloaded` / `FileSyncDownloadedFull` records against a Finance site from one address | `cloud-threat` | T1213.002 |
+| `m365-anon-sharing` | OneDrive Anonymous Sharing | `AnonymousLinkCreated` (Anonymous Edit, no expiry) + `SharingInvitationCreated` to an external address + `AnonymousLinkUsed` | `cloud-threat` | T1567 |
+| `m365-teams-external` | Teams External Access Abuse | `TeamSettingChanged` enabling guest access, then `MemberAdded` putting an external guest in a private team | `cloud-threat` | T1199 |
+| `m365-audit-disabled` | M365 Audit Logging Disabled | `Set-AdminAuditLogConfig -UnifiedAuditLogIngestionEnabled False` + `Set-Mailbox -AuditEnabled False` | `cloud-threat` | T1562.008 |
+| `m365-ediscovery` | eDiscovery Search Abuse | Purview `SearchCreated` / `SearchStarted` / `SearchExported` over **All** mailboxes with a credential-hunting query | `cloud-threat` | T1213 |
+| `m365-power-automate` | Power Automate Exfil Flow | `CreateFlow` + `EditFlow` wiring the Office 365 Outlook connector to an HTTP POST at a known-bad host | `cloud-threat` | T1567 |
+| `entra-mfa-tamper` | Rogue MFA Method Registered | Entra `AuditLogs` — *User registered security info* (an Authenticator added), then *User deleted security info* (the original SMS method removed) | `identity-threat` | T1556.006 |
+| `entra-ca-tamper` | Conditional Access Weakened | Entra `AuditLogs` — *Update conditional access policy*: state dropped to report-only and one account excluded | `identity-threat` | T1556.009 |
+| `mde-tamper` | Defender EDR Tampering | three Defender for Endpoint alerts — tamper protection off, scan exclusion added, sensor stopped | `security-tooling-disabled` | T1562.001 |
+| `exchange-proxynotshell` | Exchange ProxyNotShell | `POST /autodiscover/autodiscover.json?@…/powershell/`, the Sysmon **11** shell drop into `owa\auth`, then a `GET` on the shell | `web-exploit` (twice) | T1190 · T1505.003 |
 
 Most bursts raise exactly **one** alert. `mfa-fatigue` deliberately raises two — the
 push-bombing burst, then the approval that follows it — the same shape as
 `ssh-bruteforce` → `brute-success`. The web scenarios alert per request, because
-each request is independently an attack.
+each request is independently an attack; `exchange-proxynotshell` raises two for
+that reason (the exploit, then the web shell it dropped being used).
+
+### 5.1 The product pack
+
+The last twelve scenarios in the table are `PRODUCT_ATTACKS`. They differ from
+the rest in what they are aimed at: not a technique in the abstract but **one
+product's own log source**, in the record shape that product really writes. Eight
+of them ride the Office 365 unified audit log, two the Entra ID directory audit,
+one Defender for Endpoint's alert feed, one on-prem Exchange.
+
+They exist because the Microsoft estate is where most detection engineering
+actually happens, and because its telemetry looks nothing like syslog:
+
+- **One feed, a dozen products.** Exchange Online, SharePoint, OneDrive, Teams,
+  Purview and Power Automate all arrive on the same Office 365 feed, told apart
+  only by `Workload` + `Operation`. That is why `cloud-threat` handles Microsoft
+  365 with a lookup table (`m365Verdict()` in `js/jedi.js`) rather than a chain of
+  conditions — the shape of the rule follows the shape of the feed.
+- **Two schemas from one Entra connector.** `SignInLogs` records who
+  authenticated; `AuditLogs` records what changed in the directory. Most teams
+  collect the first and miss the second — which is where account takeover turns
+  into persistence (`entra-mfa-tamper`, `entra-ca-tamper`).
+- **A verdict is not telemetry.** `mde-tamper` is Defender alerting on Defender
+  being switched off. The command lines stay in `ProcessCommandLine` where the
+  sensor put them, so the burst reads as one tamper story rather than three
+  separate findings.
+- **None of it is syslog.** Every source these scenarios use is `api`-transport.
+  `CONNECTORS.md` is the guide to standing the connectors up for real.
 
 The known-bad IPs and domains used above come from `THREAT_INTEL` in `js/data.js`
 (e.g. `185.220.101.44`, `kx7z2q-c2.badnet.ru`); the Jedi engine treats them as
@@ -271,7 +313,7 @@ threat-intel matches.
 
 ## 6. Appliance log formats
 
-**41** sources live under the **Appliance logs ›** menu. Each burst mixes benign
+**42** sources live under the **Appliance logs ›** menu. Each burst mixes benign
 events with malicious ones, and every event is rendered in the vendor's **real
 wire format** (still wrapped in a syslog `<PRI>` header) by the matching formatter
 in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424 toggle does **not**
@@ -288,8 +330,8 @@ feed doesn't flood **Detections**. A file replay still takes precedence, and
 clicking a selected appliance again (or **clear** / **Reset**) restores the mix.
 
 `Syslogger.scenarioList()` exposes a **`transport`** field (`native` | `agent` |
-`api`, defaulting to `native`). 29 of the 41 sources are `native` — the device
-speaks syslog itself. Twelve are not, and say so with a badge on their button and
+`api`, defaulting to `native`). 29 of the 42 sources are `native` — the device
+speaks syslog itself. Thirteen are not, and say so with a badge on their button and
 in the hover title.
 
 **`agent`** — the telemetry exists locally but something else has to put it on the
@@ -318,6 +360,14 @@ re-emits the JSON:
 - **`azure`** — the Activity Log is read from an Event Hub or the Monitor API.
 - **`m365`** — the unified audit log comes from the Office 365 Management
   Activity API.
+- **`defender`** — Defender for Endpoint publishes through the Defender XDR
+  streaming API (an Event Hub or storage account) or the alerts API; there is no
+  syslog anywhere in the product.
+
+**Configuring these for real** — agent config files, connector design, the
+Microsoft 365 / Entra ID / Defender feeds, the exact permissions each one needs,
+and how to prove the path with this simulator — is
+[`CONNECTORS.md`](CONNECTORS.md).
 
 The distinction is deliberate: this is a tool for learning log ingestion, so a
 source that cannot actually reach a collector without an agent or a connector must
@@ -350,7 +400,11 @@ Five detection paths cover the malicious events in each burst:
   **`phishing`**, `ivanti` joins NetScaler on **`vpn-brute`**, `infoblox` and
   `umbrella` join BIND on **`dns-tunneling`**, `cyberark` adds a vault branch to
   **`password-store-theft`**, and `azure` and `m365` join CloudTrail on
-  **`cloud-threat`** — three control planes, one rule.
+  **`cloud-threat`** — three control planes, one rule. `defender` is the newest
+  case: an EDR verdict is the same shape as an IPS signature, so it feeds
+  **`appliance-threat`** — but because Defender ships `AttackTechniques` with
+  every alert, the rule now takes the sensor's own ATT&CK mapping (`threatTactic`
+  / `threatTechnique`) in preference to guessing one from the signature text.
 
 | ID | Appliance | Format | Detection | Malicious signature / trigger |
 |----|-----------|--------|-----------|-------------------------------|
@@ -395,6 +449,7 @@ Five detection paths cover the malicious events in each burst:
 | `umbrella` | Cisco Umbrella (DNS) — **api** | quoted CSV | `dns-tunneling` | `Blocked` verdict on a threat-intel domain with `blockedCategories` *Command and Control* |
 | `azure` | Azure Activity Log — **api** | Activity Log JSON | `cloud-threat` | one of diagnostic-settings delete, `roleAssignments/write` Owner, `listKeys`, key-vault policy write |
 | `m365` | Microsoft 365 audit — **api** | unified-audit `AuditData` JSON | `cloud-threat` | `New-InboxRule` forwarding externally with `DeleteMessage True` |
+| `defender` | Defender for Endpoint — **api** | Defender XDR `AlertInfo` / `AlertEvidence` JSON | `appliance-threat` | one High alert (credential dumping / Cobalt Strike C2 / backup deletion) carrying its own `AttackTechniques`, alongside informational ones |
 
 ### Example wire lines
 
@@ -532,6 +587,46 @@ all, and `outcome.reason` distinguishes a rejected MFA push from an expired one:
 <180>Aug 13 14:22:28 okta-connector-01 okta_systemlog: {"uuid":"4059a24f-fdba-453a-a664-01414a20a1b5","published":"2026-08-13T12:22:28.851Z","eventType":"user.authentication.auth_via_mfa","version":"0","severity":"WARN","displayMessage":"Authentication of user via MFA","actor":{"id":"00u3e4f4h4a","type":"User","alternateId":"mchen@corp.local","displayName":"mchen"},"client":{"userAgent":{"rawUserAgent":"Mozilla/5.0 (Windows NT 10.0; Win64; x64)","os":"Windows 10","browser":"CHROME"},"zone":"null","device":"Computer","ipAddress":"193.36.119.7","geographicalContext":{"city":"Shenzhen","country":"China","geolocation":{"lat":22.54,"lon":114.06}}},"outcome":{"result":"FAILURE","reason":"FAILED_PUSH_VERIFY_REJECTED"},"authenticationContext":{"authenticationProvider":"OKTA_AUTHENTICATION_PROVIDER","credentialType":"OTP"},"securityContext":{"asNumber":4134,"isProxy":true},"target":null}
 ```
 
+**Microsoft 365 unified audit** — one feed for a dozen products. The common
+fields are always there; everything after `ClientAppId` is what *this* workload
+adds, which is why a parser for it has to treat the schema as a union rather than
+a fixed record. A SharePoint download:
+
+```
+<180>Aug 13 14:22:31 o365-connector-01 o365_audit: {"CreationTime":"2026-08-13T12:22:31","Id":"dd6cc5ed-4393-4beb-acc8-b35fd4405965","Operation":"FileDownloaded","OrganizationId":"8f4a1c62-77d3-4b0e-9a55-2c1de9f80b31","RecordType":6,"ResultStatus":"Succeeded","UserKey":"8C1C70E1E2AE2B3E0E3BB73C","UserType":0,"Version":1,"Workload":"SharePoint","ClientIP":"91.219.236.19","ActorIpAddress":"91.219.236.19","UserId":"contractor@corp.example","ObjectId":"https://corp.sharepoint.com/sites/Finance/Shared Documents/Salary-bands.xlsx","Parameters":null,"MailboxOwnerUPN":"contractor@corp.example","ClientAppId":"5a883007-b221-48dd-b37c-bdff99623630","SiteUrl":"https://corp.sharepoint.com/sites/Finance/","SourceRelativeUrl":"Shared Documents/Salary-bands.xlsx","SourceFileName":"Salary-bands.xlsx","SourceFileExtension":"xlsx","ItemType":"File","EventSource":"SharePoint","UserAgent":"Microsoft SkyDriveSync 24.086.0428.0003"}
+```
+
+…and an Exchange mailbox sync, where the same envelope carries
+`OperationProperties` and `Folders` instead:
+
+```
+<180>Aug 13 14:22:33 o365-connector-01 o365_audit: {"CreationTime":"2026-08-13T12:22:33","Id":"0393eaa6-c66d-42e9-9324-8e712683bb99","Operation":"MailItemsAccessed","OrganizationId":"8f4a1c62-77d3-4b0e-9a55-2c1de9f80b31","RecordType":2,"ResultStatus":"Succeeded","UserKey":"40E53D04F904AB6F8A2FAE59","UserType":0,"Version":1,"Workload":"Exchange","ClientIP":"185.220.101.44","ActorIpAddress":"185.220.101.44","UserId":"asmith@corp.example","ObjectId":"asmith@corp.example\\Finance","Parameters":null,"MailboxOwnerUPN":"asmith@corp.example","ClientAppId":"da45730d-9a05-4962-8d30-ddb09776a35d","ClientInfoString":"Client=WebServices;Action=Sync;Microsoft Office/16.0 (Exchange Web Services)","OperationProperties":[{"Name":"MailAccessType","Value":"Sync"},{"Name":"IsThrottled","Value":"False"}],"Folders":[{"Path":"\\Finance","FolderItems":[{"InternetMessageId":"<2b443bea7b2aa1d8@corp.example>"}]}]}
+```
+
+**Microsoft Entra ID `AuditLogs`** — the *other* category on the same connector.
+A sign-in record says who authenticated; this says what changed, and the evidence
+is entirely in `targetResources[].modifiedProperties` — old value beside new:
+
+```
+<178>Aug 13 14:22:35 entra-connector-01 entra_audit: {"time":"2026-08-13T12:22:35.613Z","resourceId":"/tenants/8f4a1c62-77d3-4b0e-9a55-2c1de9f80b31/providers/Microsoft.aadiam","operationName":"Update conditional access policy","category":"AuditLogs","tenantId":"8f4a1c62-77d3-4b0e-9a55-2c1de9f80b31","resultType":"success","properties":{"id":"dd6509c9-ae1c-4d60-893b-20f1df94e090","activityDateTime":"2026-08-13T12:22:35.613Z","activityDisplayName":"Update conditional access policy","category":"Policy","loggedByService":"Conditional Access","operationType":"Update","result":"success","initiatedBy":{"user":{"id":"baff708f-1033-45c6-9bf8-292bc560f81d","userPrincipalName":"svc_admin@corp.local","ipAddress":"185.220.101.44"}},"targetResources":[{"type":"Policy","displayName":"CA001: Require MFA for all users","userPrincipalName":null,"id":"5ca3cbf8-d6c8-432c-8f85-879ed5144e0f","modifiedProperties":[{"displayName":"ConditionalAccessPolicy","oldValue":"{\"state\":\"enabled\",\"conditions\":{\"users\":{\"excludeUsers\":[]}}}","newValue":"{\"state\":\"enabledForReportingButNotEnforced\",\"conditions\":{\"users\":{\"excludeUsers\":[\"494f24a5-6c9e-4576-87d4-619970472f47\"]}}}"}]}]}}
+```
+
+**Microsoft Defender for Endpoint** — an alert from the Defender XDR streaming
+API. Note `AttackTechniques`: the sensor has already made the ATT&CK mapping, so
+`appliance-threat` uses it instead of inferring one from the title. The command
+line stays in `ProcessCommandLine` and out of the syslog message, which is what
+keeps the behavioural rules from re-detecting a verdict Defender already reached:
+
+```
+<170>Aug 13 14:22:37 WIN-FS02 defender_xdr: {"Timestamp":"2026-08-13T12:22:37.618Z","AlertId":"da626067564_53d8250a","Title":"Suspicious credential dumping activity","Description":"Suspicious credential dumping activity on WIN-FS02. Process blocked.","Category":"CredentialAccess","Severity":"High","ServiceSource":"Microsoft Defender for Endpoint","DetectionSource":"EDR","AttackTechniques":["T1003.001"],"Status":"New","DeviceId":"48f89511e88feed99f062e6296cd30b041cca87a","DeviceName":"WIN-FS02","DeviceLocalIP":"10.10.3.20","AccountDomain":"CORP","AccountName":"kwalsh","FileName":"rundll32.exe","FolderPath":"C:\\Windows\\System32","SHA256":"546b018cf8e072b6a88646031aa7108ee4680d57e8a5c44ade55b9d7d2f566d9","ProcessCommandLine":"rundll32.exe comsvcs.dll, MiniDump 712 C:\\Windows\\Temp\\out.dmp full","RemoteIP":"91.219.236.19","RemoteUrl":"https://kx7z2q-c2.badnet.ru/","RemediationAction":"Process blocked","AlertLink":"https://security.microsoft.com/alerts/da626067564_53d8250a"}
+```
+
+For every one of these four, the syslog `host` is the **connector**, not the
+machine the event happened on — the device is `DeviceName`, the site is
+`SiteUrl`, the mailbox is `MailboxOwnerUPN`. Grouping an API feed by syslog host
+puts a whole tenant on one box; see the field-mapping table in
+[`CONNECTORS.md`](CONNECTORS.md#7-field-mapping-cheat-sheet).
+
 Click any appliance event in the live stream to open the drawer and see its full
 raw wire line alongside the parsed fields.
 
@@ -582,16 +677,16 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `ids-malware` | IDS Malware Signature | Suricata/ET trojan/exploit | T1204 |
 | `radius-brute` | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` failures / MAC / 60 s | T1110 |
 | `auditd-rootshell` | Root Shell From Unprivileged Login | auditd `SYSCALL`, `auid` set & ≠0, `uid=0`, `key="rootshell"` | T1548 |
-| `appliance-threat` | Appliance IPS / WAF Signature | any `threatSig` present | T1190 (by signature) |
-| `web-exploit` | Web Application Attack | Log4Shell / XSS / traversal / web shell / scanner UA / `169.254.169.254` metadata SSRF | T1190·T1059·T1083·T1505.003·T1595·T1552.005 |
+| `appliance-threat` | Appliance IPS / WAF Signature | any `threatSig` present; a source that also sets `threatTechnique` (Defender's `AttackTechniques`) keeps its own ATT&CK mapping | T1190 (by signature) |
+| `web-exploit` | Web Application Attack | Log4Shell / Exchange Autodiscover SSRF (ProxyShell / ProxyNotShell) / XSS / traversal / web shell / scanner UA / `169.254.169.254` metadata SSRF | T1190·T1059·T1083·T1505.003·T1595·T1552.005 |
 | `windows-threat` | Windows Security Event | 4625 brute/spray, 4768 no-preauth RC4, 4769 RC4 or blank domain, 4662 repl, 4732/4720, 1102, 4624 PtH, 7045 PsExec (`windows` + `snare` sources) | T1110·T1558.001·T1558.003·T1558.004·T1003.006·T1136·T1070.001·T1550.002·T1021.002 |
 | `cred-dumping` | Credential Dumping (LSASS) | Sysmon **10** into `lsass.exe` with `0x1010/0x1410/0x1438/0x143a`, or `comsvcs MiniDump` / procdump / mimikatz on a command line | T1003.001 |
 | `persistence-mech` | Persistence Mechanism Created | `CurrentVersion\Run` write, `schtasks /create` or 4698, `sc create` or 7045 (PsExec-style names excluded) | T1547.001·T1053.005·T1543.003 |
 | `lolbin-abuse` | LOLBin Download / Proxy Execution | `certutil -urlcache/-decode`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` | T1105·T1218 |
-| `security-tooling-disabled` | Security Tooling Disabled | `DisableRealtimeMonitoring`, `-ExclusionPath`, AMSI patch markers, `net stop windefend` | T1562.001 |
+| `security-tooling-disabled` | Security Tooling Disabled | `DisableRealtimeMonitoring`, `-ExclusionPath`, AMSI patch markers, `net stop windefend`, or an EDR's own tamper verdict (Defender: tamper protection off, scan exclusion added, sensor stopped) | T1562.001 |
 | `ad-recon` | Active Directory Enumeration | SharpHound / BloodHound / AdFind / `Get-Domain*` on a command line, or ≥ 10 × 4662 directory reads / account / 60 s | T1087.002 |
-| `cloud-threat` | Cloud Control-Plane Abuse | three control planes in one rule — CloudTrail `eventName` (trail/detector deletion, IAM credential creation, admin policy attach, public bucket, root console login), Azure `operationName` (diagnostic-settings delete, privileged `roleAssignments/write`, `listKeys`, key-vault policy write), Microsoft 365 `New/Set-InboxRule` forwarding externally | T1562.008·T1098.001·T1098.003·T1530·T1078.004·T1552.001·T1555·T1114.003 |
-| `identity-threat` | Identity Provider Threat | Okta `user.session.start` successes from ≥ 2 countries / hour, or an MFA-factor / policy / privilege change | T1078.004·T1098.003 |
+| `cloud-threat` | Cloud Control-Plane Abuse | three control planes in one rule — CloudTrail `eventName` (trail/detector deletion, IAM credential creation, admin policy attach, public bucket, root console login), Azure `operationName` (diagnostic-settings delete, privileged `roleAssignments/write`, `listKeys`, key-vault policy write), and Microsoft 365 via `m365Verdict()`: forwarding rules, org-wide transport rules, audit logging switched off, anonymous sharing links, external Teams guests, eDiscovery search and export, Power Automate exfil flows, mailbox `Sync` bursts (≥ 8 / 10 min) and file-download bursts (≥ 12 / 10 min) | T1562.008·T1098.001·T1098.003·T1530·T1078.004·T1552.001·T1555·T1114.002·T1114.003·T1199·T1213·T1213.002·T1567 |
+| `identity-threat` | Identity Provider Threat | Okta `user.session.start` successes from ≥ 2 countries / hour, or an MFA-factor / policy / privilege change; Entra `SignInLogs` (legacy-auth CA bypass, OAuth consent, impossible travel) and `AuditLogs` (security-info / authentication-method change, Conditional Access policy weakened or deleted) | T1078.004·T1098.003·T1528·T1556.006·T1556.009 |
 | `mfa-fatigue` | MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, then a **critical** follow-up if one is finally approved | T1621 |
 | `reverse-shell` | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | `susp-powershell` | Suspicious PowerShell | `-enc` / `FromBase64String` / hidden window | T1059.001 |
@@ -1181,7 +1276,8 @@ sudo ufw allow out 514/udp          # syslog egress (adjust to your collector)
 - **New appliance format** — add a formatter to `VENDOR_FORMATTERS` in
   `js/data.js` and a generator to `APPLIANCE` in `js/syslogger.js`, plus a
   `SOURCE_META` entry in `js/ui.js`.
-- **New attack scenario** — add an entry to `MORE_ATTACKS` (or `SCENARIOS`) in
+- **New attack scenario** — add an entry to `MORE_ATTACKS` (or `SCENARIOS`, or
+  `PRODUCT_ATTACKS` when it is aimed at one product's own log source) in
   `js/syslogger.js`; set `threatSig` or emit content a rule matches.
 - **New detection rule** — push a rule object into `makeRules()` in `js/jedi.js`.
   Use `ctx.window()` / `ctx.windowSet()` / `ctx.cooldown()` for correlation.
@@ -1201,7 +1297,10 @@ Four conventions worth keeping:
 3. **One burst, one alert.** Rules have no global cooldown, so a burst where every
    line carries `threatSig` raises an alert per line. Either tag only the final
    event, or let a stateful rule correlate the burst (`radius-brute`).
-4. **Update the counts** in `README.md`, this file, and `CLAUDE.md`.
+4. **Update the counts** in `README.md`, this file, `about.html` and `CLAUDE.md`.
+5. **Say how it reaches a collector.** A new `api` or `agent` source needs a
+   matching entry in `CONNECTORS.md`, or the tool shows a feed nobody can
+   actually stand up.
 
 Every scenario should be wired to at least one rule — the headless harness pattern
 (load `js/*` under a stubbed `window`, inject each scenario, assert alerts fire) is
