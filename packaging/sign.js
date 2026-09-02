@@ -27,7 +27,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..');
-const { VERSION, RELEASED, UPDATE_PUBKEY, UPDATE_CHANNEL } = require('../js/version.js');
+const { VERSION, RELEASED, UPDATE_PUBKEY, UPDATE_CHANNEL, UPDATE_APP } = require('../js/version.js');
 
 const argv = process.argv.slice(2);
 const flag = (name, def) => {
@@ -104,33 +104,28 @@ function keyPair() {
 }
 
 // ---- artefacts -------------------------------------------------------------
-// Which file serves which platform. The keys are `${process.platform}-${process.arch}`
-// so a running build can look itself up without guessing.
-function artifactMap(files, baseUrl) {
-  const find = (re) => files.find((f) => re.test(f)) || null;
-  const url = (f) => (f ? new URL(f, baseUrl.endsWith('/') ? baseUrl : baseUrl + '/').toString() : null);
-  const portable = find(/\.tar\.gz$/);
-  const zip = find(/\.zip$/);
-  const single = find(/^jedi-[\d.]+\.js$/);
-  const deb = find(/\.deb$/);
-  const rpm = find(/\.rpm$/);
-  const arch = find(/\.pkg\.tar\.(zst|xz)$/);
+// What each file is, in the store's own vocabulary. "any" where a file really
+// does serve everything: the tarball runs on Linux and macOS on either CPU, and
+// claiming linux-x64 to look tidy would hide it from every Mac.
+function describe(file) {
+  if (/\.deb$/.test(file)) return { platform: 'linux', arch: 'all', format: 'deb' };
+  if (/\.zip$/.test(file)) return { platform: 'win32', arch: 'any', format: 'zip' };
+  if (/\.tar\.gz$/.test(file)) return { platform: 'any', arch: 'any', format: 'tar.gz' };
+  if (/^jedi-[\d.]+\.js$/.test(file)) return { platform: 'any', arch: 'any', format: 'js' };
+  if (/\.rpm$/.test(file)) return { platform: 'linux', arch: 'noarch', format: 'rpm' };
+  if (/\.pkg\.tar\.(zst|xz)$/.test(file)) return { platform: 'linux', arch: 'any', format: 'pacman' };
+  return { platform: 'any', arch: 'any', format: 'bin' };
+}
 
-  const entry = (file, kind) => (file ? { kind, file, url: url(file), sha256: null } : null);
-  const map = {
-    'linux-x64': entry(portable, 'portable'),
-    'linux-arm64': entry(portable, 'portable'),
-    'darwin-arm64': entry(portable, 'portable'),
-    'darwin-x64': entry(portable, 'portable'),
-    'win32-x64': entry(zip, 'portable'),
-    'win32-arm64': entry(zip, 'portable'),
-  };
-  // Native packages are additional, not a replacement: a Debian box can take
-  // either, and the manifest should say so.
-  const extra = { debian: entry(deb, 'deb'), redhat: entry(rpm, 'rpm'), arch: entry(arch, 'pacman'), any: entry(single, 'single-file') };
-  for (const [k, v] of Object.entries(extra)) if (v) map[k] = v;
-  for (const k of Object.keys(map)) if (!map[k]) delete map[k];
-  return map;
+// Canonical JSON: keys sorted at every depth, no incidental whitespace. The
+// signature covers *these* bytes, which is what lets the store re-serialise the
+// document however it likes and still verify it. Sign a pretty-printed blob and
+// the signature breaks the first time anything reformats it.
+function canonical(value) {
+  if (Array.isArray(value)) return value.map(canonical);
+  if (value && typeof value === 'object')
+    return Object.keys(value).sort().reduce((o, k) => { o[k] = canonical(value[k]); return o; }, {});
+  return value;
 }
 
 function sha256(file) {
@@ -176,37 +171,77 @@ if (!files.length) die(`dist/ has no artefacts for version ${VERSION}`, 'run ./p
 
 const { priv, from, expected } = keyPair();
 
-const artifacts = artifactMap(files, baseUrl);
-for (const a of Object.values(artifacts)) a.sha256 = sha256(path.join(DIST, a.file));
+const artifacts = files.sort().map((f) => Object.assign(
+  { filename: f, size: fs.statSync(path.join(DIST, f)).size, sha256: sha256(path.join(DIST, f)) },
+  describe(f)));
 
-// The signed payload is a string, and it is what gets hashed. Serialise once,
-// sign those exact bytes, and never re-serialise on the way out.
-const payload = JSON.stringify({
+// The document, minus its own signature. `app` is in here on purpose: the store
+// checks the signed manifest names the app it is being attached to, so a
+// manifest cannot be replayed onto a different application.
+const doc = {
+  app: String(flag('app', UPDATE_APP)),
   name: 'APEX JediSyslogger',
   version: VERSION,
   released: RELEASED,
   channel,
-  notes: typeof notes === 'string' ? notes : undefined,
   artifacts,
-}, null, 2);
+};
+if (typeof notes === 'string') doc.notes = notes;
 
-const signature = crypto.sign(null, Buffer.from(payload, 'utf8'), priv).toString('base64');
+const signedBytes = Buffer.from(JSON.stringify(canonical(doc)), 'utf8');
+const signature = crypto.sign(null, signedBytes, priv).toString('base64');
 
-// Verify our own output before publishing it, with the public key a shipped
-// build would use — not the one we just derived.
-const check = crypto.verify(null, Buffer.from(payload, 'utf8'),
+// Verify our own output before publishing it, using the public key a shipped
+// build would use — not the one we just derived from the private half.
+const check = crypto.verify(null, signedBytes,
   crypto.createPublicKey({ key: { kty: 'OKP', crv: 'Ed25519', x: expected }, format: 'jwk' }),
   Buffer.from(signature, 'base64'));
 if (!check) die('self-check failed: the signature does not verify against the expected public key');
 
+const payload = JSON.stringify(doc, null, 2);
+
 const outDir = path.join(DIST, 'publish');
 fs.mkdirSync(outDir, { recursive: true });
-fs.writeFileSync(path.join(outDir, `${channel}.json`), JSON.stringify({ manifest: payload, signature }, null, 2) + '\n');
-for (const a of Object.values(artifacts)) fs.copyFileSync(path.join(DIST, a.file), path.join(outDir, a.file));
+// One self-contained document, signature included — the shape the store's
+// "attach signed manifest" endpoint takes, and the shape its paste field wants.
+fs.writeFileSync(path.join(outDir, `${channel}.json`), JSON.stringify(Object.assign({}, doc, { signature }), null, 2) + '\n');
+for (const a of artifacts) fs.copyFileSync(path.join(DIST, a.filename), path.join(outDir, a.filename));
+
+// A written checklist, not just terminal output: whoever uploads may not be
+// whoever signed, and "where does each file go" is the step that gets it wrong.
+const manifestUrl = require('../js/version.js').UPDATE_URL;
+fs.writeFileSync(path.join(outDir, 'UPLOAD.txt'), [
+  `APEX JediSyslogger ${VERSION} — upload checklist`,
+  ``,
+  `Every file in this directory goes to the Apex Update Server. Two rules:`,
+  ``,
+  `  Publish with:  node packaging/publish.js`,
+  ``,
+  `  or by hand: attach ${channel}.json to release ${VERSION} of app "${doc.app}"`,
+  `  and publish it to the ${channel} channel. Clients read the manifest from`,
+  `       ${manifestUrl}`,
+  `  which must be readable WITHOUT signing in — it is signed, so it does not`,
+  `  need to be secret, and a login page served in its place is what an update`,
+  `  check would receive.`,
+  ``,
+  `  Artefacts:`,
+  ...artifacts.map((a) => `       ${a.filename.padEnd(38)} ${a.platform}/${a.arch}/${a.format}`),
+  ``,
+  `Files in this directory:`,
+  ...fs.readdirSync(outDir).filter((f) => f !== 'UPLOAD.txt').sort()
+    .map((f) => `  ${f.padEnd(46)} ${fs.statSync(path.join(outDir, f)).size} bytes`),
+  ``,
+  `Checksums are inside the signed manifest, so a corrupted upload is detected`,
+  `by clients, not just by you.`,
+  ``,
+  `Afterwards, verify from outside:`,
+  `  ./packaging/verify-published.sh`,
+  ``,
+].join('\n'));
 
 process.stderr.write(`\n  signed with the key from ${from}\n`);
 process.stderr.write(`  self-check: signature verifies against UPDATE_PUBKEY\n\n`);
-process.stderr.write(`  dist/publish/${channel}.json  → ${new URL(`${channel}.json`, 'https://atlasupdate.cybercontrol.tech/')}\n`);
-for (const [plat, a] of Object.entries(artifacts))
-  process.stderr.write(`    ${plat.padEnd(14)} ${a.file}\n`);
-process.stderr.write(`\n  upload dist/publish/ to the web root, keeping ${channel}.json at the top level.\n\n`);
+process.stderr.write(`  dist/publish/${channel}.json — ${artifacts.length} artefacts, ${signedBytes.length} signed bytes\n`);
+for (const a of artifacts)
+  process.stderr.write(`    ${a.filename.padEnd(38)} ${a.platform}/${a.arch}/${a.format}\n`);
+process.stderr.write(`\n  publish with:  node packaging/publish.js\n\n`);

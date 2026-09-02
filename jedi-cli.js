@@ -278,7 +278,11 @@ function cmdUpdate(flags) {
       process.exit(0);
     }
     if (r.upToDate) {
-      process.stdout.write(`${C.green}Up to date${C.reset} — ${NAME} ${r.current} (channel ${r.channel}, signature verified)\n`);
+      // Be exact about what was checked. The store only hands back a signed
+      // manifest when it is offering an upgrade, so "you are current" is its
+      // word, not arithmetic on something this build verified.
+      process.stdout.write(`${C.green}Up to date${C.reset} — ${NAME} ${r.current} (channel ${r.channel})` +
+        `${r.verified ? `  ${C.grey}signature verified${C.reset}` : `  ${C.grey}per the update store; no signed manifest is returned when current${C.reset}`}\n`);
       process.exit(0);
     }
     process.stdout.write(`${C.bold}${C.yellow}Update available${C.reset}  ${r.current} → ${C.bold}${r.latest}${C.reset}` +
@@ -287,10 +291,12 @@ function cmdUpdate(flags) {
     process.stdout.write(`\n${C.grey}signature verified against this build's key${C.reset}\n`);
     const a = r.artifact;
     if (a) {
-      process.stdout.write(`\nFor ${r.platform}:\n  ${a.url}\n  sha256 ${a.sha256}\n`);
+      process.stdout.write(`\nFor ${r.platform}:  ${C.bold}${a.filename}${C.reset} (${(a.size / 1024).toFixed(0)} KB, ${a.format})\n` +
+        `  ${a.url}\n  sha256 ${a.sha256}\n`);
     } else {
       process.stdout.write(`\nNo artefact published for ${r.platform}. Available:\n`);
-      for (const [k, v] of Object.entries(r.artifacts)) process.stdout.write(`  ${k.padEnd(14)} ${v.file}\n`);
+      for (const v of r.artifacts)
+        process.stdout.write(`  ${v.filename.padEnd(40)} ${v.platform}/${v.arch}/${v.format}\n`);
     }
     process.stdout.write(`\n${C.dim}Install it the way you installed this copy — apt, dnf, pacman, brew,\n` +
       `or by unpacking the archive. This command does not self-update on purpose.${C.reset}\n`);

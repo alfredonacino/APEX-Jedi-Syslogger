@@ -6,7 +6,7 @@
 %global appdir  %{_datadir}/%{appname}
 
 Name:           apex-jedisyslogger
-Version:        1.0.0
+Version:        1.0.2
 Release:        1%{?dist}
 Summary:        SIEM log-ingestion simulator with a terminal dashboard
 

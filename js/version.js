@@ -14,7 +14,7 @@
   else { global.JS = global.JS || {}; global.JS.VERSION = api.VERSION; global.JS.RELEASED = api.RELEASED; }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   return {
-    VERSION: '1.0.0',
+    VERSION: '1.0.2',
     RELEASED: '2026-09-02',
     NAME: 'APEX JediSyslogger',
 
@@ -29,7 +29,11 @@
     // any build log. `packaging/sign.js` reads it from JEDI_PUBLISH_KEY or from
     // a file outside the tree, and refuses to run if it does not match the key
     // below. See DOCUMENTATION.md §16.6.
-    UPDATE_URL: 'https://atlasupdate.cybercontrol.tech/',
+    // The origin of the Apex Update Server. Paths are built from UPDATE_APP,
+    // so a mirror only needs this one value changed. Baked into every artefact
+    // at build time, which is why it must be right before anything is packaged.
+    UPDATE_URL: 'https://atlasupdate.cybercontrol.tech',
+    UPDATE_APP: 'apex-jedisyslogger-portable',
     UPDATE_PUBKEY: '5n-pji7b1FvJEpjhgpjyu8sUFL7TOcgFQ34-93PuVh0',
     UPDATE_CHANNEL: 'stable',
   };

@@ -18,6 +18,7 @@ declare module 'net';
 declare module 'fs';
 declare module 'path';
 declare module 'readline';
+declare module 'os';
 
 declare var require: any;
 declare var module: any;

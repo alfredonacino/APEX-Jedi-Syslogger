@@ -5,7 +5,7 @@
 # this installs the tree and a launcher. Keep pkgver in step with js/version.js —
 # `packaging/version.sh --check` fails the build if it drifts.
 pkgname=apex-jedisyslogger
-pkgver=1.0.0
+pkgver=1.0.2
 pkgrel=1
 pkgdesc="SIEM log-ingestion simulator — terminal dashboard, 72 attack scenarios, 42 appliance formats"
 arch=('any')
