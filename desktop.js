@@ -31,6 +31,10 @@ const ROOT = __dirname;
 const { VERSION, NAME } = require('./js/version.js');
 
 const DEBUG = process.argv.includes('--debug');
+// Below this, a browser exit means "handed off", not "window closed".
+const HANDOFF_MS = 5000;
+// If no page ever checks in, something rendered nothing; do not wait forever.
+const FIRST_BEAT_MS = 90000;
 const log = (msg) => process.stderr.write(`  ${msg}\n`);
 
 // ── Where the window keeps its profile ───────────────────────────────────
@@ -43,6 +47,45 @@ function profileDir() {
   if (process.platform === 'darwin')
     return path.join(home, 'Library', 'Application Support', 'apex-jedisyslogger', 'window');
   return path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'apex-jedisyslogger', 'window');
+}
+
+// ── Reporting a failure that nobody can see ──────────────────────────────
+// Launched from a menu, a Dock or a Start Menu shortcut there is no terminal,
+// so a message on stderr goes nowhere and the app just "closes right away".
+// Everything that can end the launch early comes through here: it leaves a log
+// on disk and puts a dialog on screen when there is no console to read.
+function dataDir() {
+  return path.dirname(profileDir());
+}
+
+function reportFailure(summary, detail) {
+  const dir = dataDir();
+  let logPath = null;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    logPath = path.join(dir, 'last-launch.log');
+    fs.writeFileSync(logPath, `${new Date().toISOString()}  ${NAME} ${VERSION}\n\n${summary}\n\n${detail || ''}\n`);
+  } catch (e) { /* a log we cannot write is not worth failing over */ }
+
+  process.stderr.write(`\n  ${summary}\n${detail ? '\n' + detail + '\n' : ''}`);
+  if (logPath) process.stderr.write(`\n  written to ${logPath}\n`);
+
+  // With a terminal attached the text above is enough.
+  if (process.stderr.isTTY) return;
+
+  const body = `${summary}\n\n${logPath ? 'Details: ' + logPath : ''}`;
+  try {
+    if (process.platform === 'darwin') {
+      spawn('osascript', ['-e', `display alert "${NAME}" message ${JSON.stringify(body)}`], { stdio: 'ignore' });
+    } else if (process.platform === 'win32') {
+      spawn('mshta', [`javascript:alert(${JSON.stringify(body)});close();`], { stdio: 'ignore' });
+    } else {
+      const gui = onPath('zenity') ? ['zenity', ['--error', '--no-wrap', `--text=${body}`]]
+        : onPath('kdialog') ? ['kdialog', ['--error', body]]
+        : null;
+      if (gui) spawn(gui[0], gui[1], { stdio: 'ignore' });
+    }
+  } catch (e) { /* no dialog available; the log stands */ }
 }
 
 // ── Finding something that can render a window ───────────────────────────
@@ -134,11 +177,20 @@ function main() {
 
   child.on('exit', (code) => {
     if (!started) {
-      log(`the backend stopped before it was ready (exit ${code}).`);
-      if (!DEBUG) process.stderr.write(buffer.split('\n').slice(-12).join('\n') + '\n');
-      log('run `jedi desktop --debug` to see the whole log.');
+      reportFailure(
+        `${NAME} could not start (the backend exited with code ${code}).`,
+        `Common causes:\n` +
+        `  • Node.js 18 or newer is required — this ran ${process.version}\n` +
+        `  • the install directory is read-only (it needs to write auth.json)\n` +
+        `  • another copy is already running\n\n` +
+        `Backend output:\n${buffer.split('\n').slice(-15).join('\n')}`);
     }
     shutdown(code || 0);
+  });
+
+  child.on('error', (e) => {
+    reportFailure(`${NAME} could not start Node.js.`, e.message);
+    shutdown(1);
   });
 
   function openWindow(url) {
@@ -148,8 +200,10 @@ function main() {
       log(`no Chromium-family browser found, so this cannot open as its own window.`);
       log(`Opening ${shown} in your default browser instead — it will be an ordinary tab.`);
       log(`Install Chromium, Chrome, Brave or Edge for the desktop window, or set JEDI_BROWSER.`);
-      if (!openDefault(url)) log(`could not open a browser at all. Visit: ${url}`);
-      log(`Press Ctrl+C to stop.`);
+      if (!openDefault(url))
+        reportFailure(`${NAME} could not open a browser.`,
+          `No Chromium, Chrome, Brave or Edge was found, and the system could not\n` +
+          `open a default browser either.\n\nOpen this address manually:\n${url}`);
       return;
     }
     const dir = profileDir();
@@ -172,11 +226,40 @@ function main() {
     log(`${NAME} ${VERSION}`);
     log(`window: ${path.basename(browser)}   backend: ${shown.replace('/launch', '')}`);
     log(`close the window to stop.`);
+    const openedAt = Date.now();
+    // Nothing has rendered if the page never checks in. Say so rather than
+    // sitting at a prompt that looks like it is working.
+    const idleWarn = /** @type {any} */ (setTimeout(() => {
+      if (shuttingDown) return;
+      const url = shown.replace('/launch', '');
+      require('http').get(`${url}/status`, (r) => r.resume())
+        .on('error', () => {});
+      log(`still no window after ${FIRST_BEAT_MS / 1000}s. If nothing appeared, run`);
+      log(`  jedi desktop --debug        to see the backend log, or`);
+      log(`  JEDI_BROWSER=/path/to/browser jedi desktop`);
+    }, FIRST_BEAT_MS));
+    if (idleWarn && typeof idleWarn.unref === 'function') idleWarn.unref();
     window = spawn(browser, args, { stdio: 'ignore' });
-    window.on('exit', () => shutdown(0));
+    window.on('exit', () => {
+      // A browser that exits immediately did not close a window — it handed our
+      // URL to an instance that was already running (a profile already in use, a
+      // Snap or Flatpak wrapper, Chrome already open on Windows or macOS) and
+      // then quit. Treating that as "the user closed the app" is what made the
+      // window vanish the moment it appeared. The window is still there; it just
+      // belongs to another process now, so let the page's own heartbeat decide.
+      if (Date.now() - openedAt < HANDOFF_MS) {
+        window = null;
+        log(`the window opened in an existing browser process — watching the app instead of that process.`);
+        return;
+      }
+      shutdown(0);
+    });
     window.on('error', (e) => {
-      log(`could not start ${browser}: ${e.message}`);
-      if (!openDefault(url)) log(`visit: ${url}`);
+      // The browser we found will not run. Fall back before giving up, and only
+      // complain if that fails too.
+      if (!openDefault(url))
+        reportFailure(`${NAME} could not open a window.`,
+          `Tried: ${browser}\n${e.message}\n\nOpen this address manually:\n${url}`);
     });
   }
 
@@ -184,5 +267,6 @@ function main() {
   process.on('SIGTERM', () => shutdown(0));
 }
 
+
 if (require.main === module) main();
-module.exports = { findBrowser, profileDir };
+module.exports = { findBrowser, profileDir, HANDOFF_MS, FIRST_BEAT_MS };

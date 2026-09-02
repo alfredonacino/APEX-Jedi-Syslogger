@@ -311,6 +311,18 @@
   // The backend gates the whole app, so reaching this code already means a valid
   // session (or JEDI_AUTH=off). This only surfaces who that is, and offers the
   // way out.
+  // Beat while the window lives; say goodbye as it closes so the backend stops
+  // promptly instead of waiting out the grace period. A reload also fires
+  // pagehide, which is why the goodbye shortens the grace rather than ending it.
+  function startDesktopHeartbeat() {
+    const beat = () => fetch('/desktop/ping').catch(() => {});
+    beat();
+    setInterval(beat, 5000);
+    window.addEventListener('pagehide', () => {
+      if (navigator.sendBeacon) navigator.sendBeacon('/desktop/bye');
+    });
+  }
+
   async function wireAuth() {
     const badge = $('#auth-badge');
     $('#btn-logout').addEventListener('click', async () => {
@@ -319,6 +331,11 @@
     });
     try {
       const s = await (await fetch('/auth/session')).json();
+      // Desktop build: this page IS the application window, so it is what tells
+      // the backend it is still open. The browser process cannot be trusted to
+      // say so — it may have handed the URL to an already-running instance and
+      // exited immediately.
+      if (s.desktop) startDesktopHeartbeat();
       if (!s.authRequired || !s.user) return;   // auth disabled, or served statically
       const who = `signed in as <span class="auth-who">${escapeHtml(s.user)}</span>`;
       // A documented default password is a published password — say so, loudly.

@@ -7,8 +7,8 @@
 class ApexJedisyslogger < Formula
   desc "SIEM log-ingestion simulator with a terminal dashboard and 72 attack scenarios"
   homepage "https://github.com/alfredonacino/APEX-Jedi-Syslogger"
-  url "https://github.com/alfredonacino/APEX-Jedi-Syslogger/releases/download/v1.2.0/apex-jedisyslogger-1.2.0.tar.gz"
-  version "1.2.0"
+  url "https://github.com/alfredonacino/APEX-Jedi-Syslogger/releases/download/v1.2.1/apex-jedisyslogger-1.2.1.tar.gz"
+  version "1.2.1"
   sha256 "REPLACE_WITH_THE_SHA256SUMS_ENTRY"
   # No licence declared upstream yet; add `license "..."` once there is one.
 

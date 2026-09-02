@@ -19,9 +19,38 @@
 'use strict';
 const crypto = require('crypto');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
-const STORE = path.join(__dirname, 'auth.json');
+// Where the credential store lives.
+//
+// It used to be unconditionally beside the code, which is fine for a checkout
+// and fatal for an installed application: /usr/share, /opt and C:\Program Files
+// are not writable by the person running the app, so creating the store threw
+// and the backend died before it could serve anything. As a desktop app that
+// looked like the window closing the instant it opened.
+//
+// Order matters. An existing file beside the code keeps being used, so upgrades
+// and every deployment made before this change keep their accounts exactly
+// where they are.
+function userDataDir() {
+  const home = os.homedir();
+  if (process.platform === 'win32')
+    return path.join(process.env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'apex-jedisyslogger');
+  if (process.platform === 'darwin')
+    return path.join(home, 'Library', 'Application Support', 'apex-jedisyslogger');
+  return path.join(process.env.XDG_DATA_HOME || path.join(home, '.local', 'share'), 'apex-jedisyslogger');
+}
+
+function storePath() {
+  if (process.env.JEDI_AUTH_STORE) return process.env.JEDI_AUTH_STORE;
+  const beside = path.join(__dirname, 'auth.json');
+  if (fs.existsSync(beside)) return beside;
+  try { fs.accessSync(__dirname, fs.constants.W_OK); return beside; } catch (e) { /* installed read-only */ }
+  return path.join(userDataDir(), 'auth.json');
+}
+
+const STORE = storePath();
 
 // Documented defaults — README §Signing in and DOCUMENTATION.md §11 repeat these
 // verbatim. Change them together if they ever change.
@@ -122,6 +151,8 @@ function load() {
 const serialise = (store) => JSON.stringify(store, null, 2) + '\n';
 
 function save(store) {
+  // The per-user location may not exist yet on a first run.
+  try { fs.mkdirSync(path.dirname(STORE), { recursive: true }); } catch (e) { /* already there */ }
   fs.writeFileSync(STORE, serialise(store), { mode: 0o600 });
   try { fs.chmodSync(STORE, 0o600); } catch (e) {}   // enforce it on an existing file
 }

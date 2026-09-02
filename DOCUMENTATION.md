@@ -87,7 +87,7 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `account.html` | Profile, password, second factor, and the admin user list |
 | `js/account.js` | The Account page's logic |
 | `auth.js` | Accounts: scrypt passwords, RFC 6238 TOTP, roles, sessions, lockout, per-user collector (§13) |
-| `auth.json` | Generated per install: every account plus its saved collector (`0600`, gitignored, never served) |
+| `auth.json` | Generated per install: every account plus its saved collector (`0600`, gitignored, never served). Beside the code in a checkout; under the user's data directory when the app is installed read-only (§13.2) |
 | `server.js` | Optional backend: static host + `/forward` relay + `/test` probe + the sign-in gate |
 | `samples/sample.log` | Example mixed-format log for the file-replay demo |
 | `CONNECTORS.md` | How to configure the agent- and API-relayed sources for real: agent config, connector design, Microsoft 365 / Entra / Defender, permissions |
@@ -860,7 +860,7 @@ Node backend authenticates or remembers.
 
 ### The credential store
 
-`auth.json`, written next to `server.js` on first start, mode `0600`, gitignored,
+`auth.json`, mode `0600`, gitignored,
 and never served (`serveStatic` refuses it and any dotfile, including through a
 `..` path). Format version 2:
 
@@ -1113,6 +1113,27 @@ Browsers show one interstitial for it — unavoidable for a certificate no CA
 signed — and the connection is encrypted regardless. Public CAs do not issue for
 bare IP addresses, so a warning-free certificate means giving the host a DNS
 name first.
+
+### 13.2 Where the credential store lives
+
+`auth.js` resolves it once, in this order:
+
+1. `$JEDI_AUTH_STORE`, if set.
+2. `auth.json` beside the code, **if it already exists** — a checkout, and every
+   deployment made before this rule existed, keeps its accounts exactly where
+   they are.
+3. `auth.json` beside the code, if that directory is writable.
+4. Otherwise the per-user data directory:
+   `~/.local/share/apex-jedisyslogger/` (Linux, or `$XDG_DATA_HOME`),
+   `~/Library/Application Support/apex-jedisyslogger/` (macOS),
+   `%LOCALAPPDATA%\apex-jedisyslogger\` (Windows).
+
+Rule 4 exists because the store used to be written next to the code
+unconditionally, which is fine for a checkout and fatal for an installed
+application: `/usr/share`, `/opt` and `C:\Program Files` are not writable by the
+person running the app, so creating the store threw and the backend exited
+before it served anything. In the desktop build that looked exactly like the
+window closing the instant it opened.
 
 ### Command line
 

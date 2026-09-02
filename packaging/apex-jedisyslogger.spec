@@ -10,7 +10,7 @@
 %{!?_unitdir: %global _unitdir /usr/lib/systemd/system}
 
 Name:           apex-jedisyslogger
-Version:        1.2.0
+Version:        1.2.1
 Release:        1%{?dist}
 Summary:        SIEM log-ingestion simulator with a terminal dashboard
 

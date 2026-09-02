@@ -42,6 +42,12 @@ const DESKTOP = process.env.JEDI_DESKTOP === '1';
 const BIND = process.env.JEDI_BIND || (DESKTOP ? '127.0.0.1' : undefined);
 // Regenerated per launch, single use, never written anywhere.
 let launchTicket = DESKTOP ? require('crypto').randomBytes(32).toString('base64url') : null;
+// Liveness. The window is the application, so the *page* says whether it is
+// still there — not the browser process, which may have handed our URL to an
+// already-running instance and exited a millisecond later.
+const BEAT_GRACE_MS = 15000;
+let lastBeat = 0;
+let beatSeen = false;
 
 // Auth is on unless explicitly disabled. JEDI_AUTH=off restores the old
 // no-sign-in behaviour for a throwaway local run.
@@ -130,6 +136,18 @@ function handleRequest(req, res) {
   // Already signed in? The sign-in page has nothing left to offer.
   if (AUTH_ON && session && urlPath === '/login.html') { res.writeHead(302, { Location: '/' }); return res.end(); }
 
+  // Behind the session gate on purpose: only the window that holds a session
+  // can keep the backend alive.
+  if (DESKTOP && urlPath === '/desktop/ping') {
+    lastBeat = Date.now(); beatSeen = true;
+    res.writeHead(204); return res.end();
+  }
+  // Sent by the page as it goes away. Not an immediate exit: a reload fires the
+  // same event, and the reloaded page pings again well inside the grace left here.
+  if (DESKTOP && urlPath === '/desktop/bye') {
+    if (beatSeen) lastBeat = Date.now() - (BEAT_GRACE_MS - 3000);
+    res.writeHead(204); return res.end();
+  }
   if (urlPath.startsWith('/api/')) return handleApi(req, res, urlPath, session);
   if (req.method === 'POST' && urlPath === '/forward') return handleForward(req, res);
   if (req.method === 'POST' && urlPath === '/test') return handleTest(req, res);
@@ -200,6 +218,7 @@ function handleSession(req, res) {
   sendJson(res, 200, {
     ok: true, authRequired: true,
     user: s ? s.user : null, role: s ? s.role : null, expires: s ? s.expires : null,
+    desktop: DESKTOP,
     // Only someone already signed in is told the password is still the default.
     passwordIsDefault: s ? !!s.account.passwordIsDefault : undefined,
   });
@@ -571,6 +590,15 @@ function start() {
       // The launcher parses this line. The ticket is in it, so it goes to our
       // own stdout and nowhere else — not argv, not the environment, not a file.
       console.log(`JEDI_DESKTOP_URL=${scheme}://127.0.0.1:${port}/launch?t=${launchTicket}`);
+      // Once the page has checked in, its silence means the window is gone.
+      // Armed only after the first beat, so a browser that never renders leaves
+      // the backend running rather than being killed by a timer it never fed.
+      const watchdog = /** @type {any} */ (setInterval(() => {
+        if (!beatSeen || Date.now() - lastBeat <= BEAT_GRACE_MS) return;
+        console.log('  window closed — stopping.');
+        process.exit(0);
+      }, 3000));
+      if (watchdog && typeof watchdog.unref === 'function') watchdog.unref();
     }
     console.log(`\n  ⚔️  APEX JediSyslogger v${VERSION} running → ${scheme}://localhost:${port}`);
     if (tls) {
