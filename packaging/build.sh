@@ -59,7 +59,7 @@ rm -rf dist/publish dist/deb dist/src dist/rpm dist/arch
 say "staging $NAME-$VERSION"
 # packaging/ ships too: the distro manifests build *from this tarball*, so the
 # spec, the PKGBUILD and the systemd unit have to be inside it.
-for item in jedi-cli.js server.js auth.js forward.js updater.js ecosystem.config.js \
+for item in jedi-cli.js desktop.js server.js auth.js forward.js updater.js ecosystem.config.js \
             index.html login.html account.html about.html \
             README.md DOCUMENTATION.md CONNECTORS.md LICENSE \
             js css bin samples types packaging jsconfig.json; do
@@ -75,19 +75,39 @@ APEX JediSyslogger $VERSION — portable build
 Requires Node.js 18 or newer (https://nodejs.org). Nothing to compile, nothing
 to install, no npm.
 
-  macOS / Linux      ./bin/jedi              live terminal dashboard
-                     ./bin/jedi --help       every command and flag
-  Windows            bin\\jedi.cmd
+DESKTOP APP — the normal way to run it
+
+  macOS            open "APEX JediSyslogger.app"
+                   (unsigned, so the first launch needs Control-click > Open,
+                   or System Settings > Privacy & Security > Open Anyway)
+  Linux            ./bin/jedi desktop
+  Windows          powershell -ExecutionPolicy Bypass -File .\\packaging\\install.ps1
+                   then launch it from the Start Menu
+
+It opens in its own window. There is no URL to type and no sign-in: the backend
+binds to 127.0.0.1 on a port it picks itself, and the window is handed a
+one-shot ticket for the session. Closing the window stops everything.
+
+The window is rendered by a Chromium-family browser already on the machine
+(Chromium, Chrome, Brave or Edge), run in app mode — no address bar, no tabs.
+Without one, it falls back to your default browser and says so.
+
+TERMINAL BUILD — same engine, no window
+
+  ./bin/jedi                 live dashboard in the terminal
+  ./bin/jedi --help          every command and flag
+  Windows: bin\\jedi.cmd
 
 Put it on PATH (optional):
-  macOS / Linux      sudo ln -s "\$PWD/bin/jedi" /usr/local/bin/jedi
-  Windows            add this folder's bin\\ to PATH
+  macOS / Linux    sudo ln -s "\$PWD/bin/jedi" /usr/local/bin/jedi
+  Windows          install.ps1 does this for you
 
-The browser dashboard is in the same directory if you want it:
-  node server.js     then open the printed URL
+SERVER MODE — for a machine other people reach
 
-Terminal and web app are the same engine and the same version ($VERSION), so a
-scenario raises the same detection in both.
+  node server.js             the web app on a real port, with sign-in
+
+Desktop, terminal and web are one engine at one version ($VERSION): a scenario
+raises the same detection in all three.
 TXT
 
 # The canonical source tarball lives under dist/src: rpmbuild and makepkg build
@@ -101,7 +121,12 @@ mkdir -p dist/src
 # treat "any" as a wildcard — a single archive tagged "any" is invisible to a
 # client that says it is darwin/arm64. Same bytes, honest labels.
 cp "dist/src/$NAME-$VERSION.tar.gz" "dist/$NAME-$VERSION-linux.tar.gz"
-cp "dist/src/$NAME-$VERSION.tar.gz" "dist/$NAME-$VERSION-macos.tar.gz"
+
+# macOS gets the same payload plus a real .app bundle, so it is launched from
+# Finder or the Dock like any other application rather than from a shell.
+./packaging/build-macapp.sh "$STAGE"
+( cd dist && tar -czf "$NAME-$VERSION-macos.tar.gz" "$NAME-$VERSION" )
+rm -rf "$STAGE/APEX JediSyslogger.app"
 if command -v zip >/dev/null 2>&1; then
   ( cd dist && zip -qr "$NAME-$VERSION-windows.zip" "$NAME-$VERSION" )
 else

@@ -44,6 +44,8 @@ if ($Uninstall) {
     [Environment]::SetEnvironmentVariable('Path', $kept, 'User')
     Write-Step 'removed it from your PATH'
   }
+  $lnk = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\APEX JediSyslogger.lnk'
+  if (Test-Path $lnk) { Remove-Item $lnk -Force; Write-Step 'removed the Start Menu shortcut' }
   Write-Host "`n$AppName uninstalled. Open a new terminal for PATH to update.`n"
   exit 0
 }
@@ -81,7 +83,7 @@ if (Test-Path $Destination) {
   New-Item -ItemType Directory -Path $Destination -Force | Out-Null
 }
 
-$items = @('jedi-cli.js','forward.js','updater.js','server.js','auth.js','ecosystem.config.js',
+$items = @('jedi-cli.js','desktop.js','forward.js','updater.js','server.js','auth.js','ecosystem.config.js',
            'index.html','login.html','account.html','about.html',
            'js','css','bin','samples','types','packaging',
            'README.md','DOCUMENTATION.md','CONNECTORS.md')
@@ -90,6 +92,29 @@ foreach ($item in $items) {
   if (Test-Path $src) { Copy-Item $src -Destination $Destination -Recurse -Force }
 }
 Write-Step "installed to $Destination"
+
+# ---- Start Menu -----------------------------------------------------------
+# A shortcut is what makes this an application rather than a command. It points
+# at the desktop launcher, runs windowless (no console flashing up behind the
+# app), and carries the icon.
+$startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs'
+$lnk = Join-Path $startMenu 'APEX JediSyslogger.lnk'
+try {
+  $shell = New-Object -ComObject WScript.Shell
+  $sc = $shell.CreateShortcut($lnk)
+  # wscript.exe runs the launcher with no console window; the .vbs shim is what
+  # lets a GUI shortcut start a Node program silently.
+  $sc.TargetPath       = (Get-Command node).Source
+  $sc.Arguments        = "`"$Destination\desktop.js`""
+  $sc.WorkingDirectory = $Destination
+  $sc.IconLocation     = "$Destination\packaging\icons\apex-jedisyslogger.ico"
+  $sc.Description      = 'SIEM log-ingestion simulator'
+  $sc.WindowStyle      = 7          # minimised: the console is an artefact, not the app
+  $sc.Save()
+  Write-Step 'added a Start Menu shortcut'
+} catch {
+  Write-Step "could not create the Start Menu shortcut ($($_.Exception.Message))"
+}
 
 # ---- PATH -----------------------------------------------------------------
 $binDir = Join-Path $Destination 'bin'
@@ -107,9 +132,11 @@ Write-Host @"
 
 $AppName $version installed.
 
-  jedi                     live dashboard  (open a NEW terminal first)
-  jedi --help              every command and flag
-  jedi update              check for a newer version
+  Start Menu > APEX JediSyslogger    the app in its own window
+  jedi desktop                       the same thing from a terminal
+  jedi                               live terminal dashboard  (open a NEW terminal)
+  jedi --help                        every command and flag
+  jedi update                        check for a newer version
 
   If box characters look wrong, use:  jedi --ascii
   To remove:  powershell -ExecutionPolicy Bypass -File "$Destination\packaging\install.ps1" -Uninstall

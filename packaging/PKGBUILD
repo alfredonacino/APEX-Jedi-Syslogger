@@ -5,7 +5,7 @@
 # this installs the tree and a launcher. Keep pkgver in step with js/version.js —
 # `packaging/version.sh --check` fails the build if it drifts.
 pkgname=apex-jedisyslogger
-pkgver=1.1.0
+pkgver=1.2.0
 pkgrel=1
 pkgdesc="SIEM log-ingestion simulator — terminal dashboard, 72 attack scenarios, 42 appliance formats"
 arch=('any')
@@ -22,11 +22,18 @@ package() {
   cd "$srcdir/$pkgname-$pkgver"
 
   install -d "$pkgdir/usr/share/$pkgname"
-  cp -r jedi-cli.js forward.js updater.js server.js auth.js js css bin samples types \
+  cp -r jedi-cli.js desktop.js forward.js updater.js server.js auth.js js css bin samples types \
         index.html login.html account.html about.html ecosystem.config.js \
         "$pkgdir/usr/share/$pkgname/"
 
   install -Dm755 bin/jedi "$pkgdir/usr/bin/jedi"
+
+  install -Dm644 packaging/apex-jedisyslogger.desktop \
+    "$pkgdir/usr/share/applications/$pkgname.desktop"
+  for s in 16 32 48 64 128 256 512; do
+    install -Dm644 "packaging/icons/$pkgname-$s.png" \
+      "$pkgdir/usr/share/icons/hicolor/${s}x${s}/apps/$pkgname.png"
+  done
 
   if [ -f packaging/apex-jedisyslogger.service ]; then
     install -Dm644 packaging/apex-jedisyslogger.service \

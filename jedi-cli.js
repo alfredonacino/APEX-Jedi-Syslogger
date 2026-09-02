@@ -669,6 +669,7 @@ ${b('COMMANDS')}
   appliance <source…>        emit one burst from an appliance source, exit
   replay <file>              replay a log file through the engine
   list [scenarios|appliances|rules]
+  desktop                    open the app in its own window (no browser, no URL)
   update                     check for a newer version (signature-verified)
   version | help
 
@@ -694,6 +695,7 @@ ${b('OPTIONS')}
   --update-url URL           override the update server (testing)
 
 ${b('EXAMPLES')}
+  jedi desktop                               the app in its own window
   jedi                                       live dashboard
   jedi --forward udp://10.0.0.50:514 --eps 20 --quiet
   jedi --forward tcp://10.0.0.50:514 --test
@@ -723,6 +725,7 @@ function main() {
   switch (cmd) {
     case 'version': return void process.stdout.write(`${NAME} ${VERSION}\n`);
     case 'list': return cmdList(rest[0], flags);
+    case 'desktop': case 'gui': return require('./desktop.js');
     case 'update': return cmdUpdate(flags);
     case 'attack': return cmdAttack(rest, flags, 'attack');
     case 'appliance': return cmdAttack(rest, flags, 'appliance');

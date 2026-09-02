@@ -328,9 +328,18 @@ class Auth {
     if (!u.totpConfirmed) u.totpConfirmed = true;
     save(this.store);
 
+    return Object.assign({ ok: true }, this.openSession(u, now));
+  }
+
+  // Mint a session for a user who has already been authenticated by some other
+  // means. Two callers: verifyTotp above, and the desktop launcher, where the
+  // person is sitting at the machine that owns the credential store and a
+  // password prompt would be theatre. Nothing here authenticates anybody — that
+  // is the caller's job, and the only other caller is loopback-only.
+  openSession(u, now = Date.now()) {
     const sid = newToken();
     sessions.set(sid, { userId: u.id, expires: now + SESSION_TTL_MS });
-    return { ok: true, sid, user: u.user, role: u.role, expires: now + SESSION_TTL_MS };
+    return { sid, user: u.user, role: u.role, expires: now + SESSION_TTL_MS };
   }
 
   sessionFor(cookieHeader) {

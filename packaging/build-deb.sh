@@ -28,7 +28,7 @@ mkdir -p "$BUILD/DEBIAN" \
          "$BUILD/usr/share/doc/$NAME"
 
 # ---- payload -------------------------------------------------------------
-for item in jedi-cli.js forward.js updater.js server.js auth.js ecosystem.config.js \
+for item in jedi-cli.js desktop.js forward.js updater.js server.js auth.js ecosystem.config.js \
             index.html login.html account.html about.html \
             js css bin samples types; do
   cp -R "$item" "$BUILD/usr/share/$NAME/"
@@ -37,6 +37,15 @@ rm -f "$BUILD/usr/share/$NAME/auth.json"
 rm -rf "$BUILD/usr/share/$NAME/certs"
 
 install -m0755 bin/jedi "$BUILD/usr/bin/jedi"
+
+# Desktop integration: a menu entry and its icons, so this is an application in
+# the launcher rather than a command you have to know about.
+install -Dm0644 packaging/apex-jedisyslogger.desktop \
+  "$BUILD/usr/share/applications/$NAME.desktop"
+for s in 16 32 48 64 128 256 512; do
+  install -Dm0644 "packaging/icons/$NAME-$s.png" \
+    "$BUILD/usr/share/icons/hicolor/${s}x${s}/apps/$NAME.png"
+done
 install -m0644 packaging/apex-jedisyslogger.service "$BUILD/lib/systemd/system/$NAME.service"
 for doc in README.md DOCUMENTATION.md CONNECTORS.md; do install -m0644 "$doc" "$BUILD/usr/share/doc/$NAME/"; done
 gzip -9n -c > "$BUILD/usr/share/doc/$NAME/changelog.Debian.gz" <<CHANGELOG
@@ -83,7 +92,11 @@ cat > "$BUILD/DEBIAN/postinst" <<'POSTINST'
 set -e
 if [ "$1" = "configure" ]; then
   if command -v systemctl >/dev/null 2>&1; then systemctl daemon-reload || true; fi
-  echo "apex-jedisyslogger: run 'jedi' for the dashboard, 'jedi --help' for everything else."
+  # Menus and icon caches are indexed, not scanned.
+  if command -v update-desktop-database >/dev/null 2>&1; then update-desktop-database -q /usr/share/applications || true; fi
+  if command -v gtk-update-icon-cache >/dev/null 2>&1; then gtk-update-icon-cache -qtf /usr/share/icons/hicolor || true; fi
+  echo "apex-jedisyslogger: launch 'APEX JediSyslogger' from your applications menu,"
+  echo "  or run 'jedi desktop' for the window, 'jedi' for the terminal dashboard."
   echo "  The forwarding service is installed but NOT started: it generates synthetic"
   echo "  log traffic, so enable it deliberately after setting JEDI_TARGET:"
   echo "    sudo systemctl edit apex-jedisyslogger && sudo systemctl enable --now apex-jedisyslogger"

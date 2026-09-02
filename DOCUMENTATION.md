@@ -93,6 +93,8 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `CONNECTORS.md` | How to configure the agent- and API-relayed sources for real: agent config, connector design, Microsoft 365 / Entra / Defender, permissions |
 | `js/version.js` | The one version number. Dual-mode: a browser global and a `require()` for Node. Everything else reads it (§16.4) |
 | `jedi-cli.js` | The terminal build — live dashboard and headless CLI over the same engine (§16) |
+| `desktop.js` | The desktop launcher: loopback backend, one-shot launch ticket, chromeless window (§16.7) |
+| `packaging/icons/` | Icon set, plus the hand-built `.ico` and `.icns` containers |
 | `forward.js` | The wire: UDP/TCP relays, the Splunk HEC poster, and the three connectivity probes. Required by both `server.js` and `jedi-cli.js` |
 | `bin/jedi`, `bin/jedi.cmd` | Launchers for POSIX and Windows |
 | `updater.js` | The update client: fetch, **verify the Ed25519 signature**, then compare versions (§16.6) |
@@ -1525,6 +1527,59 @@ it, and download the wrong thing.
 `node packaging/sign.js --generate` produces a fresh keypair, writing the private
 half to **stdout only** so it can be redirected straight into a `chmod 600` file
 without ever appearing on a terminal.
+
+---
+
+### 16.7 The desktop application
+
+The packages install an application, not a command: a menu entry on Linux, a
+Start Menu shortcut on Windows, an `APEX JediSyslogger.app` bundle on macOS.
+`desktop.js` is what they all launch.
+
+It does three things:
+
+1. **Starts the backend privately.** `server.js` with `JEDI_DESKTOP=1`, bound to
+   `127.0.0.1` on port `0` — the kernel picks the port. Nothing is reachable
+   from the network, and nothing collides with an existing install.
+2. **Skips the sign-in.** The server mints a 32-byte launch ticket at startup and
+   prints the URL containing it to *its own stdout*, which only its launcher
+   reads. Presenting it once trades it for an admin session; the ticket is burned
+   on first use, valid or not. Loopback binding is enforced — desktop mode
+   refuses to start bound to anything else, because the ticket is only defensible
+   when nothing off the machine can present it.
+3. **Opens a window.** A Chromium-family browser in app mode (`--app=`), with its
+   own `--user-data-dir` so it is a separate process to wait on and never touches
+   the profile someone browses with. On Linux it passes `--class` so the window
+   belongs to the application in the taskbar rather than to the browser.
+
+Closing the window ends the launcher, which kills the backend. There is no
+lingering server and no port to remember.
+
+**On plain HTTP, deliberately.** Desktop mode ignores `certs/` unless
+`JEDI_TLS_FORCE=1`. The socket is loopback, so there is no network path to
+protect, and a self-signed certificate would open every launch with a browser
+warning — training people to click through the one dialog that should always
+stop them.
+
+**What it is not.** It does not bundle a browser engine. Electron or Tauri would
+make the window ours, at the cost of ~200 MB per platform, an npm toolchain and a
+build per operating system — three things this project does not have and one
+(dependencies) it deliberately refuses. Without a Chromium-family browser the
+launcher falls back to the default browser, where the app appears as an ordinary
+tab, and says so plainly rather than pretending otherwise. `JEDI_BROWSER=/path`
+overrides the search.
+
+**Icons.** `packaging/icons/` holds the PNG set and two containers built by hand
+in `packaging/build-macapp.sh`'s neighbourhood: ImageMagick writes an `.icns`
+that is really a PNG with the wrong extension, and an `.ico` of uncompressed BMP
+frames that came to 370 KB. Both are assembled directly instead — the ICO with
+PNG frames (59 KB) and the ICNS as a proper `icns` container of five slots
+(154 KB).
+
+**The macOS bundle is unsigned.** A `.app` is a directory with a fixed layout, so
+it is assembled on Linux like everything else here; signing and notarising need a
+Mac and an Apple Developer account. Gatekeeper will therefore ask for
+confirmation on first launch, which `INSTALL.txt` says rather than hides.
 
 ---
 

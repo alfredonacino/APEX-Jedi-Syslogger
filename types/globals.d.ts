@@ -19,6 +19,7 @@ declare module 'fs';
 declare module 'path';
 declare module 'readline';
 declare module 'os';
+declare module 'child_process';
 
 declare var require: any;
 declare var module: any;

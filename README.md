@@ -21,15 +21,22 @@ not answer to just anyone who can reach the port.
 
 ![APEX JediSyslogger dashboard — live event stream, MITRE ATT&CK detections, and threat level](images/apex_jedisyslogger.png)
 
-## Two builds, one version
+## Three ways to run it, one version
 
 | | Runs | Needs |
 |---|---|---|
-| **Web dashboard** | `node server.js` → a browser | Node 18+, a browser |
+| **Desktop app** | its own window, no URL, no sign-in | Node 18+ |
 | **Terminal build** | `jedi` → a live dashboard in the terminal, or headless | Node 18+ |
+| **Server** | `node server.js` → a browser, with sign-in | Node 18+, a browser |
 
-Both load the *same* engine (`js/data.js`, `js/syslogger.js`, `js/jedi.js`), so a
-scenario raises the same detection in either, and both report the same version —
+The **desktop app** is what the packages install: a menu entry on Linux, a
+Start Menu shortcut on Windows, a `.app` bundle on macOS. It starts the backend
+on `127.0.0.1` with a port it picks itself, hands the window a single-use ticket
+for its session, and stops everything when the window closes — there is no
+server to manage and nothing listening on the network.
+
+All three load the *same* engine (`js/data.js`, `js/syslogger.js`, `js/jedi.js`), so a
+scenario raises the same detection in each, and all report the same version —
 there is one version number, in `js/version.js`, and
 `packaging/version.sh --check` fails the build if any package disagrees.
 
@@ -38,7 +45,8 @@ without a browser: it opens the socket itself, so **no backend is needed** to
 forward.
 
 ```bash
-./bin/jedi                                     # live dashboard
+./bin/jedi desktop                             # the app, in its own window
+./bin/jedi                                     # live dashboard in the terminal
 ./bin/jedi --forward udp://10.0.0.50:514 --eps 20 --quiet
 ./bin/jedi attack m365-mail-exfil --json | jq '.[0].alerts'
 ./bin/jedi --help
@@ -637,6 +645,7 @@ trust, so a manifest that would verify nowhere cannot be published by accident.
 **Commands**
 
 ```bash
+jedi desktop                  # the app in its own window
 jedi                          # live dashboard: stream, detections, threat level
 jedi attack <scenario…>       # inject, print what fired, exit
 jedi appliance <source…>      # one burst in a vendor's real wire format

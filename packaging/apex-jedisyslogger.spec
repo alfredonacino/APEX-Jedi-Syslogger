@@ -10,7 +10,7 @@
 %{!?_unitdir: %global _unitdir /usr/lib/systemd/system}
 
 Name:           apex-jedisyslogger
-Version:        1.1.0
+Version:        1.2.0
 Release:        1%{?dist}
 Summary:        SIEM log-ingestion simulator with a terminal dashboard
 
@@ -41,11 +41,17 @@ dashboard needs no browser; the same tree also serves the optional web UI.
 
 %install
 mkdir -p %{buildroot}%{appdir}
-cp -r jedi-cli.js forward.js updater.js server.js auth.js js css bin samples types \
+cp -r jedi-cli.js desktop.js forward.js updater.js server.js auth.js js css bin samples types \
       index.html login.html account.html about.html ecosystem.config.js \
       %{buildroot}%{appdir}/
 
 install -Dm0755 bin/jedi %{buildroot}%{_bindir}/jedi
+
+install -Dm0644 packaging/%{appname}.desktop %{buildroot}%{_datadir}/applications/%{appname}.desktop
+for s in 16 32 48 64 128 256 512; do
+  install -Dm0644 packaging/icons/%{appname}-$s.png \
+    %{buildroot}%{_datadir}/icons/hicolor/${s}x${s}/apps/%{appname}.png
+done
 install -Dm0644 packaging/apex-jedisyslogger.service \
   %{buildroot}%{_unitdir}/apex-jedisyslogger.service
 
@@ -55,6 +61,8 @@ install -m0644 README.md DOCUMENTATION.md CONNECTORS.md %{buildroot}%{_docdir}/%
 %files
 %{appdir}
 %{_bindir}/jedi
+%{_datadir}/applications/%{appname}.desktop
+%{_datadir}/icons/hicolor/*/apps/%{appname}.png
 %{_unitdir}/apex-jedisyslogger.service
 %doc %{_docdir}/%{appname}
 # %%license LICENSE   <- uncomment once the repository has one

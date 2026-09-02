@@ -33,7 +33,15 @@ const { forwardLines, forwardHec, testTcp, testUdp, testHec, hecUrl } = require(
 const { VERSION } = require('./js/version.js');
 
 const ROOT = __dirname;
-const PORT = parseInt(process.env.PORT, 10) || 8099;
+const PORT = process.env.PORT !== undefined ? parseInt(process.env.PORT, 10) : 8099;
+// Desktop mode: the app is a window on this machine, not a service on a network.
+// It binds to loopback, picks its own port, and hands the window a one-shot
+// ticket instead of a sign-in page — the person is already sitting at the
+// machine that holds the credential store.
+const DESKTOP = process.env.JEDI_DESKTOP === '1';
+const BIND = process.env.JEDI_BIND || (DESKTOP ? '127.0.0.1' : undefined);
+// Regenerated per launch, single use, never written anywhere.
+let launchTicket = DESKTOP ? require('crypto').randomBytes(32).toString('base64url') : null;
 
 // Auth is on unless explicitly disabled. JEDI_AUTH=off restores the old
 // no-sign-in behaviour for a throwaway local run.
@@ -76,6 +84,32 @@ let auth = null;
 // Reachable without a session: the sign-in page, the stylesheet it needs, and
 // the endpoints that hand out a session in the first place.
 const PUBLIC_PATHS = new Set(['/login.html', '/js/login.js', '/js/qr.js', '/css/styles.css', '/auth/login', '/auth/totp', '/auth/logout', '/auth/session']);
+// Reachable before a session exists, but only in desktop mode, where the server
+// is bound to loopback and the ticket was minted by this very process.
+if (DESKTOP) PUBLIC_PATHS.add('/launch');
+
+// Spend the launch ticket for a session. Loopback-only and single-use: the
+// ticket is minted in memory at startup, printed to this process's own stdout
+// for its launcher to read, and burned the first time it is presented.
+function handleLaunch(req, res, url) {
+  const given = url.searchParams.get('t') || '';
+  const ok = launchTicket && given.length === launchTicket.length &&
+    require('crypto').timingSafeEqual(Buffer.from(given), Buffer.from(launchTicket));
+  launchTicket = null;                       // one shot, valid or not
+  if (!ok) {
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    return res.end('This launch link has already been used. Close the window and start the app again.\n');
+  }
+  if (!AUTH_ON) { res.writeHead(302, { Location: '/' }); return res.end(); }
+  const admin = auth.admins()[0] || auth.list()[0];
+  if (!admin) {
+    res.writeHead(500, { 'Content-Type': 'text/plain' });
+    return res.end('No account exists to open a session for.\n');
+  }
+  const s = auth.openSession(auth.byId(admin.id));
+  res.writeHead(302, { Location: '/', 'Set-Cookie': authlib.sessionCookie(s.sid, SECURE_COOKIE) });
+  res.end();
+}
 
 function handleRequest(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -88,6 +122,8 @@ function handleRequest(req, res) {
   if (req.method === 'POST' && urlPath === '/auth/totp') return handleTotp(req, res);
   if (req.method === 'POST' && urlPath === '/auth/logout') return handleLogout(req, res);
   if (req.method === 'GET' && urlPath === '/auth/session') return handleSession(req, res);
+  if (DESKTOP && req.method === 'GET' && urlPath === '/launch')
+    return handleLaunch(req, res, new URL(req.url, 'http://localhost'));
 
   const session = AUTH_ON ? auth.sessionFor(req.headers.cookie) : { user: null, anonymous: true };
   if (AUTH_ON && !session && !PUBLIC_PATHS.has(urlPath)) return denyAnonymous(req, res, urlPath);
@@ -511,14 +547,32 @@ if (!runCli(process.argv.slice(2))) start();
 
 function start() {
   auth = new authlib.Auth(AUTH_ON);
-  tls = loadTls();
+  // Desktop mode stays on plain HTTP. The socket is bound to loopback, so
+  // nothing crosses a network to protect, and a self-signed certificate would
+  // greet every launch with a browser warning — training people to click
+  // through exactly the dialog that matters. JEDI_TLS_FORCE=1 overrides.
+  tls = (DESKTOP && process.env.JEDI_TLS_FORCE !== '1') ? null : loadTls();
   if (tls) SECURE_COOKIE = true;   // the cookie can finally carry it
   const scheme = tls ? 'https' : 'http';
   const server = tls ? https.createServer(tls, handleRequest) : http.createServer(handleRequest);
   if (tls && REDIRECT_PORT) startRedirector();
 
-  server.listen(PORT, () => {
-    console.log(`\n  ⚔️  APEX JediSyslogger v${VERSION} running → ${scheme}://localhost:${PORT}`);
+  // Desktop mode must never be reachable from the network: the launch ticket
+  // trades itself for an admin session, and that is only defensible because
+  // nothing off this machine can present it.
+  if (DESKTOP && BIND !== '127.0.0.1' && BIND !== '::1' && BIND !== 'localhost') {
+    console.error(`  refusing to run desktop mode bound to ${BIND} — it would expose the launch ticket`);
+    process.exit(1);
+  }
+
+  server.listen(PORT, BIND, () => {
+    const port = server.address().port;
+    if (DESKTOP) {
+      // The launcher parses this line. The ticket is in it, so it goes to our
+      // own stdout and nowhere else — not argv, not the environment, not a file.
+      console.log(`JEDI_DESKTOP_URL=${scheme}://127.0.0.1:${port}/launch?t=${launchTicket}`);
+    }
+    console.log(`\n  ⚔️  APEX JediSyslogger v${VERSION} running → ${scheme}://localhost:${port}`);
     if (tls) {
       console.log(`      🔐 TLS on — certificate ${TLS_CERT}`);
       if (REDIRECT_PORT) console.log(`         http://…:${REDIRECT_PORT} redirects here.`);

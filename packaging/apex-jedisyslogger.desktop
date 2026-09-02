@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=APEX JediSyslogger
+GenericName=SIEM Log Simulator
+Comment=Generate syslog, inject attack scenarios, and watch a SIEM detect them
+Exec=jedi desktop
+TryExec=jedi
+Icon=apex-jedisyslogger
+Terminal=false
+Categories=Development;Security;Monitor;
+Keywords=SIEM;syslog;detection;ATT&CK;logs;
+# The window is a Chromium app-mode window; desktop.js passes --class so the
+# taskbar groups it under the application rather than under the browser.
+StartupWMClass=APEX-JediSyslogger
+StartupNotify=true

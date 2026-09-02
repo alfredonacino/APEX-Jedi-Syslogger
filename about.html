@@ -726,7 +726,28 @@ format = string
 
 
     <section>
-      <h2><span class="num">11</span>Terminal build <span class="tag">no browser</span></h2>
+      <h2><span class="num">11</span>Desktop app &amp; terminal build <span class="tag">no URL</span></h2>
+      <p>The packages install an <strong>application</strong>, not a command: a menu
+      entry on Linux, a Start Menu shortcut on Windows, an
+      <code>APEX JediSyslogger.app</code> bundle on macOS. It opens in its own
+      window — no address bar, no URL to type, no sign-in.</p>
+      <pre><code>jedi desktop        # the same thing from a terminal</code></pre>
+      <p>Behind the window, <code>server.js</code> runs bound to
+      <code>127.0.0.1</code> on a port the kernel picks, and the window is handed a
+      <strong>single-use launch ticket</strong> that trades once for a session.
+      Closing the window stops everything. Desktop mode <em>refuses to start</em>
+      bound to anything but loopback, because that ticket is only defensible when
+      nothing off the machine can present it — and it stays on plain HTTP for the
+      same reason a self-signed certificate would be worse than none: it would open
+      every launch with a warning worth ignoring.</p>
+      <div class="callout">The window is rendered by a Chromium-family browser
+      already on the machine (Chromium, Chrome, Brave, Edge) in app mode. It is
+      <strong>not</strong> a bundled engine: Electron would make the window ours at
+      the cost of ~200&nbsp;MB per platform, an npm toolchain and a build per
+      operating system. Without such a browser it falls back to your default one
+      and tells you it will be an ordinary tab.</div>
+
+      <h3>Terminal build</h3>
       <p>The same application, without a browser. <code>jedi-cli.js</code>
       <code>require()</code>s the very files this page's dashboard loads
       (<code>js/data.js</code>, <code>js/syslogger.js</code>, <code>js/jedi.js</code>),
