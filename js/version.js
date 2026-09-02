@@ -14,7 +14,7 @@
   else { global.JS = global.JS || {}; global.JS.VERSION = api.VERSION; global.JS.RELEASED = api.RELEASED; }
 })(typeof globalThis !== 'undefined' ? globalThis : this, function () {
   return {
-    VERSION: '1.0.2',
+    VERSION: '1.1.0',
     RELEASED: '2026-09-02',
     NAME: 'APEX JediSyslogger',
 

@@ -4,14 +4,18 @@
 # Version must match js/version.js; packaging/version.sh --check enforces it.
 %global appname apex-jedisyslogger
 %global appdir  %{_datadir}/%{appname}
+# Defined by systemd-rpm-macros on a Red Hat host; absent when the spec is built
+# with bare rpmbuild elsewhere, which leaves an unexpanded macro in %files and
+# fails with "File must begin with /".
+%{!?_unitdir: %global _unitdir /usr/lib/systemd/system}
 
 Name:           apex-jedisyslogger
-Version:        1.0.2
+Version:        1.1.0
 Release:        1%{?dist}
 Summary:        SIEM log-ingestion simulator with a terminal dashboard
 
 # No LICENSE file in the repository yet — set this to the real identifier
-# (and restore the %license line below) before this package is published.
+# (and restore the %%license line below) before this package is published.
 License:        UNSPECIFIED
 URL:            https://github.com/alfredonacino/APEX-Jedi-Syslogger
 Source0:        %{name}-%{version}.tar.gz
@@ -53,7 +57,7 @@ install -m0644 README.md DOCUMENTATION.md CONNECTORS.md %{buildroot}%{_docdir}/%
 %{_bindir}/jedi
 %{_unitdir}/apex-jedisyslogger.service
 %doc %{_docdir}/%{appname}
-# %license LICENSE   <- uncomment once the repository has one
+# %%license LICENSE   <- uncomment once the repository has one
 
 %changelog
 * Wed Sep 02 2026 Alfredo Nacino <alfredo@nacino.net> - 1.0.0-1

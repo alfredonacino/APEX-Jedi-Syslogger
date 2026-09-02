@@ -109,11 +109,15 @@ function keyPair() {
 // claiming linux-x64 to look tidy would hide it from every Mac.
 function describe(file) {
   if (/\.deb$/.test(file)) return { platform: 'linux', arch: 'all', format: 'deb' };
-  if (/\.zip$/.test(file)) return { platform: 'win32', arch: 'any', format: 'zip' };
-  if (/\.tar\.gz$/.test(file)) return { platform: 'any', arch: 'any', format: 'tar.gz' };
-  if (/^jedi-[\d.]+\.js$/.test(file)) return { platform: 'any', arch: 'any', format: 'js' };
   if (/\.rpm$/.test(file)) return { platform: 'linux', arch: 'noarch', format: 'rpm' };
   if (/\.pkg\.tar\.(zst|xz)$/.test(file)) return { platform: 'linux', arch: 'any', format: 'pacman' };
+  if (/-windows\.zip$/.test(file)) return { platform: 'win32', arch: 'any', format: 'zip' };
+  if (/-macos\.tar\.gz$/.test(file)) return { platform: 'darwin', arch: 'any', format: 'tar.gz' };
+  if (/-linux\.tar\.gz$/.test(file)) return { platform: 'linux', arch: 'any', format: 'tar.gz' };
+  if (/^jedi-[\d.]+\.js$/.test(file)) return { platform: 'any', arch: 'any', format: 'js' };
+  // Anything unlabelled is universal — say so rather than guessing a platform.
+  if (/\.zip$/.test(file)) return { platform: 'win32', arch: 'any', format: 'zip' };
+  if (/\.tar\.gz$/.test(file)) return { platform: 'any', arch: 'any', format: 'tar.gz' };
   return { platform: 'any', arch: 'any', format: 'bin' };
 }
 

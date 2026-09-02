@@ -3,14 +3,15 @@
 #
 #   ./packaging/build.sh              portable archives + the single-file build
 #   ./packaging/build.sh --deb        also a .deb for Debian/Ubuntu
+#   ./packaging/build.sh --rpm        also an .rpm for RHEL/Rocky/Alma/Fedora
+#   ./packaging/build.sh --arch       also a .pkg.tar.zst for Arch/CachyOS
 #   ./packaging/build.sh --sea        also a standalone binary for THIS platform
 #   ./packaging/build.sh --all        everything this host can build
 #
-# Arch/CachyOS and RPM packages are built by their own native tooling from the
-# tarball this produces, because those toolchains do the right thing and a
-# hand-rolled substitute would not:
-#   makepkg -si                                    (from packaging/, Arch & CachyOS)
-#   rpmbuild -ta dist/apex-jedisyslogger-<ver>.tar.gz   (RHEL, Rocky, Alma, Fedora)
+# The RPM and Arch packages are produced by their own native tooling, because
+# those toolchains do the right thing and a hand-rolled substitute would not.
+# Both build from dist/src/, and both need that tooling present on this host:
+# rpm-tools for rpmbuild, base-devel for makepkg.
 #
 # The portable archives need nothing but Node on the target and are what most
 # people should use. The --sea build produces an executable with Node baked in
@@ -21,6 +22,18 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+# Targets are additive: `--deb --rpm --arch` builds three, `--all` builds every
+# one this host can. Reading only $1 meant the second flag was silently ignored.
+want() {
+  for a in "$@"; do :; done
+  for given in $BUILD_TARGETS; do
+    [ "$given" = "--all" ] && return 0
+    [ "$given" = "$1" ] && return 0
+  done
+  return 1
+}
+BUILD_TARGETS="${*:-}"
 ROOT=$PWD
 # A package that claims a different version from the app inside it is worse
 # than no package, so this is a hard gate rather than a warning.
@@ -37,7 +50,7 @@ mkdir -p "$STAGE" dist
 # signer refuses to mix versions anyway; this keeps it from having to.
 find dist -maxdepth 1 \( -name 'apex-jedisyslogger*' -o -name 'jedi-*' -o -name 'SHA256SUMS' \) \
   ! -name "*$VERSION*" -exec rm -rf {} + 2>/dev/null || true
-rm -rf dist/publish dist/deb
+rm -rf dist/publish dist/deb dist/src dist/rpm dist/arch
 
 # ---- 1. Portable archive -------------------------------------------------
 # The whole application, minus per-install state and build output. It runs as
@@ -77,25 +90,41 @@ Terminal and web app are the same engine and the same version ($VERSION), so a
 scenario raises the same detection in both.
 TXT
 
+# The canonical source tarball lives under dist/src: rpmbuild and makepkg build
+# from it, but it is not itself a distribution and must not be published — it
+# would be a byte-identical duplicate of the Linux archive.
 say "creating archives"
-( cd dist && tar -czf "$NAME-$VERSION.tar.gz" "$NAME-$VERSION" )
+mkdir -p dist/src
+( cd dist && tar -czf "src/$NAME-$VERSION.tar.gz" "$NAME-$VERSION" )
+
+# Platform-named copies. The store matches clients on platform, and it does not
+# treat "any" as a wildcard — a single archive tagged "any" is invisible to a
+# client that says it is darwin/arm64. Same bytes, honest labels.
+cp "dist/src/$NAME-$VERSION.tar.gz" "dist/$NAME-$VERSION-linux.tar.gz"
+cp "dist/src/$NAME-$VERSION.tar.gz" "dist/$NAME-$VERSION-macos.tar.gz"
 if command -v zip >/dev/null 2>&1; then
-  ( cd dist && zip -qr "$NAME-$VERSION.zip" "$NAME-$VERSION" )
+  ( cd dist && zip -qr "$NAME-$VERSION-windows.zip" "$NAME-$VERSION" )
 else
-  say "zip not installed — skipping the Windows-friendly archive"
+  say "zip not installed — skipping the Windows archive"
 fi
 
 # ---- 2. Single-file build ------------------------------------------------
 # One .js you can scp to a box and run. Same sources, folded together.
 node packaging/bundle.js "dist/jedi-$VERSION.js"
 
-# ---- 3. Debian package (optional) ----------------------------------------
-if [ "${1:-}" = "--deb" ] || [ "${1:-}" = "--all" ]; then
+# ---- 3. Native packages (optional) ---------------------------------------
+if want --deb; then
   ./packaging/build-deb.sh
+fi
+if want --rpm; then
+  ./packaging/build-rpm.sh || say "RPM build failed — the other artefacts are unaffected"
+fi
+if want --arch; then
+  ./packaging/build-arch.sh || say "Arch/CachyOS build failed — the other artefacts are unaffected"
 fi
 
 # ---- 4. Standalone binary (optional) -------------------------------------
-if [ "${1:-}" = "--sea" ] || [ "${1:-}" = "--all" ]; then
+if want --sea; then
   NODE_MAJOR=$(node -p "process.versions.node.split('.')[0]")
   if [ "$NODE_MAJOR" -lt 20 ]; then
     echo "  --sea needs Node 20 or newer (this is $(node -v))" >&2; exit 1

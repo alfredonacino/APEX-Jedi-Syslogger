@@ -94,17 +94,13 @@ function explain(r) {
 }
 
 // ---- what each artefact is -------------------------------------------------
-// The server matches clients on these, so they must describe the file honestly:
-// the tarball really does serve Linux and macOS on any CPU, and saying
-// "linux-x64" to look tidy would hide it from every Mac.
-function describe(file) {
-  if (/\.deb$/.test(file)) return { platform: 'linux', arch: 'all', format: 'deb' };
-  if (/\.zip$/.test(file)) return { platform: 'win32', arch: 'any', format: 'zip' };
-  if (/\.tar\.gz$/.test(file)) return { platform: 'any', arch: 'any', format: 'tar.gz' };
-  if (/^jedi-.*\.js$/.test(file)) return { platform: 'any', arch: 'any', format: 'js' };
-  if (/\.rpm$/.test(file)) return { platform: 'linux', arch: 'noarch', format: 'rpm' };
-  if (/\.pkg\.tar\.(zst|xz)$/.test(file)) return { platform: 'linux', arch: 'any', format: 'pacman' };
-  return { platform: 'any', arch: 'any', format: 'bin' };
+// Taken from the signed manifest rather than re-derived from the filename. The
+// labels the store indexes and the labels covered by the signature are then the
+// same labels, and there is one place that decides them: packaging/sign.js.
+function describe(manifest, file) {
+  const a = (manifest.artifacts || []).find((x) => x.filename === file);
+  if (!a) die(`${file} is in dist/publish but not in the signed manifest`, 're-run sign.js');
+  return { platform: a.platform, arch: a.arch, format: a.format };
 }
 
 const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).digest('hex');
@@ -129,7 +125,7 @@ const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).dig
 
   if (DRY) {
     for (const f of files) {
-      const d = describe(f);
+      const d = describe(manifest, f);
       process.stderr.write(`  would PUT   ${f}  [${d.platform}/${d.arch}/${d.format}]\n`);
     }
     process.stderr.write(`  would POST  the signed manifest (${manifest.artifacts.length} artefacts)\n`);
@@ -158,7 +154,7 @@ const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).dig
   // 2. artefacts
   for (const f of files) {
     const full = path.join(dir, f);
-    const d = describe(f);
+    const d = describe(manifest, f);
     const digest = sha256(full);
     r = await request('PUT', `/api/v1/apps/${SLUG}/releases/${encodeURIComponent(VERSION)}/artifacts/${encodeURIComponent(f)}`, {
       stream: full,
