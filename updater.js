@@ -137,14 +137,36 @@ function pickArtifact(artifacts, platform, arch) {
   return scored.length ? scored[0].a : null;
 }
 
-// Canonical JSON — keys sorted at every depth, no incidental whitespace. This
-// must match packaging/sign.js exactly: it is the only agreement between the
-// two halves about which bytes the signature covers.
+// Canonical JSON — keys sorted at every depth, no incidental whitespace, and
+// every character above U+007F escaped as \uXXXX.
+//
+// That last rule is not decoration. The store canonicalises with Python's
+// json.dumps, which defaults to ensure_ascii=True and emits "\u2014" where
+// JavaScript's JSON.stringify emits a raw em dash. The signature covers bytes,
+// so the first release whose notes contained a non-ASCII character was rejected
+// by a server holding the correct key. For an all-ASCII document the two forms
+// are byte-identical, which is exactly why every earlier release verified and
+// hid the bug.
+//
+// packaging/sign.js imports this function rather than reimplementing it: the
+// signer and the verifier disagreeing about bytes is the failure this prevents.
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
   if (value && typeof value === 'object')
     return Object.keys(value).sort().reduce((o, k) => { o[k] = canonical(value[k]); return o; }, {});
   return value;
+}
+
+const NON_ASCII = new RegExp('[\\u0080-\\uffff]', 'g');
+
+/**
+ * The exact bytes a signature covers.
+ * @param {any} value
+ * @returns {any} the Buffer whose bytes the signature covers
+ */
+function canonicalBytes(value) {
+  const json = JSON.stringify(canonical(value));
+  return Buffer.from(json.replace(NON_ASCII, (c) => '\\u' + c.charCodeAt(0).toString(16).padStart(4, '0')), 'utf8');
 }
 
 // ---- verification ----------------------------------------------------------
@@ -251,7 +273,7 @@ function check(opts, cb) {
     const body = Object.assign({}, m);
     delete body.signature;
     let ok = false;
-    try { ok = verify(Buffer.from(JSON.stringify(canonical(body)), 'utf8'), sig, pubkey); }
+    try { ok = verify(canonicalBytes(body), sig, pubkey); }
     catch (e) { return cb(e); }
     if (!ok) return cb(new Error(
       'the published manifest signature does NOT verify — refusing it. Either the store was ' +
@@ -289,4 +311,4 @@ function check(opts, cb) {
   }, 0, token);
 }
 
-module.exports = { check, verify, compareVersions, parseVersion, pickArtifact, MANIFEST_MAX };
+module.exports = { check, verify, compareVersions, parseVersion, pickArtifact, canonicalBytes, MANIFEST_MAX };

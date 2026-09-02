@@ -61,10 +61,24 @@ function dataDir() {
 function reportFailure(summary, detail) {
   const dir = dataDir();
   let logPath = null;
+  // Every install writes to the same per-user log, so it has to say which one
+  // wrote it. Without that, a log from one copy reads exactly like a log from
+  // another — including one left behind by a test.
+  let store = '(not resolved)';
+  try { store = require('./auth.js').STORE; } catch (e) { /* auth.js may be what failed */ }
+  const header = [
+    new Date().toISOString(),
+    `${NAME} ${VERSION}`,
+    `install:  ${ROOT}`,
+    `launcher: ${__filename}`,
+    `node:     ${process.version} (${process.execPath})`,
+    `store:    ${store}`,
+    `platform: ${process.platform}-${process.arch}`,
+  ].join('\n');
   try {
     fs.mkdirSync(dir, { recursive: true });
     logPath = path.join(dir, 'last-launch.log');
-    fs.writeFileSync(logPath, `${new Date().toISOString()}  ${NAME} ${VERSION}\n\n${summary}\n\n${detail || ''}\n`);
+    fs.writeFileSync(logPath, `${header}\n\n${summary}\n\n${detail || ''}\n`);
   } catch (e) { /* a log we cannot write is not worth failing over */ }
 
   process.stderr.write(`\n  ${summary}\n${detail ? '\n' + detail + '\n' : ''}`);

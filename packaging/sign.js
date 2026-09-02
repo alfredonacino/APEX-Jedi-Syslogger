@@ -121,16 +121,11 @@ function describe(file) {
   return { platform: 'any', arch: 'any', format: 'bin' };
 }
 
-// Canonical JSON: keys sorted at every depth, no incidental whitespace. The
-// signature covers *these* bytes, which is what lets the store re-serialise the
-// document however it likes and still verify it. Sign a pretty-printed blob and
-// the signature breaks the first time anything reformats it.
-function canonical(value) {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === 'object')
-    return Object.keys(value).sort().reduce((o, k) => { o[k] = canonical(value[k]); return o; }, {});
-  return value;
-}
+// The bytes a signature covers come from updater.js, imported rather than
+// reimplemented. A signer and a verifier that each define "canonical" for
+// themselves will agree right up until they do not, which is precisely the bug
+// this import exists to make impossible.
+const { canonicalBytes } = require('../updater.js');
 
 function sha256(file) {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -173,6 +168,30 @@ const files = fs.readdirSync(DIST).filter((f) => {
 });
 if (!files.length) die(`dist/ has no artefacts for version ${VERSION}`, 'run ./packaging/build.sh first');
 
+// Artefacts older than the code they were built from are a trap: sign them and
+// you publish a manifest the shipped client cannot verify, because the verifier
+// inside the package predates the signer that produced it. That happened once —
+// updater.js was fixed between the build and the signature — so it is checked
+// rather than remembered.
+(function refuseStaleArtefacts() {
+  const sources = ['js', 'jedi-cli.js', 'desktop.js', 'server.js', 'auth.js', 'forward.js', 'updater.js']
+    .map((f) => path.join(ROOT, f));
+  const newestSource = (function walk(targets, newest = 0) {
+    for (const t of targets) {
+      let st; try { st = fs.statSync(t); } catch (e) { continue; }
+      if (st.isDirectory()) newest = walk(fs.readdirSync(t).map((f) => path.join(t, f)), newest);
+      else newest = Math.max(newest, st.mtimeMs);
+    }
+    return newest;
+  })(sources);
+  const oldest = Math.min(...files.map((f) => fs.statSync(path.join(DIST, f)).mtimeMs));
+  if (oldest < newestSource) {
+    const stale = files.filter((f) => fs.statSync(path.join(DIST, f)).mtimeMs < newestSource);
+    die('the built artefacts are older than the source they were built from',
+      `stale: ${stale.join(', ')}\n      run ./packaging/build.sh again before signing`);
+  }
+})();
+
 const { priv, from, expected } = keyPair();
 
 const artifacts = files.sort().map((f) => Object.assign(
@@ -192,7 +211,7 @@ const doc = {
 };
 if (typeof notes === 'string') doc.notes = notes;
 
-const signedBytes = Buffer.from(JSON.stringify(canonical(doc)), 'utf8');
+const signedBytes = canonicalBytes(doc);
 const signature = crypto.sign(null, signedBytes, priv).toString('base64');
 
 // Verify our own output before publishing it, using the public key a shipped
