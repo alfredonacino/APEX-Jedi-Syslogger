@@ -645,7 +645,7 @@ trust, so a manifest that would verify nowhere cannot be published by accident.
 **Commands**
 
 ```bash
-jedi desktop                  # the app in its own window
+jedi desktop                  # the app in its own window (--debug to see why not)
 jedi                          # live dashboard: stream, detections, threat level
 jedi attack <scenario…>       # inject, print what fired, exit
 jedi appliance <source…>      # one burst in a vendor's real wire format

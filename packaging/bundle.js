@@ -3,7 +3,7 @@
  * bundle.js — fold the terminal app and the engine it requires into one file.
  *
  * Why hand-roll this instead of using a bundler: the whole project's rule is no
- * dependencies and no build step, and the module graph here is six files with
+ * dependencies and no build step, and the module graph here is seven files with
  * literal relative requires. A map from that literal string to a wrapped
  * function is the entire problem. The output is a single .js that runs on any
  * Node 18+, and it is also what a Node SEA build needs, since a sealed
@@ -18,7 +18,11 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const ENTRY = './jedi-cli.js';
 // Order is irrelevant — the shim resolves lazily — but keep it readable.
-const MODULES = ['./js/version.js', './js/data.js', './js/syslogger.js', './js/jedi.js', './forward.js', ENTRY];
+// Every literal specifier jedi-cli.js requires at load time has to be here: one
+// missing entry falls through to the real require(), which in a single file with
+// nothing beside it is a MODULE_NOT_FOUND before any command runs.
+const MODULES = ['./js/version.js', './js/data.js', './js/syslogger.js', './js/jedi.js',
+  './forward.js', './updater.js', './desktop.js', ENTRY];
 
 const { VERSION } = require('../js/version.js');
 const out = process.argv[2] || path.join(ROOT, 'dist', `jedi-${VERSION}.js`);

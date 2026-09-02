@@ -40,7 +40,7 @@ const FLAGS_WITH_VALUE = new Set([
 ]);
 const BOOL_FLAGS = new Set([
   'json', 'quiet', 'loop', 'test', 'ascii', 'no-color', 'color', 'help',
-  'version', 'hec-plain', 'hec-verify', 'raw', 'no-detect',
+  'version', 'hec-plain', 'hec-verify', 'raw', 'no-detect', 'debug',
 ]);
 
 function parseArgs(argv) {
@@ -669,7 +669,7 @@ ${b('COMMANDS')}
   appliance <source…>        emit one burst from an appliance source, exit
   replay <file>              replay a log file through the engine
   list [scenarios|appliances|rules]
-  desktop                    open the app in its own window (no browser, no URL)
+  desktop [--debug]          open the app in its own window (no browser, no URL)
   update                     check for a newer version (signature-verified)
   version | help
 
@@ -691,6 +691,7 @@ ${b('OPTIONS')}
   --json                     machine-readable output (NDJSON when streaming)
   --no-detect                generate only, run no detection rules
   --ascii --no-color         plain output for limited terminals
+  --debug                    desktop: keep the backend's log on this terminal
   --channel NAME             update channel to check (default: stable)
   --update-url URL           override the update server (testing)
 
@@ -725,7 +726,11 @@ function main() {
   switch (cmd) {
     case 'version': return void process.stdout.write(`${NAME} ${VERSION}\n`);
     case 'list': return cmdList(rest[0], flags);
-    case 'desktop': case 'gui': return require('./desktop.js');
+    // .main(), not a bare require: desktop.js guards its entry point on
+    // `require.main === module`, so requiring it from here loads the module and
+    // returns — no backend, no window, exit 0. That is what made `jedi desktop`
+    // (and so the .desktop launcher) do nothing at all.
+    case 'desktop': case 'gui': return require('./desktop.js').main();
     case 'update': return cmdUpdate(flags);
     case 'attack': return cmdAttack(rest, flags, 'attack');
     case 'appliance': return cmdAttack(rest, flags, 'appliance');

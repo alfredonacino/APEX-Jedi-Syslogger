@@ -1576,6 +1576,13 @@ It does three things:
 Closing the window ends the launcher, which kills the backend. There is no
 lingering server and no port to remember.
 
+**When it does not open.** Launched from a menu entry there is no terminal to
+print to, so every path that can end the launch early also writes
+`last-launch.log` into the per-user data directory
+(`~/.local/share/apex-jedisyslogger/` on Linux) and raises a zenity/kdialog
+dialog. `jedi desktop --debug` runs the same launch with the backend's own log
+on the terminal.
+
 **On plain HTTP, deliberately.** Desktop mode ignores `certs/` unless
 `JEDI_TLS_FORCE=1`. The socket is loopback, so there is no network path to
 protect, and a self-signed certificate would open every launch with a browser
@@ -1637,6 +1644,8 @@ confirmation on first launch, which `INSTALL.txt` says rather than hides.
 | A new certificate has not taken effect | Certificates are read at startup and `certs/` is not watched — `pm2 restart` (or restart the process). |
 | Port 8099 in use | `PORT=9000 node server.js`. |
 | Nothing happens on Start | Rate slider at 0, or a volume cap already reached — check the volume foot. |
+| The menu entry does nothing, no window | Run `jedi desktop --debug` in a terminal, and read `~/.local/share/apex-jedisyslogger/last-launch.log`. |
+| The app opens as a browser tab, not a window | No Chromium-family browser was found. Install Chromium/Chrome/Brave/Edge, or point `JEDI_BROWSER` at one. |
 
 ---
 

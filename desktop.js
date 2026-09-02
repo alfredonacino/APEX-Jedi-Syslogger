@@ -130,13 +130,25 @@ function onPath(cmd) {
   return null;
 }
 
+function resolveBrowser(c) {
+  if (c.includes(path.sep) || c.includes('/')) return fs.existsSync(c) ? c : null;
+  return onPath(c);
+}
+
 function findBrowser() {
+  // JEDI_BROWSER first: it is the override we tell people to reach for when the
+  // window does not appear, and behind the candidate list it could only ever
+  // take effect on a machine with no browser at all — where it is least needed.
+  if (process.env.JEDI_BROWSER) {
+    const chosen = resolveBrowser(process.env.JEDI_BROWSER);
+    if (chosen) return chosen;
+    log(`JEDI_BROWSER=${process.env.JEDI_BROWSER} is not an executable — looking for one instead.`);
+  }
   const list = CANDIDATES[process.platform] || CANDIDATES.linux;
   for (const c of list) {
-    if (c.includes(path.sep) || c.includes('/')) { if (fs.existsSync(c)) return c; }
-    else { const p = onPath(c); if (p) return p; }
+    const found = resolveBrowser(c);
+    if (found) return found;
   }
-  if (process.env.JEDI_BROWSER && fs.existsSync(process.env.JEDI_BROWSER)) return process.env.JEDI_BROWSER;
   return null;
 }
 
@@ -154,7 +166,14 @@ function openDefault(url) {
 function main() {
   const serverPath = path.join(ROOT, 'server.js');
   if (!fs.existsSync(serverPath)) {
-    log(`cannot find server.js next to ${path.basename(__filename)} — is the installation complete?`);
+    // reportFailure, not log(): launched from a menu entry there is no terminal
+    // to read, and an incomplete install would otherwise look like nothing
+    // happened at all. The single-file build lands here too — it carries the
+    // engine, but not the server, the page or the stylesheet.
+    reportFailure(`${NAME} could not start: the installation is incomplete.`,
+      `No server.js in ${ROOT}\n\n` +
+      `Install the full application (package, or the portable archive) and run\n` +
+      `'jedi desktop' from there. The single-file build is the terminal app only.`);
     process.exit(1);
   }
 
@@ -283,4 +302,6 @@ function main() {
 
 
 if (require.main === module) main();
-module.exports = { findBrowser, profileDir, HANDOFF_MS, FIRST_BEAT_MS };
+// main is exported because `jedi desktop` reaches this file through require():
+// the guard above is false then, so the CLI has to call it.
+module.exports = { main, findBrowser, profileDir, HANDOFF_MS, FIRST_BEAT_MS };
