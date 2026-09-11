@@ -117,7 +117,38 @@ function handleLaunch(req, res, url) {
   res.end();
 }
 
+// ---------------------------------------------------------------- framing
+//
+// On its own this app refuses to be framed: it holds forwarding credentials
+// and a signed-in session, and a page that can frame it can try to trick
+// somebody into clicking inside it.
+//
+// Inside ApexBuild it *is* framed -- by a shell on a different loopback port,
+// which is a different origin, so SAMEORIGIN would block it. The shell passes
+// its own origin in through APEX_EMBED_ORIGIN and we name exactly that one.
+// The shape is validated rather than trusted, so a stray environment variable
+// cannot turn this into something any website may embed.
+//
+// X-Frame-Options is dropped in that case rather than adjusted: its only
+// multi-origin form, ALLOW-FROM, is dead in every current browser, so a
+// browser honouring it would block the frame CSP has just permitted.
+const EMBED_ORIGIN = (() => {
+  const raw = (process.env.APEX_EMBED_ORIGIN || '').trim();
+  return /^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):\d{1,5}$/.test(raw) ? raw : '';
+})();
+
+function setFramingHeaders(res) {
+  if (EMBED_ORIGIN) {
+    res.setHeader('Content-Security-Policy', `frame-ancestors 'self' ${EMBED_ORIGIN}`);
+  } else {
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'self'");
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  }
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+}
+
 function handleRequest(req, res) {
+  setFramingHeaders(res);
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }

@@ -1,0 +1,22 @@
+# What makes this directory an ApexBuild module. See MODULE_CONTRACT.md.
+
+[module]
+id       = "jedisyslogger"
+name     = "APEX JediSyslogger"
+version  = "1.0.0"
+summary  = "Receive, inspect and forward syslog to TCP, UDP or Splunk HEC."
+icon     = "JS"
+accent   = "#39ff88"
+contract = 1
+order    = 60
+
+[run]
+launcher      = "apexmod"
+health        = "/status"
+ready_timeout = 40
+embeddable    = true
+
+[sync]
+# Credentials, TLS material, build output and captured log samples.
+# None of it belongs in a copy of this module.
+exclude = ["auth.json", "certs/", "dist/", "node_modules/", "*.log"]

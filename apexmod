@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""
+The uniform ApexBuild launcher for APEX JediSyslogger.
+
+Three subcommands, the same three every module in the suite has:
+
+    ./apexmod info                       the manifest, as JSON
+    ./apexmod check                      can this app run here?
+    ./apexmod run --host H --port P      serve on that address and stay up
+
+`run` is the only one with anything to fill in. Start the app's own server on
+the host and port it is given, print the APEX-READY line once the URL is known,
+and exit cleanly on SIGTERM. See MODULE_CONTRACT.md.
+"""
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0, str(ROOT))
+
+
+def manifest() -> dict:
+    try:
+        import tomllib
+    except ModuleNotFoundError:
+        try:
+            import tomli as tomllib  # type: ignore
+        except ModuleNotFoundError:
+            return {}
+    path = ROOT / "apexmodule.toml"
+    if not path.is_file():
+        return {}
+    with path.open("rb") as fh:
+        return tomllib.load(fh)
+
+
+def ready(url: str, health: str = "/") -> None:
+    """One line, on stdout, as soon as the URL is known.
+
+    Skipped when a person is watching: ApexBuild reads this through a pipe,
+    never a terminal, so a tty means somebody ran this by hand.
+    """
+    if sys.stdout.isatty() and not os.environ.get("APEX_HOST"):
+        return
+    sys.stdout.write("APEX-READY " + json.dumps({
+        "url": url, "health": health, "pid": os.getpid(),
+    }) + "\n")
+    sys.stdout.flush()
+
+
+def cmd_info(args) -> int:
+    print(json.dumps(manifest(), indent=2))
+    return 0
+
+
+def node_binary() -> str:
+    """The node to run this with. Empty when there is none."""
+    return shutil.which("node") or shutil.which("nodejs") or ""
+
+
+def cmd_check(args) -> int:
+    """Everything that has to be true before `run` can work.
+
+    This is the suite's first module that is not Python, which is the point of
+    the contract being a manifest and a launcher rather than an import: what
+    `apexmod run` starts is entirely this app's business, and here it is node.
+    """
+    problems = []
+    node = node_binary()
+    if not node:
+        problems.append("node is not on PATH. Install Node.js 18 or newer:\n"
+                        "         https://nodejs.org/  (or your package manager)")
+    for rel in ("server.js", "index.html", "auth.js", "forward.js"):
+        if not (ROOT / rel).is_file():
+            problems.append(f"{rel} is missing")
+
+    if not problems:
+        # Parse the server rather than merely finding node: a syntax error in
+        # server.js is exactly the failure this check exists to catch, and it
+        # costs one subprocess.
+        try:
+            res = subprocess.run([node, "--check", str(ROOT / "server.js")],
+                                 capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as e:
+            problems.append(f"cannot run {node}: {e}")
+        else:
+            if res.returncode != 0:
+                problems.append("server.js does not parse:\n         "
+                                + (res.stderr.strip().splitlines() or [""])[0])
+            else:
+                version = subprocess.run([node, "--version"], capture_output=True,
+                                         text=True).stdout.strip()
+                print(f"APEX JediSyslogger -- node {version} at {node}")
+                if (ROOT / "certs" / "server.crt").is_file():
+                    print("TLS certificate present; standalone runs serve https. "
+                          "Under ApexBuild the app is started on plain http -- see cmd_run.")
+
+    for line in problems:
+        print(f"error: {line}", file=sys.stderr)
+    return 1 if problems else 0
+
+
+def cmd_run(args) -> int:
+    node = node_binary()
+    if not node:
+        print("error: node is not on PATH; run ./apexmod check", file=sys.stderr)
+        return 2
+
+    host, port = args.host, args.port or 8099
+    ready(f"http://{host}:{port}/", "/status")
+
+    env = dict(os.environ)
+    env["PORT"] = str(port)
+    env["JEDI_BIND"] = host
+
+    # Plain http under the suite, deliberately.
+    #
+    # Standalone this app serves https from certs/server.crt, which is
+    # self-signed. A browser will not show its accept-the-risk interstitial
+    # inside an iframe -- it just refuses the load, with nothing the user can
+    # click. So the certificate is pointed at a path that does not exist, which
+    # is what server.js already keys "http or https" off, and the app comes up
+    # on http.
+    #
+    # Nothing is lost: this is loopback, and every other module in the suite is
+    # plain http on loopback for the same reason. Running ./run.sh on its own
+    # still serves https exactly as before.
+    missing = str(ROOT / ".apex-no-tls")
+    env["JEDI_TLS_CERT"] = missing
+    env["JEDI_TLS_KEY"] = missing
+
+    if args.embed_origin:
+        env["APEX_EMBED_ORIGIN"] = args.embed_origin
+
+    # Replace this process rather than spawning a child: ApexBuild stops a
+    # module by signalling the process it started, and a node hiding behind a
+    # Python wrapper would not receive it.
+    os.execve(node, [node, str(ROOT / "server.js")], env)
+    return 0   # not reached
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(prog="apexmod", description="APEX JediSyslogger launcher")
+    sub = p.add_subparsers(dest="cmd", required=True)
+    sub.add_parser("info").set_defaults(fn=cmd_info)
+    sub.add_parser("check").set_defaults(fn=cmd_check)
+    r = sub.add_parser("run")
+    r.add_argument("--host", default="127.0.0.1")
+    r.add_argument("--port", type=int, default=0)
+    r.add_argument("--data-dir", default="")
+    r.add_argument("--embed-origin", default="")
+    r.add_argument("--no-open", action="store_true")
+    r.set_defaults(fn=cmd_run)
+    args, extra = p.parse_known_args(argv)
+    if extra:
+        print(f"apexmod: ignoring unknown option(s): {' '.join(extra)}",
+              file=sys.stderr)
+    return args.fn(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
