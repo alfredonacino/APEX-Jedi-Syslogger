@@ -16,3 +16,6 @@ dist/
 publish.key
 *.key
 !certs/*.key
+
+# Launcher runtime state — pid and log files written by ./start.sh
+.run/

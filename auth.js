@@ -264,6 +264,7 @@ function publicUser(u) {
     role: u.role,
     totpConfirmed: !!u.totpConfirmed,
     passwordIsDefault: !!u.passwordIsDefault,
+    sso: !!u.sso,
     created: u.created,
   };
 }
@@ -362,11 +363,57 @@ class Auth {
     return Object.assign({ ok: true }, this.openSession(u, now));
   }
 
+  // Sign somebody in because ApexBuild says so.
+  //
+  // Nothing here authenticates anybody — apexsso.js already did, against a key
+  // that only this process and the shell that started it hold. This is the same
+  // bargain as the desktop launch ticket: the caller has already established
+  // that the person is who they say, and a password prompt on top would be
+  // theatre.
+  //
+  // The shell is authoritative for the role, because a suite with one identity
+  // and two answers about what it may do is worse than either answer. The one
+  // thing it cannot do is empty the admin set — that invariant belongs to this
+  // file and no caller gets to break it.
+  ssoSignIn(claims) {
+    const name = String(claims && claims.sub || '').trim();
+    if (!USERNAME_RE.test(name)) {
+      return { ok: false, error: `ApexBuild calls this person "${name}", which is not a username this app can hold` };
+    }
+    const wanted = claims.role === 'admin' ? 'admin' : 'user';
+    let u = this.byName(name);
+    let created = false, demotionRefused = false;
+
+    if (!u) {
+      // The password is generated and thrown away. The account exists so it can
+      // own a role, a session and a Log Collector; the only way into it is a
+      // ticket, and an unguessable hash says that without a null to trip over.
+      u = newUser(name, crypto.randomBytes(32).toString('hex'), wanted);
+      u.sso = true;
+      u.passwordIsDefault = false;
+      this.store.users.push(u);
+      created = true;
+    } else if (u.role !== wanted) {
+      // Never zero admins — the same rule setRole and deleteUser live under.
+      if (wanted === 'user' && u.role === 'admin' && this.admins().length === 1) {
+        demotionRefused = true;
+      } else {
+        u.role = wanted;
+        // A role change invalidates the cookies issued under the old one.
+        this.revokeSessionsFor(u.id);
+      }
+    }
+    if (!u.sso) u.sso = true;      // adopted a local account of the same name
+    save(this.store);
+    return { ok: true, user: u, created, demotionRefused };
+  }
+
   // Mint a session for a user who has already been authenticated by some other
-  // means. Two callers: verifyTotp above, and the desktop launcher, where the
+  // means. Three callers: verifyTotp above, the desktop launcher, where the
   // person is sitting at the machine that owns the credential store and a
-  // password prompt would be theatre. Nothing here authenticates anybody — that
-  // is the caller's job, and the only other caller is loopback-only.
+  // password prompt would be theatre, and ssoSignIn, where the shell that
+  // started this process has already asked. Nothing here authenticates
+  // anybody — that is the caller's job.
   openSession(u, now = Date.now()) {
     const sid = newToken();
     sessions.set(sid, { userId: u.id, expires: now + SESSION_TTL_MS });

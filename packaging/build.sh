@@ -61,6 +61,7 @@ say "staging $NAME-$VERSION"
 # spec, the PKGBUILD and the systemd unit have to be inside it.
 for item in jedi-cli.js desktop.js server.js auth.js forward.js updater.js ecosystem.config.js \
             index.html login.html account.html about.html \
+            apexmodule.toml apexmod apexmod.cmd apexsso.js start.sh \
             README.md DOCUMENTATION.md CONNECTORS.md LICENSE \
             js css bin samples types packaging jsconfig.json; do
   [ -e "$item" ] && cp -R "$item" "$STAGE/" || true

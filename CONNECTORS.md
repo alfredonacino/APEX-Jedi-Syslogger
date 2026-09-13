@@ -1,13 +1,13 @@
 # Connecting real sources — agents and API connectors
 
-APEX JediSyslogger emits **42 appliance formats**. Twenty-nine of them are native
+APEX JediSyslogger emits **56 appliance formats**. Thirty of them are native
 syslog: the device opens a socket to your collector and that is the whole
-integration. The other thirteen **cannot do that**, and this is the guide to the
+integration. The other twenty-six **cannot do that**, and this is the guide to the
 part that is left.
 
-- **`agent`** (4 sources) — the telemetry exists on the host, but nothing puts it
+- **`agent`** (7 sources) — the telemetry exists on the host, but nothing puts it
   on the wire. A forwarding agent has to read it and send it.
-- **`api`** (9 sources) — the product has no socket at all. A connector
+- **`api`** (19 sources) — the product has no socket at all. A connector
   authenticates, polls or subscribes, and re-emits the JSON.
 
 The simulator badges these on their buttons for exactly this reason: a source
@@ -239,7 +239,77 @@ hour — `filestream`/`imfile` follow the path, which is what you want. And if y
 run Zeek in JSON mode (`@load policy/tuning/json-logs`), the field names change
 completely; pick one and keep the parsers matched to it.
 
-### 2.5 What actually goes wrong with agents
+### 2.5 Windows DNS Server analytic log
+
+The DNS Server **debug** log is a text file and costs a lot of CPU; the
+**analytic** channel is an ETW trace and is the one to use. Neither is on by
+default and neither speaks syslog.
+
+```powershell
+# Enable the analytic channel (the DNS service briefly restarts)
+wevtutil sl "Microsoft-Windows-DNSServer/Analytical" /e:true /q:true /ms:104857600
+```
+
+- Event **256** is a query received, **257** a successful response, **258** a
+  recursive query. A tunnelling detection only needs 256 and its `QNAME`.
+- NXLog's `im_etw` module reads the channel directly — `im_msvistalog` cannot,
+  because analytic channels are not queryable event logs.
+- The channel is **high volume** on a busy DC. Filter to 256/257 at the agent and
+  drop `QTYPE=A` responses for names already in your allow-list, or you will
+  spend most of your licence on DNS.
+- Pair it with DHCP (`%SystemRoot%\System32\dhcp\DhcpSrvLog-*.log`, a plain CSV
+  read with `im_file`) to turn an IP in an alert back into a machine name.
+
+### 2.6 SQL Server audit
+
+SQL Server Audit writes to a file, the Windows Security log, or the Application
+log. The file target is the one worth shipping: it is binary, and `fn_get_audit_file`
+or an agent that understands `.sqlaudit` is what reads it.
+
+```sql
+CREATE SERVER AUDIT CorpAudit TO FILE (FILEPATH = 'D:\audit\', MAXSIZE = 256 MB);
+ALTER SERVER AUDIT CorpAudit WITH (STATE = ON);
+GO
+USE CRM_PROD;
+CREATE DATABASE AUDIT SPECIFICATION CrmReads
+  FOR SERVER AUDIT CorpAudit
+  ADD (SELECT ON SCHEMA::dbo BY public)
+  WITH (STATE = ON);
+```
+
+- Audit **`SELECT` by `public`** on the schemas that hold regulated data, not on
+  everything: `ADD (SELECT ON DATABASE::…)` across a busy OLTP database will
+  generate more audit than transactions.
+- The fields a detection needs are `server_principal_name`, `client_ip`,
+  `application_name`, `object_name`, `affected_rows` and `statement`.
+  `application_name` is what separates the application's service account from a
+  person holding SSMS — and that distinction is the whole rule.
+- `affected_rows` is only populated for some action ids; do not build a rule that
+  depends on it alone.
+
+### 2.7 Docker / container runtime
+
+Two different streams get confused here:
+
+- **Container stdout/stderr** — `--log-driver=syslog` on the daemon or per
+  container. This is application logging, not security telemetry.
+- **Daemon and Engine-API events** — `docker events`, the audit-relevant stream:
+  container create with `--privileged`, `exec_create` with its command line, image
+  pulls, volume mounts. Read them with a runtime agent (Falco, Sysdig, `auditd`
+  rules on `/var/run/docker.sock`) and ship those.
+
+```
+# auditd: anything touching the socket is a command execution primitive
+-w /var/run/docker.sock -p rwxa -k docker-socket
+```
+
+- Access to the socket **is** root on the host. Treat a rule on it the way you
+  treat one on `/etc/shadow`.
+- On Kubernetes nodes the equivalent is the container runtime's CRI events plus
+  the API-server audit log (§3.2) — the two answer different questions and you
+  want both.
+
+### 2.8 What actually goes wrong with agents
 
 - **UDP silently truncates and drops.** RFC 3164 receivers may cut the message at
   1024 bytes, which decapitates exactly the long Sysmon command lines your rules
@@ -294,6 +364,16 @@ A connector needs, at minimum:
 | **CrowdStrike Falcon** | Falcon SIEM Connector daemon consumes the Event Streams API and writes syslog/CEF/JSON locally | API client with the *Event streams: read* scope | Only **one** consumer per app id per stream — a second connector using the same credentials steals the offset. FDR (S3/SQS) is the bulk-telemetry alternative. |
 | **Cisco Umbrella** | Managed (or self-managed) S3 bucket receives gzipped CSV; or the Reporting API v2 | Bucket keys from the Umbrella dashboard, or an API key/secret | The CSV column order is versioned — pin the parser to the documented schema version. |
 | **Kubernetes audit** | API server `--audit-policy-file` + `--audit-log-path` (file → Filebeat/Fluent Bit), or `--audit-webhook-config-file` | RBAC on the collecting side; the file is on the control plane | An audit policy at `RequestResponse` for everything will bury you. Log `Metadata` broadly, `RequestResponse` only for `secrets`, `pods/exec` and RBAC objects. |
+| **Proofpoint Email** | SIEM API — `GET /v2/siem/all?sinceSeconds=3600`, poll hourly (max window 1 h) | Service principal + secret from the PPS admin console | The window is capped at an hour, so a connector that falls behind **cannot catch up** — alert on lag, not just on errors. `threatsInfoMap` is where the verdict lives. |
+| **SentinelOne** | `GET /web/api/v2.1/threats?createdAt__gte=…`, or the Syslog/HTTP integration in the console | API token from a service user (not a person's token) | A person's token dies with their account. `threatInfo.analystVerdict` changes *after* the fact — re-poll updated threats or your copy stays stale. |
+| **AWS GuardDuty** | EventBridge rule → Kinesis Firehose / SQS / Lambda, or a findings export to S3 | IAM role for the collector | Findings are **updated in place**: the same `id` arrives again with a higher `count`. Key on `id` and take the latest, or you will count one finding many times. |
+| **AWS VPC Flow Logs** | Flow log → CloudWatch Logs or S3; read with a subscription filter or an S3 notification | IAM role, `logs:FilterLogEvents` or `s3:GetObject` | Aggregation interval is 1 or 10 minutes — a scan shows up as one aggregated record, not per packet. Use a **custom format** and include `pkt-srcaddr` so NAT does not hide the real source. |
+| **Google Cloud audit** | Log sink → Pub/Sub topic → your collector pulls the subscription | Service account with `roles/pubsub.subscriber` on the subscription | *Admin Activity* logs are always on and free; **Data Access logs are off by default** and are the ones that show reads. Turn them on per service, deliberately. |
+| **Google Workspace** | Reports API — `GET /admin/reports/v1/activity/users/all/applications/{app}` | Service account with domain-wide delegation, scope `admin.reports.audit.readonly` | Events can appear **hours** late and out of order; checkpoint on the event's own `id.time`, never on your own clock. |
+| **Netskope** | REST API v2 — `GET /api/v2/events/dataexport/events/{type}` with an iterator | API token scoped to the event endpoints | The iterator is the checkpoint — persist it. Alert, page and application events are separate endpoints with separate iterators. |
+| **Cisco Duo** | Admin API — `GET /admin/v2/logs/authentication?mintime=…` | Integration key / secret key / API hostname, *Grant read log* only | Requests are HMAC-signed over a canonical string including the date header — clock skew of more than a minute fails every call with a 40103. |
+| **GitHub audit** | Enterprise audit log streaming to S3 / Event Hub / Splunk, or `GET /orgs/{org}/audit-log` | GitHub App or PAT with `read:audit_log` | Streaming is enterprise-tier; the REST endpoint is capped and paginated. `workflows.*` and `git.*` events are the ones worth alerting on — repo reads are not in the log at all. |
+| **OCSF (Security Lake)** | Amazon Security Lake writes OCSF parquet to S3; subscribe with a Lake Formation subscriber or read the bucket | IAM role for the subscriber | OCSF is a **schema**, not a transport: every source still arrives its own way and is normalised into `class_uid`/`activity_id`. Pin the schema version you parse — 1.1 → 1.3 moved fields. |
 
 ---
 
@@ -545,6 +625,16 @@ the rule is written, not after it silently never fires.
 | Okta System Log | API token, or OAuth service app | `okta.logs.read` | admin |
 | CrowdStrike Falcon | API client | *Event streams: read* | Falcon admin |
 | Cisco Umbrella | bucket keys or API key/secret | read on the log bucket | Umbrella admin |
+| Proofpoint SIEM API | service principal + secret | SIEM API access | PPS admin |
+| SentinelOne | API token on a service user | *Viewer* scope on the relevant site/account | S1 admin |
+| AWS GuardDuty | IAM role for the collector | `events:*` on the rule target, or `s3:GetObject` on the export prefix | — |
+| AWS VPC Flow Logs | IAM role for the collector | `logs:FilterLogEvents`, or `s3:GetObject` on the prefix | — |
+| Google Cloud audit | service account | `roles/pubsub.subscriber` on the subscription | project owner |
+| Google Workspace | service account, domain-wide delegation | `admin.reports.audit.readonly` | super admin |
+| Netskope | API v2 token | read on the event-export endpoints | Netskope admin |
+| Cisco Duo | Admin API application | *Grant read log* only | Duo owner |
+| GitHub audit | GitHub App or PAT | `read:audit_log` | enterprise owner |
+| Amazon Security Lake (OCSF) | IAM role for the subscriber | Lake Formation subscriber grant on the tables | Lake admin |
 
 Rules that hold for all of them:
 

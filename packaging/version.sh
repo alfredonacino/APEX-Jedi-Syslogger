@@ -22,6 +22,7 @@ targets() {
 packaging/PKGBUILD|^pkgver=(.+)$
 packaging/apex-jedisyslogger.spec|^Version:[[:space:]]+(.+)$
 packaging/apex-jedisyslogger.rb|^  version "(.+)"$
+apexmodule.toml|^version[[:space:]]+= "(.+)"$
 T
 }
 
@@ -39,8 +40,9 @@ case "${1:-}" in
     sed -i.bak -E "s/^Version:([[:space:]]+).*/Version:\1$NEW/" packaging/apex-jedisyslogger.spec
     sed -i.bak -E "s/^  version \".*\"/  version \"$NEW\"/" packaging/apex-jedisyslogger.rb
     sed -i.bak -E "s|/v[0-9]+\.[0-9]+\.[0-9]+/apex-jedisyslogger-[0-9]+\.[0-9]+\.[0-9]+\.tar\.gz|/v$NEW/apex-jedisyslogger-$NEW.tar.gz|" packaging/apex-jedisyslogger.rb
-    rm -f packaging/*.bak
-    echo "$OLD → $NEW  (web app, terminal build and packages)"
+    sed -i.bak -E "s/^version([[:space:]]+)= \".*\"/version\1= \"$NEW\"/" apexmodule.toml
+    rm -f packaging/*.bak apexmodule.toml.bak
+    echo "$OLD → $NEW  (web app, terminal build, packages and the ApexBuild manifest)"
     echo "next:  git commit -am \"Release v$NEW\" && git tag -a v$NEW -m \"v$NEW\" && git push --follow-tags"
     ;;
   --check|"")
@@ -54,7 +56,7 @@ case "${1:-}" in
         bad=1
       fi
     done < <(targets)
-    [ "${1:-}" = "--check" ] && { [ $bad -eq 0 ] && echo "version $V — web app, terminal build and packages agree"; exit $bad; }
+    [ "${1:-}" = "--check" ] && { [ $bad -eq 0 ] && echo "version $V — web app, terminal build, packages and the ApexBuild manifest agree"; exit $bad; }
     echo "$V"
     ;;
   *) echo "usage: version.sh [--check | --set X.Y.Z]" >&2; exit 2 ;;

@@ -782,6 +782,241 @@
         `action=${ev.action || 'blocked'}`].join(T);
       return `<${pri}>${bsdTimestamp(d)} ${ev.host} LEEF:2.0|${ev.vendorName || 'Lancope'}|${ev.productName || 'StealthWatch'}|2.0|${ev.threatSig || ev.message || 'Event'}|${attrs}`;
     },
+    // Proofpoint on-demand Email Protection — the SIEM API returns JSON per
+    // message, so a connector re-emits it; this is that connector's line.
+    proofpoint(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        GUID: ev.eventUuid, QID: ev.qid, messageID: ev.messageId, messageTime: utcTimestamp(d, true),
+        sender: ev.sender, recipient: [ev.recipient], fromAddress: [ev.headerFrom],
+        subject: ev.subject, senderIP: ev.srcIp, malwareScore: ev.malwareScore,
+        phishScore: ev.phishScore, spamScore: ev.spamScore, impostorScore: ev.impostorScore,
+        quarantineFolder: ev.quarantineFolder || null, quarantineRule: ev.quarantineRule || null,
+        policyRoutes: ev.policyRoutes || ['default_inbound'],
+        threatsInfoMap: ev.threats || [],
+        messageParts: ev.attachment
+          ? [{ filename: ev.attachment, sha256: ev.sha256, contentType: ev.contentType, disposition: 'attached' }]
+          : [],
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} pps_siem: ${JSON.stringify(rec)}`;
+    },
+    // SentinelOne Singularity — threats are pulled from /web/api/v2.1/threats.
+    sentinelone(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        id: ev.threatIdS1,
+        threatInfo: {
+          threatName: ev.fileName, classification: ev.s1Class, confidenceLevel: ev.s1Confidence,
+          analystVerdict: ev.s1Verdict, mitigationStatus: ev.s1Mitigation, incidentStatus: 'unresolved',
+          filePath: ev.filePath, sha1: ev.sha1, sha256: ev.sha256, initiatedBy: 'agent_policy',
+          identifiedAt: utcTimestamp(d, true), storyline: ev.storyline,
+          maliciousProcessArguments: ev.cmdLine || null,
+        },
+        agentRealtimeInfo: {
+          agentComputerName: ev.host, agentOsName: ev.osName || 'Windows 10 Pro',
+          agentIpV4: ev.hostIp, agentMachineType: 'laptop', agentDomain: 'CORP',
+        },
+        indicators: (ev.s1Indicators || []).map((i) => ({ category: i[0], description: i[1], tactics: i[2] })),
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} s1_threats: ${JSON.stringify(rec)}`;
+    },
+    // AWS GuardDuty finding — delivered through EventBridge or an S3 export.
+    guardduty(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        schemaVersion: '2.0', accountId: ev.accountId, region: ev.region, partition: 'aws',
+        id: ev.findingId, arn: `arn:aws:guardduty:${ev.region}:${ev.accountId}:detector/${ev.detectorId}/finding/${ev.findingId}`,
+        type: ev.findingType, severity: ev.gdSeverity, title: ev.title, description: ev.message,
+        createdAt: utcTimestamp(d, true), updatedAt: utcTimestamp(d, true), count: ev.gdCount || 1,
+        resource: { resourceType: ev.resourceType, instanceDetails: ev.instanceId
+          ? { instanceId: ev.instanceId, instanceType: 't3.medium', availabilityZone: `${ev.region}a` } : undefined,
+          accessKeyDetails: ev.accessKeyId
+            ? { accessKeyId: ev.accessKeyId, principalId: ev.principalId, userName: ev.user, userType: 'IAMUser' } : undefined },
+        service: {
+          serviceName: 'guardduty', detectorId: ev.detectorId, archived: false,
+          action: { actionType: ev.gdActionType,
+            networkConnectionAction: ev.dstIp
+              ? { connectionDirection: ev.direction || 'OUTBOUND', remoteIpDetails: { ipAddressV4: ev.dstIp, country: { countryName: ev.country } }, remotePortDetails: { port: ev.dstPort }, protocol: (ev.proto || 'TCP').toUpperCase(), blocked: false }
+              : undefined },
+          additionalInfo: { threatListName: ev.threatList || undefined },
+        },
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} aws_guardduty: ${JSON.stringify(rec)}`;
+    },
+    // AWS VPC Flow Log, default (version 2) space-separated fields.
+    vpcflow(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const end = Math.floor(ev.ts / 1000);
+      const f = ['2', ev.accountId, ev.eniId, ev.srcIp, ev.dstIp, ev.srcPort, ev.dstPort,
+        ev.protoNum || 6, ev.packets, ev.bytes, end - (ev.windowSecs || 60), end,
+        ev.action === 'REJECT' ? 'REJECT' : 'ACCEPT', ev.flowStatus || 'OK'];
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} vpc_flow: ${f.join(' ')}`;
+    },
+    // Google Cloud audit log — a Cloud Logging LogEntry with a protoPayload.
+    gcp(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        logName: `projects/${ev.project}/logs/cloudaudit.googleapis.com%2F${ev.gcpLogType || 'activity'}`,
+        resource: { type: ev.resourceType, labels: { project_id: ev.project, location: ev.location || 'us-central1' } },
+        timestamp: utcTimestamp(d, true), severity: ev.gcpSeverity || 'NOTICE',
+        insertId: ev.eventUuid,
+        protoPayload: {
+          '@type': 'type.googleapis.com/google.cloud.audit.AuditLog',
+          serviceName: ev.serviceName, methodName: ev.methodName, resourceName: ev.resourceName,
+          authenticationInfo: { principalEmail: ev.user },
+          requestMetadata: { callerIp: ev.srcIp, callerSuppliedUserAgent: ev.userAgent },
+          authorizationInfo: [{ permission: ev.permission, granted: ev.granted !== false }],
+          status: ev.errorCode ? { code: ev.errorCode, message: ev.errorMessage } : {},
+          request: ev.requestParameters || undefined,
+        },
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} gcp_audit: ${JSON.stringify(rec)}`;
+    },
+    // Google Workspace admin/login audit — Reports API activities.list shape.
+    gworkspace(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        kind: 'admin#reports#activity',
+        id: { time: utcTimestamp(d, true), uniqueQualifier: ev.qid, applicationName: ev.gwApp, customerId: ev.customerId },
+        actor: { email: ev.user, profileId: ev.actorId },
+        ipAddress: ev.srcIp,
+        events: [{ type: ev.gwType, name: ev.gwName,
+          parameters: (ev.gwParams || []).map(([n, v]) => (typeof v === 'boolean' ? { name: n, boolValue: v } : { name: n, value: String(v) })) }],
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} gws_reports: ${JSON.stringify(rec)}`;
+    },
+    // Netskope Next Gen SWG — alert/page events from the REST API v2.
+    netskope(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        timestamp: Math.floor(ev.ts / 1000), type: ev.nsType || 'nspolicy',
+        alert_type: ev.alertType, alert_name: ev.threatSig || undefined,
+        user: ev.user, userip: ev.srcIp, srcip: ev.srcIp, dstip: ev.dstIp,
+        app: ev.app, appcategory: ev.appCategory, ccl: ev.ccl, activity: ev.activity,
+        object: ev.objectName, object_type: ev.objectType, file_size: ev.bytes,
+        action: ev.action, policy: ev.policy, traffic_type: 'CloudApp',
+        url: ev.url, site: ev.site, dlp_rule: ev.dlpRule || undefined,
+        dlp_incident_id: ev.dlpIncident || undefined, severity: ev.nsSeverity || undefined,
+        src_country: ev.country, organization_unit: 'corp/eng',
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} netskope_events: ${JSON.stringify(rec)}`;
+    },
+    // Cisco Duo Admin API — authentication log v2 record.
+    duo(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        access_device: { browser: ev.browser, os: ev.clientOs, ip: ev.srcIp,
+          location: { city: ev.city, country: ev.country } },
+        application: { name: ev.appName, key: ev.appId },
+        auth_device: { name: ev.authDevice, ip: ev.authDeviceIp || null,
+          location: { city: ev.authCity || ev.city, country: ev.authCountry || ev.country } },
+        event_type: 'authentication', factor: ev.factor, reason: ev.duoReason,
+        result: ev.outcome, timestamp: Math.floor(ev.ts / 1000), isotimestamp: utcTimestamp(d, true),
+        txid: ev.eventUuid, user: { name: ev.user, key: ev.actorId, groups: ev.groups || ['corp-staff'] },
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} duo_auth: ${JSON.stringify(rec)}`;
+    },
+    // Windows DNS Server analytic log, as an agent renders it.
+    windns(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const kv = [`EventID=${ev.eventId}`, `TASK=${ev.dnsTask}`, `InterfaceIP=${ev.hostIp}`,
+        `Source=${ev.srcIp}`, `RD=1`, `QNAME=${ev.domain}`, `QTYPE=${ev.qtype}`,
+        `XID=0x${rand.hex(4)}`, `Port=${ev.srcPort}`, `Flags=0x${rand.hex(4)}`];
+      if (ev.rcode) kv.push(`RCODE=${ev.rcode}`);
+      if (ev.answer) kv.push(`Answer=${ev.answer}`);
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} Microsoft-Windows-DNSServer/Analytical: ${kv.join(' ')}`;
+    },
+    // nginx combined access log — nginx speaks syslog natively.
+    nginx(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const t = `${pad(d.getDate())}/${MONTHS[d.getMonth()]}/${d.getFullYear()}:` +
+        `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ` +
+        `${(-d.getTimezoneOffset()) >= 0 ? '+' : '-'}${pad(Math.floor(Math.abs(d.getTimezoneOffset()) / 60))}00`;
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} nginx: ${ev.srcIp} - ${ev.user || '-'} [${t}] ` +
+        `"${ev.method} ${ev.url} HTTP/${ev.httpVersion || '1.1'}" ${ev.status} ${ev.bytes} ` +
+        `"${ev.referer || '-'}" "${ev.userAgent}" rt=${ev.requestTime || '0.031'} uct="${ev.upstreamTime || '0.000'}"`;
+    },
+    // GitHub Enterprise audit log — one JSON object per action.
+    github(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        '@timestamp': ev.ts, action: ev.ghAction, actor: ev.user, actor_id: ev.actorId,
+        actor_ip: ev.srcIp, org: ev.org, repo: ev.repo, created_at: ev.ts,
+        _document_id: ev.eventUuid, user_agent: ev.userAgent,
+        business: 'corp', operation_type: ev.operationType || 'modify',
+        workflow_run_id: ev.workflowRunId || undefined, workflow_id: ev.workflowId || undefined,
+        head_branch: ev.branch || undefined, name: ev.workflowName || undefined,
+        runner_group_name: ev.runnerGroup || undefined, runner_name: ev.runnerName || undefined,
+        visibility: ev.visibility || undefined, permission: ev.permission || undefined,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} github_audit: ${JSON.stringify(rec)}`;
+    },
+    // Microsoft SQL Server Audit — the file/Security-log record, flattened by an agent.
+    mssql(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const kv = [`event_time=${utcTimestamp(d, true)}`, `action_id=${ev.actionId}`,
+        `class_type=${ev.classType}`, `succeeded=${ev.succeeded === false ? 'false' : 'true'}`,
+        `session_server_principal_name=${ev.user}`, `server_principal_name=${ev.user}`,
+        `database_name=${ev.dbName}`, `schema_name=${ev.schemaName || 'dbo'}`,
+        `object_name=${ev.objectName}`, `client_ip=${ev.srcIp}`,
+        `application_name="${ev.appName}"`, `host_name=${ev.clientHost}`,
+        `affected_rows=${ev.rows != null ? ev.rows : 0}`,
+        `statement="${String(ev.statement || '').replace(/"/g, "'")}"`];
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} MSSQLSERVER-Audit: ${kv.join(' ')}`;
+    },
+    // Docker Engine API / daemon event, as a container-runtime agent reports it.
+    docker(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        Type: ev.dockerType || 'container', Action: ev.dockerAction,
+        Actor: { ID: ev.containerId, Attributes: Object.assign({
+          image: ev.image, name: ev.containerName, 'com.docker.compose.project': ev.project || 'corp-stack',
+        }, ev.privileged ? { privileged: 'true' } : {}, ev.mounts ? { mounts: ev.mounts } : {}) },
+        scope: 'local', time: Math.floor(ev.ts / 1000), timeNano: ev.ts * 1e6,
+        exec: ev.cmdLine ? { Cmd: ev.cmdLine, Privileged: !!ev.privileged, User: ev.user || 'root' } : undefined,
+        remote_addr: ev.srcIp, api_version: '1.45',
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} dockerd: ${JSON.stringify(rec)}`;
+    },
+    // Generic OCSF (Open Cybersecurity Schema Framework) event. A schema rather
+    // than a wire format: Security Lake writes it to S3 and a connector re-emits
+    // it, which is why this source is 'api' and not native syslog.
+    ocsf(ev) {
+      const pri = ev.facility * 8 + ev.severity;
+      const d = new Date(ev.ts);
+      const rec = {
+        metadata: { version: '1.3.0', product: { name: ev.productName, vendor_name: ev.vendorName },
+          profiles: ev.ocsfProfiles || ['host'], log_name: ev.ocsfLogName || 'ocsf' },
+        class_uid: ev.classUid, class_name: ev.className,
+        category_uid: ev.categoryUid, category_name: ev.categoryName,
+        activity_id: ev.activityId, activity_name: ev.activityName,
+        type_uid: ev.classUid * 100 + ev.activityId,
+        severity_id: ev.ocsfSeverityId, severity: ev.ocsfSeverity,
+        status_id: ev.statusId != null ? ev.statusId : 1, status: ev.ocsfStatus || 'Success',
+        time: ev.ts, message: ev.message,
+        actor: ev.user ? { user: { name: ev.user, type: 'User' } } : undefined,
+        device: { hostname: ev.host, ip: ev.hostIp, type_id: 1 },
+        src_endpoint: ev.srcIp ? { ip: ev.srcIp, port: ev.srcPort } : undefined,
+        dst_endpoint: ev.dstIp ? { ip: ev.dstIp, port: ev.dstPort } : undefined,
+        finding_info: ev.threatSig ? { title: ev.threatSig, uid: ev.findingId,
+          types: [ev.findingCategory || 'Security Control'] } : undefined,
+        unmapped: ev.unmapped || undefined,
+      };
+      return `<${pri}>${bsdTimestamp(d)} ${ev.host} ocsf: ${JSON.stringify(rec)}`;
+    },
   };
 
   // Build the raw syslog wire line for an event in the requested format.

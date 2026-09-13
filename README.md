@@ -5,7 +5,7 @@ practice. It has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **42 appliance formats** (firewalls and NGFW, IDS/NDR, proxies, DNS/DDI, mail and email security, VPN gateways, a PAM vault, hypervisor, backup, endpoint EDR, and cloud/SaaS control planes — Palo Alto, FortiGate, Cisco ASA/FTD/IOS/ISE/ESA/Meraki/Umbrella, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, NetScaler, Ivanti Connect Secure, Snort 3, Suricata, Zeek, HAProxy, Squid, BIND 9, Infoblox NIOS, Postfix, CyberArk, Veeam, VMware ESXi, Windows Event Log via Snare, Sysmon, Linux auditd, AWS CloudTrail, Azure Activity, Microsoft 365, Entra ID, Defender for Endpoint, Okta, CrowdStrike, Kubernetes audit, and generic CEF/LEEF) from simulated infrastructure at a configurable *events-per-second*, injects **72 attack scenarios** on demand, and can replay a log file in a loop. |
+| **Syslogger** | A synthetic log source. Emits realistic **RFC 3164** and **RFC 5424** syslog plus **56 appliance formats** (firewalls and NGFW, IDS/NDR, proxies, DNS/DDI, mail and email security, VPN gateways, a PAM vault, hypervisor, backup, endpoint EDR, container and CI/CD platforms, a database audit trail, and cloud/SaaS control planes — Palo Alto, FortiGate, Cisco ASA/FTD/IOS/ISE/ESA/Meraki/Umbrella, Check Point, Sophos, pfSense, Juniper SRX, SonicWall, Zscaler, F5 BIG-IP ASM, NetScaler, Ivanti Connect Secure, Snort 3, Suricata, Zeek, HAProxy, Squid, BIND 9, Infoblox NIOS, Postfix, CyberArk, Veeam, VMware ESXi, Windows Event Log via Snare, Sysmon, Linux auditd, AWS CloudTrail, Azure Activity, Microsoft 365, Entra ID, Defender for Endpoint, Okta, CrowdStrike, Kubernetes audit, Proofpoint, SentinelOne, AWS GuardDuty and VPC Flow Logs, Google Cloud and Google Workspace, Netskope, Cisco Duo, Windows DNS, nginx, GitHub audit, SQL Server audit, Docker, and generic CEF/LEEF/OCSF) from simulated infrastructure at a configurable *events-per-second*, injects **83 attack scenarios** on demand, and can replay a log file in a loop. |
 | **Jedi**      | A miniature SIEM engine. Ingests every event, keeps rolling statistics, and runs a **stateful detection-rule engine** that raises **MITRE ATT&CK-tagged** alerts. |
 
 The dashboard runs entirely in the browser. An optional **zero-dependency Node
@@ -96,7 +96,14 @@ rules see [Run it](#run-it) below and
 ## Run it
 
 ```bash
-# Recommended — serves the app AND enables live forwarding + the connectivity test
+# Simplest — the launcher starts the backend and opens a browser at it
+./start.sh                     # foreground, Ctrl-C to stop
+./start.sh -d                  # background; stop / restart / status / logs
+./start.sh --port 9000         # custom port
+./start.sh desktop             # the desktop app (loopback, its own window)
+./start.sh cli --help          # the terminal build
+
+# Or run the backend directly — serves the app AND enables live forwarding + the test
 node server.js                 # then browse to http://localhost:8099
 PORT=9000 node server.js       # custom port
 
@@ -426,23 +433,23 @@ Batches go to `/services/collector/event` every 500 ms, up to 1000 events each.
 |------|---------|--------|
 | SSH Brute-Force | ≥ 8 failed `sshd` logins from one IP / 60s | T1110 |
 | Login After Brute Force | `Accepted password` following a failure burst | T1078 |
-| Horizontal Port Scan | ≥ 15 distinct denied dst ports from one IP / 30s | T1046 |
+| Horizontal Port Scan | ≥ 15 distinct denied/rejected dst ports from one IP / 30s (firewall, VPC Flow Logs) | T1046 |
 | SQL Injection | SQLi patterns in an HTTP request | T1190 |
 | C2 / Known-Bad Destination | Internal host → threat-intel IP | T1071 |
 | Large Outbound Transfer | Outbound flow > 100 MB | T1048 |
-| DNS Tunneling | Very long DNS label / known-bad domain (BIND, Infoblox, Umbrella) | T1071.004 |
+| DNS Tunneling | Very long DNS label / known-bad domain, counted per source (BIND, Infoblox, Umbrella, Windows DNS) | T1071.004 |
 | Privilege Escalation | `sudo … USER=root` / Windows EventID 4672 | T1068 |
 | IDS Malware Signature | Suricata/ET trojan / exploit hit | T1204 |
-| Web Application Attack | Log4Shell / Exchange ProxyNotShell / XSS / traversal / web shell / scanner UA / metadata SSRF | T1190 · T1059 · T1083 · T1505.003 · T1595 · T1552.005 |
+| Web Application Attack | Log4Shell / Exchange ProxyNotShell / XSS / traversal / web shell / scanner UA / metadata SSRF (generic web and nginx) | T1190 · T1059 · T1083 · T1505.003 · T1595 · T1552.005 |
 | Windows Security Event | RDP brute / spray / Kerberoasting / AS-REP roast / Golden Ticket / DCSync / new admin / log-clear / PtH / PsExec | T1110 · T1558.001 · T1558.003 · T1558.004 · T1003.006 · T1136 · T1070.001 · T1550.002 · T1021.002 |
 | Credential Dumping (LSASS) | Sysmon 10 handle into `lsass.exe` with dump rights, or a known dumper | T1003.001 |
-| Persistence Mechanism Created | `CurrentVersion\Run` write, scheduled task, or service install | T1547.001 · T1053.005 · T1543.003 |
+| Persistence Mechanism Created | `CurrentVersion\Run` write, scheduled task, service install, or a Python startup hook (`sitecustomize.py`, `PYTHONSTARTUP`) | T1547.001 · T1053.005 · T1543.003 · T1546.018 |
 | LOLBin Download / Proxy Execution | `certutil -urlcache`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` | T1105 · T1218 |
-| Security Tooling Disabled | Defender real-time protection off, AMSI patched, exclusion added, or Defender's own tamper alert (protection off, sensor stopped) | T1562.001 |
+| Security Tooling Disabled | Defender real-time protection off, AMSI patched, or Defender's own tamper alert; a scanner **exclusion** left running is reported separately | T1562.001 · T1679 |
 | Active Directory Enumeration | SharpHound / AdFind on disk, or ≥ 10 LDAP object reads / account / 60s | T1087.002 |
 | Cloud Control-Plane Abuse | CloudTrail `StopLogging`, IAM key/admin-policy creation, public S3; Azure diagnostic-settings delete, Owner role assignment, `listKeys`, key-vault policy write; Microsoft 365 forwarding and transport rules, audit logging off, anonymous sharing, external Teams guests, eDiscovery export, Power Automate exfil flows, mailbox-sync and mass-download bursts | T1562.008 · T1098.001 · T1098.003 · T1530 · T1078.004 · T1552.001 · T1555 · T1114.002 · T1114.003 · T1199 · T1213 · T1213.002 · T1567 |
 | Identity Provider Threat | Okta sign-ins from 2 countries / hour, MFA factor or policy change; Entra legacy-auth bypass, OAuth consent, and directory audits — a rogue MFA method registered or a Conditional Access policy weakened | T1078.004 · T1098.003 · T1528 · T1556.006 · T1556.009 |
-| MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, and the approval that follows | T1621 |
+| MFA Push Bombing | ≥ 6 rejected push prompts / user / 5 min (Okta, Duo), and the approval that follows | T1621 |
 | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | Suspicious PowerShell | `powershell -enc` / `FromBase64String` / hidden window | T1059.001 |
 | Cryptomining | `stratum+tcp` / known mining pool | T1496 |
@@ -454,23 +461,30 @@ Batches go to `/services/collector/event` every 500 ms, up to 1000 events each.
 | Appliance IPS / WAF Signature | any appliance threat/violation signature; an EDR that names its own technique (Defender) keeps that mapping | T1190 (mapped by signature) |
 | Process Injection | Sysmon 10 access with `CreateRemoteThread` rights | T1055 |
 | Credentials From Password Store | Browser `Login Data` + `Local State` read together, or ≥ 4 CyberArk safes checked out by one holder / 2 min | T1555.003 · T1555.005 |
-| Masquerading System Binary | A `System32` binary name running from a user-writable path | T1036.005 |
+| Masquerading System Binary | A `System32` binary name running from a user-writable path, or a TLS fingerprint that contradicts the advertised browser | T1036.005 · T1036.012 |
 | Unmanaged Remote Access Tool | AnyDesk / ScreenConnect-class binary calling out | T1219 |
-| Sandbox / VM Evasion | VM-artefact probing before the payload runs | T1497 |
+| Sandbox / VM Evasion | VM-artefact probing or a multi-minute stall before the payload runs | T1497.001 · T1497.003 |
 | Covert C2 Channel | Proxy `CONNECT` to Tor ports, or a fixed-cadence pull loop against trusted SaaS | T1090.003 · T1102.002 |
 | Exfiltration to Cloud Storage | `PUT`/`POST` > 100 MB to Dropbox / Mega / transfer.sh | T1567.002 |
-| Network Device Config Tampering | Cisco IOS config removing `logging host` or an ACL | T1562.004 |
+| Network Device Config Tampering | Cisco IOS config removing `logging host`, an ACL, or the device's own inspection policy | T1562.004 · T1562.013 |
 | VPN / Gateway Credential Stuffing | ≥ 6 distinct accounts tried from one IP / 2 min (NetScaler, Ivanti) | T1110.004 |
 | Hypervisor Tampering | ESXi lockdown off, SSH enabled, or `esxcli vm process kill` | T1562.001 |
 | Kubernetes Cluster Abuse | Privileged / `hostPID` pod create, or anonymous `pods/exec` | T1611 |
 | Remote Execution (WMI / WinRM) | Connect to 135 / 5985 followed by a remote process create | T1047 · T1021.006 |
+| Container Runtime Abuse | A command exec'd through the Docker Engine API, or a privileged container with the host root mounted | T1059.013 · T1610 · T1611 |
+| Database Mass Extraction | ≥ 3 whole tables read from one database by a person through SSMS / `bcp` / `sqlcmd` / 5 min | T1213.006 |
+| Poisoned Pipeline Execution | A workflow file edited, then run on a self-hosted runner holding the repo's secrets | T1677 |
+| Backup Software Discovery | `vssadmin list shadows`, `wbadmin get versions`, or Veeam/BackupExec enumeration | T1518.002 |
+| Local Storage Discovery | ≥ 2 volume/drive enumerations on one host / 2 min (`wmic logicaldisk`, `Get-PSDrive`, `lsblk`) | T1680 |
+| Malicious Library Sideload | A signed binary loading a DLL out of a user-writable directory | T1204.005 |
+| Delayed Execution | A ≥ 60 s stall chained to the command that follows it | T1678 |
 
-**Scenarios** — 72 attacks (`Attack ›`) and 42 appliance formats (`Appliance logs ›`).
+**Scenarios** — 83 attacks (`Attack ›`) and 56 appliance formats (`Appliance logs ›`).
 Every scenario is wired to a detection, so each button demonstrably lights up the
 dashboard. The **Threat Level** meter aggregates recent alerts (last 2 min) weighted
 by severity, DEFCON-style: `GUARDED → ELEVATED → HIGH → SEVERE → CRITICAL`.
 
-## Attack scenarios (72)
+## Attack scenarios (83)
 
 Injected from the **Attack ›** menu; each button fires a burst built to trip a
 detection. Full detail — burst sizes, payloads, and the rule each one fires — is
@@ -488,15 +502,22 @@ in [DOCUMENTATION.md §5](DOCUMENTATION.md#5-attack-scenarios).
 - **Email** — Phishing Email
 - **Microsoft 365 / Office** — Exchange Online Mailbox Exfil · Exchange Transport Rule Tamper · SharePoint Mass Download · OneDrive Anonymous Sharing · Teams External Access Abuse · M365 Audit Logging Disabled · eDiscovery Search Abuse · Power Automate Exfil Flow
 - **Microsoft identity & endpoint** — Rogue MFA Method Registered · Conditional Access Weakened · Defender EDR Tampering · Exchange ProxyNotShell
+- **ATT&CK v18 (Oct 2025)** — Network Device Firewall Off · Backup Software Discovery · EDR Exclusion Added · Container CLI Abuse · Local Storage Discovery · Python Startup Hook · Malicious Library Sideload · Browser Fingerprint Spoof · Delayed Execution · Database Mass Extraction · Poisoned Pipeline Execution
 
-The last twelve are the **product pack**: bursts aimed at one product's own log
+Those eleven cover the techniques ATT&CK added in **v18** (28 October 2025):
+`T1562.013`, `T1518.002`, `T1679`, `T1059.013`, `T1680`, `T1546.018`,
+`T1204.005`, `T1036.012`, `T1678`, `T1213.006` and `T1677`. `T1497.003` — the
+time-based half of sandbox evasion, promoted to a major version in the same
+release — is covered by the existing **Sandbox / VM Evasion** scenario.
+
+Twelve of the rest are the **product pack**: bursts aimed at one product's own log
 source, in the record shape it really writes — eight on the Office 365 unified
 audit log, two on the Entra ID directory audit, one on Defender for Endpoint's
 alert feed, one on on-prem Exchange. See
 [DOCUMENTATION.md §5.1](DOCUMENTATION.md#51-the-product-pack), and
 [`CONNECTORS.md`](CONNECTORS.md) for how to collect these feeds for real.
 
-## Appliance log formats (42)
+## Appliance log formats (56)
 
 Injected from the **Appliance logs ›** menu — each event is rendered in the
 vendor's real wire format (syslog `<PRI>` + native payload). Full example lines
@@ -544,8 +565,22 @@ and detection mapping: [DOCUMENTATION.md §6](DOCUMENTATION.md#6-appliance-log-f
 | CrowdStrike Falcon `api` | `DetectionSummaryEvent` JSON | `appliance-threat` |
 | Defender for Endpoint `api` | Defender XDR `AlertInfo` JSON | `appliance-threat` |
 | Kubernetes audit `api` | `audit.k8s.io/v1` JSON | `k8s-threat` |
+| Proofpoint Email `api` | SIEM-API JSON message record | `appliance-threat` |
+| SentinelOne `api` | Singularity `threats` JSON | `appliance-threat` |
+| AWS GuardDuty `api` | finding JSON | `appliance-threat` |
+| AWS VPC Flow Logs `api` | version-2 space-separated | `port-scan` |
+| Google Cloud audit `api` | Cloud Logging `AuditLog` JSON | `appliance-threat` |
+| Google Workspace `api` | Reports API `activity` JSON | `appliance-threat` |
+| Netskope SWG `api` | REST v2 event JSON | `appliance-threat` |
+| Cisco Duo MFA `api` | Admin API auth-log JSON | `mfa-fatigue` |
+| Windows DNS Server `agent` | `Microsoft-Windows-DNSServer/Analytical` | `dns-tunneling` |
+| nginx (web) | combined access log | `web-exploit` |
+| GitHub audit `api` | audit-log JSON | `pipeline-abuse` |
+| SQL Server audit `agent` | `MSSQLSERVER-Audit` `key=value` | `db-repository` |
+| Docker runtime `agent` | Engine-API event JSON | `container-runtime` |
 | CEF (generic) | ArcSight CEF | `appliance-threat` |
 | LEEF (generic) | QRadar LEEF | `appliance-threat` |
+| OCSF (generic) `api` | OCSF 1.3 JSON (Security Lake) | `appliance-threat` |
 
 Appliances carrying an IPS/WAF signature fire **`appliance-threat`**; the pure
 firewalls (Cisco ASA, Check Point, pfSense, Juniper) route their malicious event
@@ -683,17 +718,22 @@ sudo systemctl enable --now apex-jedisyslogger
 index.html        markup + panel scaffold
 login.html        password + two-factor sign-in page
 account.html      profile, password, second factor, and user management
-css/styles.css    dark SIEM theme
+css/styles.css    neon SIEM theme (dark, glowing edges, monospace)
 js/data.js        data pools, RNG, RFC 3164/5424 + vendor line formatting
 js/syslogger.js   log generator, appliance sources, scenarios, file replay, forwarding
 js/jedi.js        SIEM engine: parsing, correlation, detection rules
 js/ui.js          dashboard rendering + wiring
+js/toast.js       neon detection popups + the critical klaxon
+apexsso.js        verifies the ApexBuild sign-on ticket (node apexsso.js --selftest)
+apexmodule.toml   what ApexBuild needs to know about this app
+apexmod           the suite's uniform launcher: info / check / run
 js/login.js       the two-step sign-in flow
 js/qr.js          QR encoder for the 2FA enrolment code (browser + console)
 js/account.js     the Account page: profile, collector, users
 auth.js           accounts: scrypt passwords, TOTP, roles, sessions, lockout
 auth.json         generated per install: accounts + each user's collector (0600, gitignored)
 server.js         optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
+start.sh          launcher: start/stop/status/logs, desktop mode, the terminal build
 samples/sample.log  example mixed-format log for the file-replay demo
 jsconfig.json     editor typecheck settings (no install needed, ships nothing)
 types/globals.d.ts  ambient declarations for window.JS and Node globals

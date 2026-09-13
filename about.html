@@ -47,7 +47,7 @@
     .doc td { color: var(--text-dim); }
     .doc td code, .doc th code { white-space: nowrap; }
     .doc .callout {
-      border-left: 3px solid var(--saber-2); background: rgba(56,189,248,.06);
+      border-left: 3px solid var(--saber-2); background: rgba(0,240,255,.06);
       border-radius: 0 8px 8px 0; padding: 10px 14px; margin: 14px 0; color: var(--text-dim);
     }
     .doc .callout.warn { border-left-color: var(--medium); background: rgba(255,176,32,.06); }
@@ -85,7 +85,7 @@
           <tr>
             <td><strong>Syslogger</strong></td>
             <td>A synthetic log source. Emits realistic <strong>RFC 3164</strong> and
-            <strong>RFC 5424</strong> syslog plus <strong>42 appliance formats</strong>
+            <strong>RFC 5424</strong> syslog plus <strong>56 appliance formats</strong>
             (firewalls and NGFW, IDS/NDR, proxies, DNS/DDI, mail and email security, VPN
             gateways, a PAM vault, hypervisor, backup, endpoint EDR, and cloud/SaaS control
             planes —
@@ -97,7 +97,7 @@
             Entra ID, Defender for Endpoint, Okta, CrowdStrike, Kubernetes audit, and
             generic CEF/LEEF) from
             simulated infrastructure at a configurable <em>events-per-second</em>, injects
-            <strong>72 attack scenarios</strong> on demand, and can replay a log file in
+            <strong>83 attack scenarios</strong> on demand, and can replay a log file in
             a loop.</td>
           </tr>
           <tr>
@@ -468,14 +468,21 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
           <tr><td>Credential Dumping (LSASS)</td><td>Sysmon <code>10</code> handle into <code>lsass.exe</code> with dump rights, or a known dumper</td><td>T1003.001</td></tr>
           <tr><td>Persistence Mechanism Created</td><td><code>CurrentVersion\Run</code> write, scheduled task, or service install</td><td>T1547.001 · T1053.005 · T1543.003</td></tr>
           <tr><td>LOLBin Download / Proxy Execution</td><td><code>certutil -urlcache</code>, <code>bitsadmin /transfer</code>, <code>mshta http…</code></td><td>T1105 · T1218</td></tr>
-          <tr><td>Security Tooling Disabled</td><td>Defender real-time protection off, AMSI patched, exclusion added, or Defender's own tamper alert</td><td>T1562.001</td></tr>
+          <tr><td>Security Tooling Disabled</td><td>Defender real-time protection off, AMSI patched, or Defender's own tamper alert; a scanner <strong>exclusion</strong> left running is its own cell</td><td>T1562.001 · T1679</td></tr>
           <tr><td>Active Directory Enumeration</td><td>SharpHound / AdFind on disk, or ≥ 10 LDAP object reads / account / 60s</td><td>T1087.002</td></tr>
           <tr><td>Cloud Control-Plane Abuse</td><td>CloudTrail <code>StopLogging</code>, IAM key/admin-policy creation, public S3; Azure control-plane abuse; Microsoft 365 forwarding &amp; transport rules, audit logging off, anonymous sharing, external Teams guests, eDiscovery export, exfil flows, mailbox-sync and mass-download bursts</td><td>T1562.008 · T1098 · T1530 · T1078.004 · T1114.002 · T1114.003 · T1199 · T1213.002 · T1567</td></tr>
           <tr><td>Identity Provider Threat</td><td>Okta sign-ins from 2 countries / hour, MFA factor or policy change; Entra legacy-auth bypass, OAuth consent, rogue MFA method registered, Conditional Access weakened</td><td>T1078.004 · T1098.003 · T1528 · T1556.006 · T1556.009</td></tr>
-          <tr><td>MFA Push Bombing</td><td>≥ 6 rejected Okta push prompts / user / 5 min, and the approval that follows</td><td>T1621</td></tr>
+          <tr><td>MFA Push Bombing</td><td>≥ 6 rejected push prompts / user / 5 min (Okta, Duo), and the approval that follows</td><td>T1621</td></tr>
+          <tr><td>Container Runtime Abuse</td><td>a command exec'd through the Docker Engine API, or a privileged container with the host root mounted</td><td>T1059.013 · T1610 · T1611</td></tr>
+          <tr><td>Database Mass Extraction</td><td>≥ 3 whole tables read from one database by a person through SSMS / <code>bcp</code> / 5 min</td><td>T1213.006</td></tr>
+          <tr><td>Poisoned Pipeline Execution</td><td>a workflow file edited, then run on a self-hosted runner holding the repo's secrets</td><td>T1677</td></tr>
+          <tr><td>Backup Software Discovery</td><td><code>vssadmin list shadows</code>, <code>wbadmin get versions</code>, or Veeam / BackupExec enumeration</td><td>T1518.002</td></tr>
+          <tr><td>Local Storage Discovery</td><td>≥ 2 volume/drive enumerations on one host / 2 min</td><td>T1680</td></tr>
+          <tr><td>Malicious Library Sideload</td><td>a signed binary loading a DLL out of a user-writable directory</td><td>T1204.005</td></tr>
+          <tr><td>Delayed Execution</td><td>a ≥ 60 s stall chained to the command that follows it</td><td>T1678</td></tr>
         </tbody>
       </table>
-      <p><strong>Scenarios</strong> — 72 attacks (<code>Attack ›</code>) and 42 appliance
+      <p><strong>Scenarios</strong> — 83 attacks (<code>Attack ›</code>) and 56 appliance
       formats (<code>Appliance logs ›</code>). Every scenario is wired to a detection, so
       each button demonstrably lights up the dashboard. The <strong>Threat Level</strong>
       meter aggregates recent alerts (last 2 min) weighted by severity, DEFCON-style:
@@ -483,7 +490,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">8</span>Attack scenarios <span class="tag">72</span></h2>
+      <h2><span class="num">8</span>Attack scenarios <span class="tag">83</span></h2>
       <p>Injected from the <strong>Attack ›</strong> menu; each button fires a burst built
       to trip a detection.</p>
       <ul>
@@ -499,8 +506,16 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
         <li><strong>Email</strong> — Phishing Email</li>
         <li><strong>Microsoft 365 / Office</strong> — Exchange Online Mailbox Exfil · Exchange Transport Rule Tamper · SharePoint Mass Download · OneDrive Anonymous Sharing · Teams External Access Abuse · M365 Audit Logging Disabled · eDiscovery Search Abuse · Power Automate Exfil Flow</li>
         <li><strong>Microsoft identity &amp; endpoint</strong> — Rogue MFA Method Registered · Conditional Access Weakened · Defender EDR Tampering · Exchange ProxyNotShell</li>
+        <li><strong>ATT&amp;CK v18 (Oct 2025)</strong> — Network Device Firewall Off · Backup Software Discovery · EDR Exclusion Added · Container CLI Abuse · Local Storage Discovery · Python Startup Hook · Malicious Library Sideload · Browser Fingerprint Spoof · Delayed Execution · Database Mass Extraction · Poisoned Pipeline Execution</li>
       </ul>
-      <p>The last twelve are the <strong>product pack</strong>: bursts aimed at one
+      <p>That last group covers the techniques ATT&amp;CK added in <strong>v18</strong>
+      (28 October 2025): <code>T1562.013</code>, <code>T1518.002</code>, <code>T1679</code>,
+      <code>T1059.013</code>, <code>T1680</code>, <code>T1546.018</code>,
+      <code>T1204.005</code>, <code>T1036.012</code>, <code>T1678</code>,
+      <code>T1213.006</code> and <code>T1677</code>. <code>T1497.003</code> — the
+      time-based half of sandbox evasion, promoted in the same release — is covered by
+      the existing <strong>Sandbox / VM Evasion</strong> scenario.</p>
+      <p>Twelve of the rest are the <strong>product pack</strong>: bursts aimed at one
       product's own log source, in the record shape it really writes — eight on the
       Office 365 unified audit log, two on the Entra ID directory audit, one on
       Defender for Endpoint's alert feed, one on on-prem Exchange. Because that feed
@@ -510,7 +525,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
     </section>
 
     <section>
-      <h2><span class="num">9</span>Appliance log formats <span class="tag">42</span></h2>
+      <h2><span class="num">9</span>Appliance log formats <span class="tag">56</span></h2>
       <p>Injected from the <strong>Appliance logs ›</strong> menu — each event is rendered
       in the vendor's real wire format (syslog <code>&lt;PRI&gt;</code> + native payload).</p>
       <table>
@@ -538,6 +553,20 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
           <tr><td>Zeek (NSM) <span class="tag">agent</span></td><td>TAB-separated <code>conn</code> / <code>dns</code> / <code>ssl</code></td><td><code>c2-beacon</code></td></tr>
           <tr><td>AWS CloudTrail <span class="tag">api</span></td><td>JSON record</td><td><code>cloud-threat</code></td></tr>
           <tr><td>Okta System Log <span class="tag">api</span></td><td>JSON record</td><td><code>mfa-fatigue</code></td></tr>
+          <tr><td>Proofpoint Email <span class="tag">api</span></td><td>SIEM-API message JSON</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>SentinelOne <span class="tag">api</span></td><td>Singularity <code>threats</code> JSON</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>AWS GuardDuty <span class="tag">api</span></td><td>finding JSON</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>AWS VPC Flow Logs <span class="tag">api</span></td><td>version-2 space-separated</td><td><code>port-scan</code></td></tr>
+          <tr><td>Google Cloud audit <span class="tag">api</span></td><td>Cloud Logging <code>AuditLog</code> JSON</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Google Workspace <span class="tag">api</span></td><td>Reports API <code>activity</code> JSON</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Netskope SWG <span class="tag">api</span></td><td>REST v2 event JSON</td><td><code>appliance-threat</code></td></tr>
+          <tr><td>Cisco Duo MFA <span class="tag">api</span></td><td>Admin API auth-log JSON</td><td><code>mfa-fatigue</code></td></tr>
+          <tr><td>Windows DNS Server <span class="tag">agent</span></td><td><code>DNSServer/Analytical</code> <code>key=value</code></td><td><code>dns-tunneling</code></td></tr>
+          <tr><td>nginx (web)</td><td>combined access log</td><td><code>web-exploit</code></td></tr>
+          <tr><td>GitHub audit <span class="tag">api</span></td><td>audit-log JSON</td><td><code>pipeline-abuse</code></td></tr>
+          <tr><td>SQL Server audit <span class="tag">agent</span></td><td><code>MSSQLSERVER-Audit</code> <code>key=value</code></td><td><code>db-repository</code></td></tr>
+          <tr><td>Docker runtime <span class="tag">agent</span></td><td>Engine-API event JSON</td><td><code>container-runtime</code></td></tr>
+          <tr><td>OCSF (generic) <span class="tag">api</span></td><td>OCSF 1.3 JSON (Security Lake)</td><td><code>appliance-threat</code></td></tr>
           <tr><td>Cisco IOS (switch/router)</td><td><code>%FAC-sev-MNEM</code></td><td><code>net-config-change</code></td></tr>
           <tr><td>Cisco Meraki (MX)</td><td>epoch + <code>security_event</code></td><td><code>appliance-threat</code></td></tr>
           <tr><td>Citrix NetScaler (Gateway)</td><td><code>ns 0-PPE-0 : module EVENT</code></td><td><code>vpn-brute</code></td></tr>
@@ -571,8 +600,8 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
       <strong>Okta</strong>, <strong>CyberArk</strong>, <strong>auditd</strong>,
       <strong>Sysmon</strong>, <strong>BIND 9</strong>, <strong>Infoblox</strong> and
       <strong>Umbrella</strong>.</p>
-      <div class="callout"><strong>Transport matters.</strong> 29 sources are
-      <strong>native syslog</strong>; thirteen are not. <code>agent</code> — <strong>Snare</strong>
+      <div class="callout"><strong>Transport matters.</strong> 30 sources are
+      <strong>native syslog</strong>; twenty-six are not. <code>agent</code> — <strong>Snare</strong>
       (Windows has no syslog at all), <strong>Sysmon</strong> (its own Windows channel,
       relayed by NXLog), <strong>auditd</strong> (needs the <code>audisp-syslog</code>
       plugin) and <strong>Zeek</strong> (writes log <em>files</em>; Filebeat ships them).
@@ -584,15 +613,21 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
       bucket), <strong>CrowdStrike</strong> (the Falcon SIEM Connector),
       <strong>Defender for Endpoint</strong> (the Defender XDR streaming API into an
       Event Hub) and <strong>Kubernetes audit</strong> (a file or webhook from the API
-      server). Those carry a badge on their button, and every button reports its
+      server) — joined by <strong>Proofpoint</strong>, <strong>SentinelOne</strong>,
+      <strong>AWS GuardDuty</strong> and <strong>VPC Flow Logs</strong>,
+      <strong>Google Cloud</strong> and <strong>Google Workspace</strong>,
+      <strong>Netskope</strong>, <strong>Cisco Duo</strong>, <strong>GitHub audit</strong>
+      and <strong>OCSF</strong>, with <strong>Windows DNS</strong>,
+      <strong>SQL Server audit</strong> and <strong>Docker</strong> on the agent side.
+      Those carry a badge on their button, and every button reports its
       transport on hover — and section 10 is how you configure them for real.</div>
     </section>
 
 
     <section>
       <h2><span class="num">10</span>Connecting real sources <span class="tag">agent + api</span></h2>
-      <p>Twenty-nine of the 42 appliance sources are native syslog: point the device at
-      your collector and you are done. The other thirteen <strong>cannot do that</strong>,
+      <p>Thirty of the 56 appliance sources are native syslog: point the device at
+      your collector and you are done. The other twenty-six <strong>cannot do that</strong>,
       and this section is the part that is left. The full guide — config files,
       connector code, per-product permissions — is <code>CONNECTORS.md</code>.</p>
 
@@ -612,7 +647,7 @@ setsid node server.js &lt;/dev/null &gt;apex.log 2&gt;&amp;1 &amp; <span class="
       Correlation rules with tight windows that work on syslog quietly stop firing on an
       API source unless they key on the record's own timestamp rather than ingest time.</p>
 
-      <h3>Agent sources — Windows, Sysmon, auditd, Zeek</h3>
+      <h3>Agent sources — Windows, Sysmon, auditd, Zeek, Windows DNS, SQL Server, Docker</h3>
       <p>The telemetry is already on the host; nothing puts it on the wire. NXLog reading
       the Security channel <em>and</em> Sysmon in one pass, filtered in Windows itself
       rather than in the agent:</p>
@@ -649,6 +684,23 @@ format = string
 -w /etc/shadow -p wa -k identity</code></pre>
       <p>Zeek writes log <em>files</em> and rotates them hourly, so the shipper must follow
       the <em>path</em>, not the inode, or it silently stops at the top of every hour.</p>
+      <p>Three more sources live behind an agent for the same reason — the telemetry
+      exists on the host and nothing puts it on the wire:</p>
+      <ul>
+        <li><strong>Windows DNS Server</strong> — the <em>analytic</em> channel
+        (<code>wevtutil sl "Microsoft-Windows-DNSServer/Analytical" /e:true</code>) is an
+        ETW trace, so NXLog needs <code>im_etw</code>, not <code>im_msvistalog</code>.
+        Event <strong>256</strong> carries the <code>QNAME</code> a tunnelling rule reads.
+        It is high volume on a busy DC — filter at the agent.</li>
+        <li><strong>SQL Server audit</strong> — a server audit plus a database audit
+        specification on <code>SELECT … BY public</code>, written to a file target. The
+        field that makes the detection possible is <code>application_name</code>: it is
+        what separates the application's service account from a person holding SSMS.</li>
+        <li><strong>Docker</strong> — container stdout is application logging; the
+        security stream is <code>docker events</code> and the daemon's API calls.
+        Watch the socket with auditd (<code>-w /var/run/docker.sock -p rwxa -k
+        docker-socket</code>): access to it is root on the host.</li>
+      </ul>
       <div class="callout"><strong>What actually goes wrong with agents.</strong> UDP with a
       1024-byte receiver limit decapitates exactly the long Sysmon command lines the rules
       match on — use TCP and raise the max message size. Turn on the agent's disk queue, or
@@ -668,6 +720,24 @@ format = string
       batch (deduplicated on the record id) than lose one. A connector also needs backoff
       that honours HTTP 429, and a health signal of its own — last successful poll, records
       shipped, current lag.</p>
+
+      <p>The non-Microsoft connectors each fail in their own way, and the failure is
+      always the interesting part:</p>
+      <table>
+        <thead><tr><th>Source</th><th>Feed</th><th>The thing that bites</th></tr></thead>
+        <tbody>
+          <tr><td>Proofpoint Email</td><td>SIEM API <code>/v2/siem/all?sinceSeconds=</code></td><td>the window is capped at <strong>1 hour</strong> — a connector that falls behind cannot catch up</td></tr>
+          <tr><td>SentinelOne</td><td><code>/web/api/v2.1/threats</code></td><td><code>analystVerdict</code> changes after the fact; re-poll updated threats or your copy goes stale</td></tr>
+          <tr><td>AWS GuardDuty</td><td>EventBridge → SQS/Firehose, or an S3 export</td><td>findings are <strong>updated in place</strong> — key on <code>id</code> or you count one finding many times</td></tr>
+          <tr><td>AWS VPC Flow Logs</td><td>CloudWatch Logs subscription, or S3</td><td>records are aggregated over 1–10 min; include <code>pkt-srcaddr</code> or NAT hides the real source</td></tr>
+          <tr><td>Google Cloud audit</td><td>log sink → Pub/Sub</td><td><strong>Data Access logs are off by default</strong> — the reads you want are the ones not being written</td></tr>
+          <tr><td>Google Workspace</td><td>Reports API <code>activities.list</code></td><td>events arrive <strong>hours</strong> late and out of order; checkpoint on <code>id.time</code></td></tr>
+          <tr><td>Netskope</td><td>REST v2 data-export iterators</td><td>the iterator <em>is</em> the checkpoint, and each event type has its own</td></tr>
+          <tr><td>Cisco Duo</td><td>Admin API <code>/admin/v2/logs/authentication</code></td><td>HMAC-signed over the date header — a minute of clock skew fails every call</td></tr>
+          <tr><td>GitHub audit</td><td>audit-log streaming, or <code>/orgs/{org}/audit-log</code></td><td>repository <em>reads</em> are not in the log at all; <code>workflows.*</code> is what to alert on</td></tr>
+          <tr><td>OCSF / Security Lake</td><td>S3 + Lake Formation subscriber</td><td>OCSF is a <strong>schema, not a transport</strong> — pin the version you parse</td></tr>
+        </tbody>
+      </table>
 
       <h3>The Microsoft estate</h3>
       <p>Five products, five feeds, five permission models — and <strong>none of them
@@ -833,17 +903,19 @@ sudo systemctl enable --now apex-jedisyslogger</code></pre>
 login.html          password + two-factor sign-in page
 account.html        profile, password, second factor, user management
 about.html          this page — instructions
-css/styles.css      dark SIEM theme
+css/styles.css      neon SIEM theme (dark, glowing edges, monospace)
 js/data.js          data pools, RNG, RFC 3164/5424 + vendor line formatting
 js/syslogger.js     log generator, appliance sources, scenarios, file replay, forwarding
 js/jedi.js          SIEM engine: parsing, correlation, detection rules
 js/ui.js            dashboard rendering + wiring
+js/toast.js         neon detection popups + the critical klaxon
 js/login.js         the two-step sign-in flow
 js/qr.js            QR encoder for the 2FA enrolment code (browser + console)
 js/account.js       the Account page: profile, collector, users
 auth.js             password (scrypt) + TOTP two-factor, sessions, lockout
 auth.json           generated per install: password hash + TOTP secret (0600, gitignored)
 server.js           optional Node backend: static host + /forward relay (UDP/TCP/HEC) + /test probe
+start.sh            launcher: start/stop/status/logs, desktop mode, terminal build
 samples/sample.log  example mixed-format log for the file-replay demo
 CONNECTORS.md       configuring the agent- and API-relayed sources for real
 jedi-cli.js         the terminal build: dashboard + headless CLI

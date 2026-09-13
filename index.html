@@ -35,6 +35,27 @@
 
       <button id="btn-reset" class="btn btn-ghost" title="Clear all state">Reset</button>
       <a href="about.html" class="btn btn-ghost" title="About &amp; instructions" style="text-decoration:none">About</a>
+      <div class="bell-wrap">
+        <button id="btn-bell" class="bell" title="Alert popups &amp; klaxon" aria-expanded="false">🔔<span class="bell-count" id="bell-count" hidden>0</span></button>
+        <div class="bell-menu" id="bell-menu" hidden>
+          <h4>Alert popups</h4>
+          <label><input type="checkbox" id="pref-popups" /> corner popups</label>
+          <label><input type="checkbox" id="pref-klaxon" /> full-screen klaxon on critical</label>
+          <label><input type="checkbox" id="pref-sound" /> chirp on critical</label>
+          <label>show from
+            <select id="pref-min" class="cfg-input cfg-small" aria-label="Minimum severity">
+              <option value="low">low</option>
+              <option value="medium">medium</option>
+              <option value="high">high</option>
+              <option value="critical">critical</option>
+            </select>
+          </label>
+          <div class="bell-foot">
+            <button id="pref-test" class="btn btn-sm">Test popup</button>
+            <button id="pref-clear" class="btn btn-sm btn-ghost">Clear all</button>
+          </div>
+        </div>
+      </div>
       <span class="auth-badge" id="auth-badge" hidden>
         <span class="auth-user" id="auth-user"></span>
         <a href="account.html" class="btn btn-ghost" title="Your profile, password, second factor and users" style="text-decoration:none">Account</a>
@@ -212,6 +233,29 @@
     </div>
   </div>
 
+  <!-- ── Neon alert popups ──────────────────────────────────────────── -->
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-label="Detection popups"></div>
+
+  <!-- ── Full-bleed critical klaxon ─────────────────────────────────── -->
+  <div class="klaxon" id="klaxon" hidden>
+    <div class="klaxon-panel" role="alertdialog" aria-labelledby="klaxon-title">
+      <div class="klaxon-bar"></div>
+      <div class="klaxon-head">
+        <span class="klaxon-sev" id="klaxon-sev">CRITICAL</span>
+        <span class="klaxon-rule" id="klaxon-rule">—</span>
+      </div>
+      <h2 id="klaxon-title">—</h2>
+      <p id="klaxon-msg">—</p>
+      <div class="klaxon-meta" id="klaxon-meta"></div>
+      <div class="klaxon-actions">
+        <button class="btn btn-primary" id="klaxon-view">Inspect event</button>
+        <button class="btn" id="klaxon-close">Dismiss</button>
+        <button class="btn btn-ghost" id="klaxon-mute">Stop klaxons</button>
+      </div>
+      <div class="klaxon-more" id="klaxon-more" hidden></div>
+    </div>
+  </div>
+
   <footer class="app-footer">
     <span>All traffic is synthetic — generated locally for SIEM / detection-engineering practice. Enable “Forward live” (with <code>node server.js</code>) to relay it as real UDP/TCP syslog — or Splunk HEC events — to a collector.</span>
     <span class="app-credit">Created By: <strong>Alfredo Nacino</strong> · <a href="https://www.alfredonacino.com" target="_blank" rel="noopener">www.alfredonacino.com</a> · <a href="mailto:alfredo@nacino.net">alfredo@nacino.net</a></span>
@@ -221,6 +265,7 @@
   <script src="js/data.js"></script>
   <script src="js/syslogger.js"></script>
   <script src="js/jedi.js"></script>
+  <script src="js/toast.js"></script>
   <script src="js/ui.js"></script>
 </body>
 </html>

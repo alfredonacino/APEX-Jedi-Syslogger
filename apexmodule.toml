@@ -3,8 +3,8 @@
 [module]
 id       = "jedisyslogger"
 name     = "APEX JediSyslogger"
-version  = "1.0.0"
-summary  = "Receive, inspect and forward syslog to TCP, UDP or Splunk HEC."
+version  = "1.2.4"
+summary  = "SIEM log-ingestion simulator — 83 attacks, 56 appliance formats, live syslog forwarding."
 icon     = "JS"
 accent   = "#39ff88"
 contract = 1
@@ -19,4 +19,4 @@ embeddable    = true
 [sync]
 # Credentials, TLS material, build output and captured log samples.
 # None of it belongs in a copy of this module.
-exclude = ["auth.json", "certs/", "dist/", "node_modules/", "*.log"]
+exclude = ["auth.json", "certs/", ".run/", "dist/", "node_modules/", "*.log", "*.key"]

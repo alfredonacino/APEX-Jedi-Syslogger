@@ -63,6 +63,20 @@
     umbrella:   { color: '#4fb3ff', label: 'umbrella' },
     azure:      { color: '#0089d6', label: 'azure' },
     m365:       { color: '#eb3c00', label: 'm365 audit' },
+    proofpoint: { color: '#f07c22', label: 'proofpoint' },
+    sentinelone:{ color: '#6a2bd9', label: 'sentinelone' },
+    guardduty:  { color: '#dd344c', label: 'guardduty' },
+    vpcflow:    { color: '#8c4fff', label: 'vpc flow' },
+    gcp:        { color: '#4285f4', label: 'gcp audit' },
+    gworkspace: { color: '#34a853', label: 'workspace' },
+    netskope:   { color: '#f5a623', label: 'netskope' },
+    duo:        { color: '#6dc04b', label: 'duo mfa' },
+    windns:     { color: '#4f8fd6', label: 'win dns' },
+    nginx:      { color: '#009639', label: 'nginx' },
+    github:     { color: '#c9d1d9', label: 'github' },
+    mssql:      { color: '#cc2927', label: 'sql audit' },
+    docker:     { color: '#2496ed', label: 'docker' },
+    ocsf:       { color: '#00c4b3', label: 'ocsf' },
     cef:        { color: '#7c9cff', label: 'cef' },
     leef:       { color: '#22c1a6', label: 'leef' },
     mail:       { color: '#c084fc', label: 'mail' },
@@ -95,6 +109,7 @@
     wireControls();
     wireConfig();
     wireAuth();
+    wireAlertPopups();
     requestAnimationFrame(renderLoop);
     setInterval(renderStream, 250);   // stream paints on its own cadence
   }
@@ -133,11 +148,13 @@
       $('#event-stream').innerHTML = '';
       $('#alerts-list').innerHTML = '';
       clearSelection('attack'); clearSelection('appliance');
+      toast.clearToasts(); unseenAlerts = 0; renderBell(); alertEventIds.clear();
       renderKPIs(); renderAlerts(); renderSources(); renderSeverity(); drawTimeline(); renderVolume();
     });
 
     $('#btn-clear-alerts').addEventListener('click', () => {
       jedi.alerts = []; renderAlerts();
+      toast.clearToasts(); unseenAlerts = 0; renderBell();
     });
 
     $('#stream-filter').addEventListener('input', (e) => { filterText = e.target.value.toLowerCase().trim(); });
@@ -146,6 +163,56 @@
     $('#drawer-close').addEventListener('click', closeDrawer);
     $('#drawer').addEventListener('click', (e) => { if (e.target.id === 'drawer') closeDrawer(); });
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeDrawer(); });
+  }
+
+
+  // ── Alert popups (js/toast.js) ───────────────────────────────────────
+  // One raised detection → one neon popup; criticals also raise the klaxon.
+  // The bell counts what has fired since you last looked at it.
+  const toast = global.JS.Toast;
+  let unseenAlerts = 0;
+
+  function wireAlertPopups() {
+    toast.configure({
+      onInspect: (a) => openDrawer(a.sourceEvent, a),
+      onUnseen: () => { unseenAlerts = 0; renderBell(); },
+    });
+    toast.initKlaxon();
+
+    const menu = $('#bell-menu');
+    const bell = $('#btn-bell');
+    bell.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const open = menu.hidden;
+      menu.hidden = !open;
+      bell.setAttribute('aria-expanded', String(open));
+      if (open) { unseenAlerts = 0; renderBell(); }
+    });
+    document.addEventListener('click', (e) => {
+      if (!menu.hidden && !menu.contains(e.target) && e.target !== bell) menu.hidden = true;
+    });
+
+    const p = toast.prefs;
+    const bind = (sel, key, prop) => {
+      const input = $(sel);
+      input[prop] = p[key];
+      input.addEventListener('change', () => toast.savePrefs({ [key]: input[prop] }));
+    };
+    bind('#pref-popups', 'popups', 'checked');
+    bind('#pref-klaxon', 'klaxon', 'checked');
+    bind('#pref-sound', 'sound', 'checked');
+    bind('#pref-min', 'minSeverity', 'value');
+
+    $('#pref-test').addEventListener('click', () => toast.testPopup());
+    $('#pref-clear').addEventListener('click', () => { toast.clearToasts(); unseenAlerts = 0; renderBell(); });
+  }
+
+  function renderBell() {
+    const count = $('#bell-count');
+    const bell = $('#btn-bell');
+    count.hidden = unseenAlerts === 0;
+    count.textContent = unseenAlerts > 99 ? '99+' : String(unseenAlerts);
+    bell.classList.toggle('hot', unseenAlerts > 0);
   }
 
   function buildScenarioButtons() {
@@ -337,12 +404,18 @@
       // exited immediately.
       if (s.desktop) startDesktopHeartbeat();
       if (!s.authRequired || !s.user) return;   // auth disabled, or served statically
-      const who = `signed in as <span class="auth-who">${escapeHtml(s.user)}</span>`;
+      const who = s.sso
+        ? `signed in as <span class="auth-who">${escapeHtml(s.user)}</span> <span class="auth-via" title="ApexBuild signed you in; this module did not ask for a password">via ApexBuild</span>`
+        : `signed in as <span class="auth-who">${escapeHtml(s.user)}</span>`;
       // A documented default password is a published password — say so, loudly.
       const warn = s.passwordIsDefault
         ? ` <span class="auth-warn" title="This install still uses the documented default password. Change it on the host: node server.js --set-password '<new password>'">⚠ default password</span>`
         : '';
       $('#auth-user').innerHTML = who + warn;
+      // Nothing to sign back in with: the account has no password of its own,
+      // and the way back is the suite reloading the frame with a fresh ticket.
+      // Offering "Sign out" would strand the person on a form they cannot pass.
+      if (s.sso) $('#btn-logout').hidden = true;
       badge.hidden = false;
       loadCollector();
     } catch (e) {
@@ -643,8 +716,13 @@
     $('#kpi-threat').textContent = t.label;
     const bar = $('#defcon-bar');
     if (bar.childElementCount !== 5) { bar.innerHTML = ''; for (let i = 0; i < 5; i++) bar.appendChild(el('i')); }
-    const palette = ['#4d9dff', '#4d9dff', '#ffb020', '#ff7849', '#ff3b5c'];
-    [...bar.children].forEach((seg, i) => { seg.style.background = i < t.n ? palette[Math.min(t.n - 1, 4)] : 'var(--border-2)'; });
+    const palette = ['#4d9dff', '#4d9dff', '#ffb020', '#ff7849', '#ff3860'];
+    const tone = palette[Math.min(t.n - 1, 4)];
+    [...bar.children].forEach((seg, i) => {
+      const lit = i < t.n;
+      seg.style.background = lit ? tone : 'var(--border)';
+      seg.style.boxShadow = lit ? `0 0 10px ${tone}` : 'none';
+    });
   }
 
   // ── Severity distribution ────────────────────────────────────────────
@@ -656,7 +734,7 @@
       const row = el('div', 'bar-row');
       row.dataset.sev = sev.code;
       row.innerHTML = `<span class="bar-label">${sev.label}</span>
-        <span class="bar-track"><span class="bar-fill" style="background:var(--sev-${sev.code})"></span></span>
+        <span class="bar-track"><span class="bar-fill" style="background:var(--sev-${sev.code});box-shadow:0 0 10px var(--sev-${sev.code})"></span></span>
         <span class="bar-val">0</span>`;
       wrap.appendChild(row);
     });
@@ -687,7 +765,7 @@
         row = el('div', 'bar-row'); row.dataset.src = src;
         const meta = SOURCE_META[src] || { color: '#8a97b4', label: src };
         row.innerHTML = `<span class="bar-label">${meta.label}</span>
-          <span class="bar-track"><span class="bar-fill" style="background:${meta.color}"></span></span>
+          <span class="bar-track"><span class="bar-fill" style="background:${meta.color};box-shadow:0 0 10px ${meta.color}"></span></span>
           <span class="bar-val">0</span>`;
         wrap.appendChild(row);
       }
@@ -717,7 +795,7 @@
     const gw = w - pad.l - pad.r, gh = h - pad.t - pad.b;
 
     // gridlines
-    cctx.strokeStyle = 'rgba(38,55,88,.5)'; cctx.lineWidth = 1;
+    cctx.strokeStyle = 'rgba(28,36,64,.8)'; cctx.lineWidth = 1;
     for (let i = 0; i <= 3; i++) { const y = pad.t + (gh / 3) * i; cctx.beginPath(); cctx.moveTo(pad.l, y); cctx.lineTo(w - pad.r, y); cctx.stroke(); }
     if (data.length < 2) return;
 
@@ -731,25 +809,34 @@
     cctx.beginPath();
     slice.forEach((d, i) => { const px = x(i), py = y(d.count); i ? cctx.lineTo(px, py) : cctx.moveTo(px, py); });
     const grad = cctx.createLinearGradient(0, pad.t, 0, h);
-    grad.addColorStop(0, 'rgba(56,189,248,.35)'); grad.addColorStop(1, 'rgba(56,189,248,0)');
+    grad.addColorStop(0, 'rgba(0,240,255,.32)'); grad.addColorStop(1, 'rgba(0,240,255,0)');
     cctx.lineTo(x(slice.length - 1), pad.t + gh); cctx.lineTo(x(0), pad.t + gh); cctx.closePath();
     cctx.fillStyle = grad; cctx.fill();
 
     cctx.beginPath();
     slice.forEach((d, i) => { const px = x(i), py = y(d.count); i ? cctx.lineTo(px, py) : cctx.moveTo(px, py); });
-    cctx.strokeStyle = '#38bdf8'; cctx.lineWidth = 1.6; cctx.stroke();
+    // The glow is a shadowed stroke — canvas has no CSS box-shadow.
+    cctx.strokeStyle = '#00f0ff'; cctx.lineWidth = 1.6;
+    cctx.shadowColor = 'rgba(0,240,255,.9)'; cctx.shadowBlur = 8;
+    cctx.stroke();
+    cctx.shadowBlur = 0;
 
     // alerts (red bars)
     slice.forEach((d, i) => {
       if (!d.alerts) return;
       const px = x(i), py = y(d.alerts);
-      cctx.strokeStyle = '#ff3b5c'; cctx.lineWidth = 2;
+      cctx.strokeStyle = '#ff3860'; cctx.lineWidth = 2;
+      cctx.shadowColor = 'rgba(255,56,96,.9)'; cctx.shadowBlur = 9;
       cctx.beginPath(); cctx.moveTo(px, pad.t + gh); cctx.lineTo(px, py); cctx.stroke();
-      cctx.fillStyle = '#ff3b5c'; cctx.beginPath(); cctx.arc(px, py, 2.4, 0, Math.PI * 2); cctx.fill();
+      cctx.fillStyle = '#ff3860'; cctx.beginPath(); cctx.arc(px, py, 2.4, 0, Math.PI * 2); cctx.fill();
+      cctx.shadowBlur = 0;
     });
   }
 
   // ── Live event stream ────────────────────────────────────────────────
+  // Events that raised a detection glow red in the stream. The rules fire
+  // during ingest, so by the time a row paints its alert already exists.
+  const alertEventIds = new Set();
   let lastRenderedId = null;
   function renderStream() {
     if (paused) return;
@@ -784,7 +871,7 @@
   }
 
   function buildRow(ev) {
-    const row = el('div', `event-row sev-${ev.severity}`);
+    const row = el('div', `event-row sev-${ev.severity}${alertEventIds.has(ev.id) ? ' is-alert' : ''}`);
     row.dataset.id = ev.id;
     const d = new Date(ev.ts);
     const time = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
@@ -817,8 +904,16 @@
     for (const a of jedi.alerts) { if (renderedAlertIds.has(a.id)) break; toAdd.push(a); }
     toAdd.reverse().forEach((a) => {
       renderedAlertIds.add(a.id);
+      if (a.sourceEvent) {
+        alertEventIds.add(a.sourceEvent.id);
+        const row = $(`.event-row[data-id="${a.sourceEvent.id}"]`);
+        if (row) row.classList.add('is-alert');
+      }
       list.insertBefore(buildAlertCard(a), list.firstChild);
+      toast.notifyAlert(a);
+      unseenAlerts++;
     });
+    if (toAdd.length) renderBell();
     while (list.childElementCount > jedi.maxAlerts) { const rm = list.lastChild; renderedAlertIds.delete(rm.dataset.id); list.removeChild(rm); }
   }
 

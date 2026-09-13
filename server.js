@@ -117,6 +117,70 @@ function handleLaunch(req, res, url) {
   res.end();
 }
 
+// ------------------------------------------------------- ApexBuild sign-on
+//
+// Standalone this app asks for a password and a six-digit code, because it can
+// put real syslog on your network. Inside ApexBuild that question is already
+// answered: the shell signed the person in, and it is the shell that started
+// this process. Asking twice is not a second factor, it is a second password
+// to forget.
+//
+// The audience is a constant here, not an environment variable: it is the one
+// check that keeps another module's tickets out (see apexsso.js). It must stay
+// equal to `id` in apexmodule.toml.
+//
+// `null` is the normal case — no shell above us, nothing to trust, and the
+// sign-in page below is untouched. Being hosted is not the only way this runs.
+const apexsso = require('./apexsso.js');
+const SSO_AUDIENCE = 'jedisyslogger';
+const SSO = apexsso.fromEnvironment(SSO_AUDIENCE);
+
+// Spend a ticket for a session. Returns true when it answered the request.
+// Anything wrong is a refusal, never a failure: the caller falls through to the
+// ordinary sign-in gate, which is what a person who opened this app directly
+// gets anyway.
+function handleSso(req, res, url) {
+  const ticket = url.searchParams.get(apexsso.QUERY_PARAM);
+  let claims;
+  try {
+    claims = SSO.verify(ticket);
+  } catch (e) {
+    // Captured by the suite and shown in the module's output pane — it is the
+    // only answer to "why does it keep asking me to sign in".
+    console.error(`  ⚠ refused a single sign-on ticket: ${e.message}`);
+    return false;
+  }
+
+  // The ticket is single-use, and a ticket in the address bar is in the
+  // history, in screenshots and in anything that logs a referrer. It exists
+  // for exactly this one request.
+  url.searchParams.delete(apexsso.QUERY_PARAM);
+  const rest = url.searchParams.toString();
+  const location = url.pathname + (rest ? `?${rest}` : '');
+
+  if (!AUTH_ON) {                       // nothing to sign in to; just tidy the URL
+    res.writeHead(303, { Location: location, 'Content-Length': '0' });
+    res.end();
+    return true;
+  }
+
+  const r = auth.ssoSignIn(claims);
+  if (!r.ok) { console.error(`  ⚠ single sign-on: ${r.error}`); return false; }
+  if (r.created) console.log(`  ⟲ single sign-on: created a local account for ${r.user.user} (${r.user.role})`);
+  if (r.demotionRefused) {
+    console.log(`  ⚠ single sign-on: ApexBuild calls ${r.user.user} a user, but this is the only admin account — keeping admin`);
+  }
+  const s = auth.openSession(r.user);
+  console.log(`  ✓ single sign-on: ${r.user.user} (${r.user.role}) via ApexBuild`);
+  res.writeHead(303, {
+    Location: location,
+    'Content-Length': '0',
+    'Set-Cookie': authlib.sessionCookie(s.sid, SECURE_COOKIE),
+  });
+  res.end();
+  return true;
+}
+
 // ---------------------------------------------------------------- framing
 //
 // On its own this app refuses to be framed: it holds forwarding credentials
@@ -161,6 +225,12 @@ function handleRequest(req, res) {
   if (req.method === 'GET' && urlPath === '/auth/session') return handleSession(req, res);
   if (DESKTOP && req.method === 'GET' && urlPath === '/launch')
     return handleLaunch(req, res, new URL(req.url, 'http://localhost'));
+
+  // Ahead of the gate on purpose: the ticket is how a framed person gets past it.
+  if (SSO && req.method === 'GET') {
+    const url = new URL(req.url, 'http://localhost');
+    if (url.searchParams.has(apexsso.QUERY_PARAM) && handleSso(req, res, url)) return;
+  }
 
   const session = AUTH_ON ? auth.sessionFor(req.headers.cookie) : { user: null, anonymous: true };
   if (AUTH_ON && !session && !PUBLIC_PATHS.has(urlPath)) return denyAnonymous(req, res, urlPath);
@@ -250,6 +320,9 @@ function handleSession(req, res) {
     ok: true, authRequired: true,
     user: s ? s.user : null, role: s ? s.role : null, expires: s ? s.expires : null,
     desktop: DESKTOP,
+    // Signed in by the suite: the page hides "Sign out", because there is no
+    // password to come back with — reloading the frame gets a fresh ticket.
+    sso: s ? !!(s.account && s.account.sso) : false,
     // Only someone already signed in is told the password is still the default.
     passwordIsDefault: s ? !!s.account.passwordIsDefault : undefined,
   });

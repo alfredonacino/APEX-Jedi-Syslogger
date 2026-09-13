@@ -133,7 +133,9 @@
         id: 'port-scan', name: 'Horizontal Port Scan', severity: 'medium',
         tactic: 'Reconnaissance', technique: 'T1046 · Network Service Discovery',
         run(ev, ctx) {
-          if (ev.srcType !== 'firewall' || ev.action !== 'DENY') return;
+          // A VPC flow log REJECT is the same observation from the cloud side,
+          // so it feeds this rule rather than a near-duplicate of it.
+          if (!/^(firewall|vpcflow)$/.test(ev.srcType) || !/^(DENY|REJECT)$/.test(ev.action || '')) return;
           const key = ev.srcIp;
           const ports = ctx.windowSet('portscan', key, 30000, ev.ts, ev.dstPort);
           if (ports.size >= 15 && ctx.cooldown('portscan', key, 30000, ev.ts)) {
@@ -149,7 +151,7 @@
         id: 'sql-injection', name: 'SQL Injection Attempt', severity: 'high',
         tactic: 'Initial Access', technique: 'T1190 · Exploit Public-Facing Application',
         run(ev) {
-          if (ev.srcType !== 'web' || !ev.url) return;
+          if (!/^(web|nginx)$/.test(ev.srcType) || !ev.url) return;
           const u = decodeURIComponent(ev.url).toLowerCase();
           if (/(\bunion\b.*\bselect\b|'\s*or\s*'?\d|--|;\s*drop\s+table|sleep\(|\bor\b\s+1=1)/i.test(u)) {
             return {
@@ -195,15 +197,19 @@
       {
         id: 'dns-tunneling', name: 'Possible DNS Tunneling', severity: 'medium',
         tactic: 'Exfiltration', technique: 'T1071.004 · DNS',
-        run(ev) {
-          if (!/^(dns|bind|infoblox|umbrella)$/.test(ev.srcType) || !ev.domain) return;
+        run(ev, ctx) {
+          if (!/^(dns|bind|infoblox|umbrella|windns)$/.test(ev.srcType) || !ev.domain) return;
           const label = ev.domain.split('.')[0] || '';
           const isBadDomain = THREAT_INTEL.domains.some((d) => ev.domain.endsWith(d));
           if (label.length >= 40 || isBadDomain) {
+            // Tunnelling is a stream of queries, not one query: count them and
+            // raise a single alert per source rather than one per lookup.
+            const w = ctx.window('dnstunnel', ev.srcIp || ev.host, 60000, ev.ts); w.push(ev.ts);
+            if (!ctx.cooldown('dnstunnel', ev.srcIp || ev.host, 60000, ev.ts)) return;
             return {
               severity: isBadDomain ? 'high' : 'medium',
-              message: `Suspicious DNS query (len=${label.length}) from ${ev.srcIp}: ${ev.domain.slice(0, 60)}…`,
-              srcIp: ev.srcIp, host: ev.host, evidence: [ev.message],
+              message: `Suspicious DNS queries from ${ev.srcIp} (${w.length} in 60s, label len=${label.length}): ${ev.domain.slice(0, 60)}…`,
+              srcIp: ev.srcIp, host: ev.host, evidence: [`queries=${w.length}`, ev.message],
             };
           }
         },
@@ -307,7 +313,7 @@
         id: 'web-exploit', name: 'Web Application Attack', severity: 'high',
         tactic: 'Initial Access', technique: 'T1190 · Exploit Public-Facing Application',
         run(ev) {
-          if (ev.srcType !== 'web' || !ev.url) return;
+          if (!/^(web|nginx)$/.test(ev.srcType) || !ev.url) return;
           const u = decodeURIComponent(ev.url).toLowerCase();
           const ua = (ev.message || '').toLowerCase();
           let sig, technique = 'T1190 · Exploit Public-Facing Application', tactic = 'Initial Access', sev = 'high';
@@ -407,6 +413,10 @@
           // PsExec-style service installs are lateral movement, not persistence —
           // windows-threat owns those, so they are excluded here.
           else if ((ev.eventId === 7045 || /sc(\.exe)? +create /i.test(m)) && !/psexesvc|paexec|remcom|csexec/i.test(m)) technique = 'T1543.003 · Windows Service';
+          // Python imports sitecustomize/usercustomize on every interpreter
+          // start, and honours PYTHONSTARTUP for interactive ones — writing to
+          // either is persistence that survives without a service or a run key.
+          else if (/(site|user)customize\.py|pythonstartup|\.pth\b.*import |site-packages[\/\\][^\s"]*\.pth/i.test(m)) technique = 'T1546.018 · Python Startup Hooks';
           if (!technique) return;
           if (!ctx.cooldown('persist', `${ev.host}:${technique}`, 30000, ev.ts)) return;
           return {
@@ -443,11 +453,17 @@
           const m = ev.message || '';
           // The last four alternatives are how an EDR *reports* the same act:
           // Defender's own alert titles carry the verdict, not the command line.
-          if (!/disablerealtimemonitoring|disableantispyware|disableioavprotection|mppreference[^"]*-exclusion|amsiinitfailed|amsiscanbuffer|net(\.exe)? +stop +(windefend|sense)|sc(\.exe)? +(config|delete) +(windefend|sysmon)|tamper protection (was )?(turned off|disabled)|scan exclusion added|sensor stopped|device (was )?offboarded/i.test(m)) return;
+          if (!/disablerealtimemonitoring|disableantispyware|disableioavprotection|mppreference[^"]*-exclusion|amsiinitfailed|amsiscanbuffer|net(\.exe)? +stop +(windefend|sense)|sc(\.exe)? +(config|delete) +(windefend|sysmon)|tamper protection (was )?(turned off|disabled)|scan exclusion added|sensor stopped|device (was )?offboarded|add-mppreference|exclusion (path|process|extension)|exclusions?\/(add|create)/i.test(m)) return;
           if (!ctx.cooldown('sectool', ev.host, 30000, ev.ts)) return;
+          // Carving a hole in the scanner and leaving it running is its own
+          // technique in v18 — the tool is not disabled, it is told to look away.
+          const carve = /-exclusion|exclusion (path|process|extension)|scan exclusion added|exclusions?\/(add|create)/i.test(m);
           return {
             severity: 'high',
-            message: `Endpoint protection tampered with on ${ev.host}: ${m.slice(0, 90)}`,
+            technique: carve ? 'T1679 · Selective Exclusion' : 'T1562.001 · Disable or Modify Tools',
+            message: carve
+              ? `Scanner exclusion added on ${ev.host}: ${m.slice(0, 90)}`
+              : `Endpoint protection tampered with on ${ev.host}: ${m.slice(0, 90)}`,
             srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [ev.raw || m],
           };
         },
@@ -633,9 +649,13 @@
         id: 'mfa-fatigue', name: 'MFA Push Bombing', severity: 'high',
         tactic: 'Credential Access', technique: 'T1621 · Multi-Factor Authentication Request Generation',
         run(ev, ctx) {
-          if (ev.srcType !== 'okta' || ev.factor !== 'push') return;
+          // Okta and Duo describe the same event with different spellings:
+          // factor push/duo_push, outcome FAILURE/denied and SUCCESS/success.
+          if (!/^(okta|duo)$/.test(ev.srcType) || !/push/i.test(ev.factor || '')) return;
           const who = ev.user || 'unknown';
-          if (ev.outcome === 'FAILURE') {
+          const rejected = /^(FAILURE|denied|fraud)$/i.test(ev.outcome || '');
+          const approved = /^(SUCCESS|success|approved)$/i.test(ev.outcome || '');
+          if (rejected) {
             const w = ctx.window('mfapush', who, 300000, ev.ts); w.push(ev.ts);
             if (w.length >= 6 && ctx.cooldown('mfapush', who, 60000, ev.ts))
               return {
@@ -647,7 +667,7 @@
           }
           // The prompt is finally approved — the user gave in and the attacker is in.
           const w = ctx.peek('mfapush', who);
-          if (ev.outcome === 'SUCCESS' && w && w.length >= 5 && ctx.cooldown('mfaok', who, 60000, ev.ts))
+          if (approved && w && w.length >= 5 && ctx.cooldown('mfaok', who, 60000, ev.ts))
             return {
               severity: 'critical', tactic: 'Initial Access',
               message: `MFA fatigue succeeded: ${who} approved a push from ${ev.srcIp} after ${w.length} rejections`,
@@ -713,6 +733,18 @@
           // trading on a name an analyst reads past. The directory and the file
           // name must be adjacent — a user-writable path elsewhere on the line
           // belongs to some other binary, and matching that is a false positive.
+          // A client whose TLS/JA3 fingerprint disagrees with the browser its
+          // User-Agent claims is wearing a costume — v18's T1036.012.
+          const ua = ev.userAgent || '';
+          if (ev.ja3Mismatch || (ev.tlsClient && ua && !new RegExp(ev.tlsClient.split(' ')[0], 'i').test(ua))) {
+            if (!ctx.cooldown('uaspoof', ev.srcIp || ev.host, 30000, ev.ts)) return;
+            return {
+              severity: 'medium', tactic: 'Defense Evasion',
+              technique: 'T1036.012 · Browser Fingerprint',
+              message: `Client at ${ev.srcIp} claims "${ua.slice(0, 44)}" but fingerprints as ${ev.tlsClient}`,
+              srcIp: ev.srcIp, host: ev.host, evidence: [`ja3=${ev.ja3 || 'n/a'}`, ev.raw || m],
+            };
+          }
           if (!/(?:users\\public|programdata|appdata\\local\\temp|\\temp|\\downloads)\\[^\\"]*\b(?:svchost|lsass|csrss|services|winlogon|smss|taskhostw|spoolsv)\.exe/i.test(m)) return;
           if (!ctx.cooldown('masq', ev.host, 30000, ev.ts)) return;
           return {
@@ -740,18 +772,24 @@
       },
       {
         id: 'sandbox-evasion', name: 'Sandbox / VM Evasion', severity: 'medium',
-        tactic: 'Defense Evasion', technique: 'T1497 · Virtualization / Sandbox Evasion',
+        tactic: 'Defense Evasion', technique: 'T1497.003 · Time Based Evasion',
         run(ev, ctx) {
           const m = ev.message || '';
           // Individually these are ordinary commands; run back to back by one
           // parent they are a payload deciding whether it is being watched.
-          const probe = /win32_computersystem get model|virtualbox guest additions|vmware\\tools|\bvboxservice\b|sbiedll|computersystemproduct get uuid/i.test(m) ||
-            /ping -n \d{2,} 127\.0\.0\.1|timeout \/t \d{2,}/i.test(m);
-          if (!probe) return;
+          // Hardware probes name the hypervisor; stalls just wait the analysis
+          // out. v18 separates the two, so the alert says which one it saw.
+          const hw = /win32_computersystem get model|virtualbox guest additions|vmware\\tools|\bvboxservice\b|sbiedll|computersystemproduct get uuid/i.test(m);
+          const stall = /ping -n \d{2,} 127\.0\.0\.1|timeout \/t \d{2,}/i.test(m);
+          if (!hw && !stall) return;
           const w = ctx.window('vmprobe', ev.host, 60000, ev.ts); w.push(ev.ts);
+          // Which probes the burst used decides the cell, not which one happened
+          // to close the window: a stall is the v18 sub-technique either way.
+          const kinds = ctx.windowSet('vmprobekind', ev.host, 60000, ev.ts, stall ? 'stall' : 'hw');
           if (w.length < 2 || !ctx.cooldown('vmprobe', ev.host, 30000, ev.ts)) return;
           return {
             severity: 'medium',
+            technique: kinds.has('stall') ? 'T1497.003 · Time Based Evasion' : 'T1497.001 · System Checks',
             message: `Sandbox evasion checks on ${ev.host}: ${w.length} environment probes in 60s`,
             srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [`probes=${w.length}`, ev.raw || m],
           };
@@ -815,9 +853,15 @@
           const external = THREAT_INTEL.ips.includes(ev.srcIp) ||
             (ev.srcIp && !/^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(ev.srcIp));
           if (!strips && !external) return;
+          // ATT&CK v18 split the network device's own firewall out of the host
+          // one: stripping an ACL or an inspection policy off the device is
+          // T1562.013, while the rest of a tampered config stays T1562.004.
+          const deviceFw = /no (ip )?access-(group|list)|no ip inspect|no zone-pair|no firewall|no ips |no service-policy/i.test(m);
           if (!ctx.cooldown('netcfg', ev.host, 30000, ev.ts)) return;
           return {
             severity: strips ? 'critical' : 'high',
+            technique: deviceFw ? 'T1562.013 · Disable or Modify Network Device Firewall'
+              : 'T1562.004 · Disable or Modify System Firewall',
             message: `Config change on ${ev.host} by ${ev.user || 'unknown'} from ${ev.srcIp}: ${m.slice(0, 80)}`,
             srcIp: ev.srcIp, host: ev.host, evidence: [`mnemonic=${ev.mnemonic}`, ev.raw || m],
           };
@@ -982,6 +1026,171 @@
           const m = ev.message || '';
           if (ev.phish || /phish|suspicious message|spf=fail.*dmarc=fail|attachment="[^"]*\.(exe|scr|js|vbs|iso|lnk|docm)"/i.test(m))
             return { severity: ev.threatSev || 'medium', message: `Phishing indicators: ${m.slice(0, 90)}`, srcIp: ev.srcIp, host: ev.host, evidence: [m] };
+        },
+      },
+      {
+        // The container runtime's own API is an execution primitive: a shell
+        // exec'd through the Docker socket never touches the host's shell
+        // history, and a privileged container with / mounted is a host shell.
+        id: 'container-runtime', name: 'Container Runtime Abuse', severity: 'critical',
+        tactic: 'Execution', technique: 'T1059.013 · Container CLI/API',
+        run(ev, ctx) {
+          if (ev.srcType !== 'docker') return;
+          const act = ev.dockerAction || '';
+          const cmd = ev.cmdLine || '';
+          let technique, tactic = 'Execution', sev = 'high', what;
+          if (/^exec_(create|start)/.test(act)) {
+            technique = 'T1059.013 · Container CLI/API';
+            what = `command exec'd into ${ev.containerName} over the Engine API: ${cmd.slice(0, 70)}`;
+            // chroot onto a mounted host filesystem is no longer container work.
+            if (/chroot|nsenter|\/host\b|\/etc\/shadow/i.test(cmd)) {
+              technique = 'T1611 · Escape to Host'; tactic = 'Privilege Escalation'; sev = 'critical';
+              what = `container escape from ${ev.containerName}: ${cmd.slice(0, 70)}`;
+            }
+          } else if (act === 'create' && (ev.privileged || /^\/:/.test(ev.mounts || ''))) {
+            technique = 'T1610 · Deploy Container'; tactic = 'Defense Evasion';
+            what = `privileged container ${ev.containerName} created from ${ev.image}` +
+              (ev.mounts ? ` with ${ev.mounts} mounted` : '');
+          }
+          if (!technique) return;
+          if (!ctx.cooldown('docker', ev.host, 30000, ev.ts)) return;
+          return {
+            severity: sev, tactic, technique,
+            message: `Docker on ${ev.host}: ${what}`,
+            srcIp: ev.srcIp && /^\d/.test(ev.srcIp) ? ev.srcIp : ev.hostIp, host: ev.host,
+            evidence: [`action=${act}`, ev.raw || ev.message],
+          };
+        },
+      },
+      {
+        // v18 gave databases their own cell under Data from Information
+        // Repositories. One SELECT is the application working; whole tables
+        // pulled by a person through SSMS or bcp is the repository walking out.
+        id: 'db-repository', name: 'Database Mass Extraction', severity: 'high',
+        tactic: 'Collection', technique: 'T1213.006 · Databases',
+        run(ev, ctx) {
+          if (ev.srcType !== 'mssql' || !/^select/i.test(ev.statement || '')) return;
+          const interactive = /management studio|bcp\.exe|sqlcmd|dbeaver|azure data studio/i.test(ev.appName || '');
+          const wholeTable = /select \* from/i.test(ev.statement || '') || (ev.rows || 0) >= 50000;
+          if (!interactive || !wholeTable) return;
+          const who = ev.user || 'unknown';
+          const tables = ctx.windowSet('dbread', who, 300000, ev.ts, ev.objectName);
+          const rows = ctx.window('dbrows', who, 300000, ev.ts); rows.push(ev.rows || 0);
+          if (tables.size < 3 || !ctx.cooldown('dbread', who, 60000, ev.ts)) return;
+          const total = rows.reduce((a, b) => a + b, 0);
+          return {
+            severity: total >= 500000 ? 'critical' : 'high',
+            message: `${who} exported ${tables.size} tables (${total.toLocaleString()} rows) from ${ev.dbName} via ${ev.appName}`,
+            srcIp: ev.srcIp, host: ev.host,
+            evidence: [`tables=${[...tables].join(',')}`, `rows=${total}`, ev.raw || ev.message],
+          };
+        },
+      },
+      {
+        // T1677: the pipeline is the payload. A workflow edited on the default
+        // branch and then run on a self-hosted runner executes attacker code on
+        // build infrastructure that already holds the secrets.
+        id: 'pipeline-abuse', name: 'Poisoned Pipeline Execution', severity: 'critical',
+        tactic: 'Execution', technique: 'T1677 · Poisoned Pipeline Execution',
+        run(ev, ctx) {
+          if (ev.srcType !== 'github') return;
+          const act = ev.ghAction || '';
+          const repo = ev.repo || 'unknown';
+          if (/^workflows\.(updated|created)_workflow_file$/.test(act)) {
+            // Remember who edited what; a workflow edit on its own is ordinary
+            // engineering and raises nothing.
+            ctx.windowSet('pipeline', repo, 900000, ev.ts, `${ev.user}@${ev.srcIp}:${ev.workflowName}`);
+            return;
+          }
+          if (/^workflows\.completed_workflow_run$/.test(act)) {
+            const edits = ctx.peek('pipeline', repo);
+            if (!edits || !edits.length || !/self-hosted/i.test(ev.runnerGroup || '')) return;
+            if (!ctx.cooldown('pipelinerun', repo, 60000, ev.ts)) return;
+            const who = edits[edits.length - 1].v;
+            return {
+              severity: 'critical',
+              message: `Poisoned pipeline: ${ev.workflowName} in ${repo} was edited (${who}) then run on self-hosted runner ${ev.runnerName}`,
+              srcIp: ev.srcIp, host: ev.host,
+              evidence: [`edited_by=${who}`, `runner=${ev.runnerName}`, `run_id=${ev.workflowRunId}`, ev.raw || ev.message],
+            };
+          }
+        },
+      },
+      {
+        // v18 T1518.002. Ransomware operators look for the backup product
+        // before they encrypt, so this is an early warning, not a curiosity.
+        id: 'backup-discovery', name: 'Backup Software Discovery', severity: 'medium',
+        tactic: 'Discovery', technique: 'T1518.002 · Backup Software Discovery',
+        run(ev, ctx) {
+          const m = ev.message || '';
+          if (!/get-vbr|veeam\.backup|\bvssadmin(\.exe)? +list +shadows\b|wbadmin(\.exe)? +get +(versions|items)|root\\veeam|backupexec|net(\.exe)? +(view|start) *\| *findstr.*backup|acronis|commvault|get-service[^"]*(veeam|backup)/i.test(m)) return;
+          if (!ctx.cooldown('backupdisco', ev.host, 60000, ev.ts)) return;
+          return {
+            severity: 'medium',
+            message: `Backup software enumerated on ${ev.host}: ${m.slice(0, 90)}`,
+            srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [ev.raw || m],
+          };
+        },
+      },
+      {
+        // v18 T1680. On its own this is an admin listing disks; ahead of
+        // collection it is the map of where the data lives.
+        id: 'storage-discovery', name: 'Local Storage Discovery', severity: 'low',
+        tactic: 'Discovery', technique: 'T1680 · Local Storage Discovery',
+        run(ev, ctx) {
+          const m = ev.message || '';
+          if (!/wmic(\.exe)? +logicaldisk|get-psdrive|fsutil(\.exe)? +fsinfo +drives|\blsblk\b|\bdf -h\b|mountvol(\.exe)?\b|net(\.exe)? +use +\*|get-volume\b/i.test(m)) return;
+          const w = ctx.window('storagedisco', ev.host, 120000, ev.ts); w.push(ev.ts);
+          if (w.length < 2 || !ctx.cooldown('storagedisco', ev.host, 60000, ev.ts)) return;
+          return {
+            severity: w.length >= 4 ? 'medium' : 'low',
+            message: `Local storage enumerated on ${ev.host}: ${w.length} volume/drive queries in 2 min`,
+            srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [`queries=${w.length}`, ev.raw || m],
+          };
+        },
+      },
+      {
+        // v18 T1204.005. A signed binary loading a DLL out of a user-writable
+        // directory is sideloading: the process name stays trustworthy while
+        // the code does not.
+        id: 'malicious-library', name: 'Malicious Library Sideload', severity: 'high',
+        tactic: 'Execution', technique: 'T1204.005 · Malicious Library',
+        run(ev, ctx) {
+          const m = ev.message || '';
+          const load = ev.eventId === 7 || /image ?load|loadlibrary|module load/i.test(m);
+          if (!load) return;
+          if (!/(users\\public|programdata|appdata\\local\\temp|\\temp|\\downloads)\\(?:[^\\"]*\\){0,3}[^\\"]*\.dll/i.test(m)) return;
+          // A DLL Microsoft signed, loaded from a temp directory, is the
+          // give-away — an unsigned plugin in Program Files is not.
+          const unsigned = /signed[:=]\s*false|signature ?status[:=]\s*unsigned|"unsigned"/i.test(m);
+          if (!ctx.cooldown('sideload', ev.host, 30000, ev.ts)) return;
+          return {
+            severity: unsigned ? 'high' : 'medium',
+            message: `Library sideloaded on ${ev.host}: ${m.slice(0, 90)}`,
+            srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [ev.raw || m],
+          };
+        },
+      },
+      {
+        // v18 T1678. Sleeping before the payload runs outlives the sandbox's
+        // analysis window and separates the execution from whatever launched it.
+        id: 'delay-execution', name: 'Delayed Execution', severity: 'medium',
+        tactic: 'Defense Evasion', technique: 'T1678 · Delay Execution',
+        run(ev, ctx) {
+          const m = ev.message || '';
+          const delay = m.match(/start-sleep +(?:-s(?:econds)? +)?(\d+)|sleep +(\d+)|timeout +\/t +(\d+)|ping +-n +(\d+)|waitfor +\/t +(\d+)/i);
+          if (!delay) return;
+          const secs = +(delay[1] || delay[2] || delay[3] || delay[4] || delay[5] || 0);
+          // Under a minute is a script being polite. Minutes are a stall.
+          if (secs < 60) return;
+          // A stall only matters if something follows it.
+          if (!/&&|;|\| *iex|-command|\bthen\b/i.test(m)) return;
+          if (!ctx.cooldown('delayexec', ev.host, 60000, ev.ts)) return;
+          return {
+            severity: secs >= 600 ? 'high' : 'medium',
+            message: `Execution delayed ${secs}s before the payload ran on ${ev.host}: ${m.slice(0, 80)}`,
+            srcIp: ev.srcIp || ev.hostIp, host: ev.host, evidence: [`delay_seconds=${secs}`, ev.raw || m],
+          };
         },
       },
     ];

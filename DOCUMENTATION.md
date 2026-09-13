@@ -33,7 +33,7 @@ has two halves:
 
 | Component     | Role |
 |---------------|------|
-| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 42 appliance formats (29 native syslog + 4 agent-relayed + 9 API-relayed), at a configurable rate, with 72 injectable attack scenarios and file replay. |
+| **Syslogger** | Synthetic log source — emits RFC 3164 / RFC 5424 syslog and 56 appliance formats (30 native syslog + 7 agent-relayed + 19 API-relayed), at a configurable rate, with 83 injectable attack scenarios and file replay. |
 | **Jedi**      | Miniature SIEM — parses every event, keeps rolling stats, and runs a stateful, MITRE ATT&CK-tagged detection-rule engine. |
 
 Everything renders in the browser. The optional `server.js` backend serves the
@@ -77,11 +77,12 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 |------|----------------|
 | `index.html` | Markup / panel scaffold |
 | `login.html` | Password + two-factor sign-in page |
-| `css/styles.css` | Dark SIEM theme, responsive layout |
+| `css/styles.css` | Neon SIEM theme: deep-space ground, 1px glowing edges, monospace throughout, responsive layout |
 | `js/data.js` | Random helpers, host/user/threat-intel pools, RFC 3164/5424 + vendor line formatters |
 | `js/syslogger.js` | Baseline generators, attack scenarios, appliance sources, file replay, forward queue |
 | `js/jedi.js` | Parsing, correlation windows, detection rules, stats, threat level |
 | `js/ui.js` | Dashboard rendering, charts, config wiring, drawer |
+| `js/toast.js` | Neon detection popups, the alert bell's preferences, and the full-screen critical klaxon |
 | `js/login.js` | The two-step sign-in flow on `login.html` |
 | `js/qr.js` | QR encoder (ISO/IEC 18004) for the 2FA enrolment code — browser and console |
 | `account.html` | Profile, password, second factor, and the admin user list |
@@ -89,6 +90,7 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `auth.js` | Accounts: scrypt passwords, RFC 6238 TOTP, roles, sessions, lockout, per-user collector (§13) |
 | `auth.json` | Generated per install: every account plus its saved collector (`0600`, gitignored, never served). Beside the code in a checkout; under the user's data directory when the app is installed read-only (§13.2) |
 | `server.js` | Optional backend: static host + `/forward` relay + `/test` probe + the sign-in gate |
+| `start.sh` | Launcher: foreground or background start, stop/restart/status/logs, desktop mode, the terminal build |
 | `samples/sample.log` | Example mixed-format log for the file-replay demo |
 | `CONNECTORS.md` | How to configure the agent- and API-relayed sources for real: agent config, connector design, Microsoft 365 / Entra / Defender, permissions |
 | `js/version.js` | The one version number. Dual-mode: a browser global and a `require()` for Node. Everything else reads it (§16.4) |
@@ -135,7 +137,7 @@ sees it. Common fields:
 |-------|---------|
 | `id` | Random unique id |
 | `ts` | Epoch ms timestamp |
-| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 42 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `sysmon`, `zeek`, `cloudtrail`, `okta`, `ciscoesa`, `cyberark`, `ivanti`, `infoblox`, `veeam`, `umbrella`, `azure`, `m365`, `entra`, `defender`, …), or `file` |
+| `srcType` | Source category — generic (`firewall`, `ssh`, `web`, `dns`, `vpn`, `windows`, `mail`), one of the 56 appliance keys (`paloalto`, `snort`, `bind`, `snare`, `sysmon`, `zeek`, `cloudtrail`, `okta`, `ciscoesa`, `cyberark`, `ivanti`, `infoblox`, `veeam`, `umbrella`, `azure`, `m365`, `entra`, `defender`, …), or `file` |
 | `host` / `hostIp` | Device name / management IP |
 | `facility` / `severity` | Syslog numeric facility (0–23) and severity (0–7) |
 | `program` / `pid` | Process / tag |
@@ -207,11 +209,14 @@ appliance events always use their native vendor format.
 
 ## 5. Attack scenarios
 
-**72** scenarios live under the **Attack ›** menu. Each scenario's `build()`
+**83** scenarios live under the **Attack ›** menu. Each scenario's `build()`
 returns a *burst* of event partials crafted to trip a specific detection rule, so
 every button demonstrably lights up the dashboard. A burst can be injected even
 while the baseline generator is stopped, and its events are spread 30–90 ms apart
-so the correlation windows see them as live traffic.
+so the correlation windows see them as live traffic. The gap **accumulates**, so a
+burst always arrives in the order `build()` returned it — rules that need the
+sequence (failures before the accept, a workflow edit before the run) can rely on
+it.
 
 Scenarios are defined in `js/syslogger.js` in three objects that are merged into a
 single `SCENARIOS` map: the original set in `SCENARIOS`, the bulk of the
@@ -267,7 +272,7 @@ techniques in `MORE_ATTACKS`, and the product-targeted pack in `PRODUCT_ATTACKS`
 | `browser-cred-theft` | Browser Credential Theft | Sysmon **11** file-create pair reading Chrome `Login Data` **and** `Local State` — the DB plus the key that decrypts it | `password-store-theft` | T1555.003 |
 | `masquerading` | Masquerading (fake svchost) | Sysmon **1** `svchost.exe` running from a user-writable path instead of `System32` | `masquerading` | T1036.005 |
 | `remote-access-tool` | Remote Access Tool Install | Sysmon **3** outbound connect from an unmanaged remote-support binary (AnyDesk / ScreenConnect class) | `remote-access-tool` | T1219 |
-| `sandbox-evasion` | Sandbox / VM Evasion | Sysmon **1** sequence probing for VM artefacts before the payload runs | `sandbox-evasion` | T1497 |
+| `sandbox-evasion` | Sandbox / VM Evasion | Sysmon **1** sequence — a `ping -n 120` stall to outlast the analysis window, then VM-artefact probes, before the payload runs | `sandbox-evasion` | T1497.003 |
 | `tor-egress` | Tor Egress | Squid `TCP_TUNNEL` `CONNECT` to Tor ORPort/DirPort (9001 / 9051) | `covert-c2` | T1090.003 |
 | `saas-c2` | C2 over Trusted SaaS | Squid `GET` loop pulling task files from a raw GitHub / paste endpoint on a fixed cadence | `covert-c2` | T1102.002 |
 | `cloud-exfil` | Exfil to Cloud Storage | one Squid `PUT` of ~1 GB to Dropbox / Mega / transfer.sh | `cloud-exfil` | T1567.002 |
@@ -293,6 +298,17 @@ techniques in `MORE_ATTACKS`, and the product-targeted pack in `PRODUCT_ATTACKS`
 | `entra-ca-tamper` | Conditional Access Weakened | Entra `AuditLogs` — *Update conditional access policy*: state dropped to report-only and one account excluded | `identity-threat` | T1556.009 |
 | `mde-tamper` | Defender EDR Tampering | three Defender for Endpoint alerts — tamper protection off, scan exclusion added, sensor stopped | `security-tooling-disabled` | T1562.001 |
 | `exchange-proxynotshell` | Exchange ProxyNotShell | `POST /autodiscover/autodiscover.json?@…/powershell/`, the Sysmon **11** shell drop into `owa\auth`, then a `GET` on the shell | `web-exploit` (twice) | T1190 · T1505.003 |
+| `net-fw-disable` | Network Device Firewall Off | three Cisco IOS `%SYS-5-CONFIG_I` lines from an external vty stripping `ip inspect`, the inbound ACL and the inspection service-policy | `net-config-change` | T1562.013 |
+| `backup-recon` | Backup Software Discovery | 2–4 Windows **4688** process creates enumerating Veeam services, `vssadmin list shadows`, `wbadmin get versions` | `backup-discovery` | T1518.002 |
+| `edr-exclusion` | EDR Exclusion Added | `Add-MpPreference -ExclusionPath` / `-ExclusionProcess`, then Defender's own *scan exclusion added* alert — the scanner stays up and healthy | `security-tooling-disabled` | T1679 |
+| `container-exec` | Container CLI Abuse | two Docker Engine-API `exec_create` / `exec_start` events reading a service-account token, then piping a remote script to `sh` | `container-runtime` | T1059.013 |
+| `storage-discovery` | Local Storage Discovery | 3–5 Windows **4688** creates running `wmic logicaldisk`, `Get-PSDrive`, `fsutil fsinfo drives`, `net use *`, `Get-Volume` | `storage-discovery` | T1680 |
+| `python-hook` | Python Startup Hook | auditd `SYSCALL` / `PATH` / `EXECVE` writing `sitecustomize.py` into `site-packages` — every interpreter start runs it | `persistence-mech` | T1546.018 |
+| `dll-sideload` | Malicious Library Sideload | Sysmon **11** dropping `version.dll` beside a signed updater in `%TEMP%`, then Sysmon **7** loading it unsigned | `malicious-library` | T1204.005 |
+| `ua-spoof` | Browser Fingerprint Spoof | two Zeek `ssl.log` records whose JA3 is Cobalt Strike's default while the User-Agent claims Chrome | `masquerading`, `c2-beacon` | T1036.012 |
+| `delay-exec` | Delayed Execution | `Start-Sleep -Seconds 900; IEX …` and `timeout /t 900 && rundll32 …` — the stall and the payload on one command line | `delay-execution`, `susp-powershell` | T1678 |
+| `db-mass-read` | Database Mass Extraction | 3–5 `SELECT * FROM` statements against Customers / CreditCards / Employees / Salaries by a named account through SSMS or `bcp` | `db-repository` | T1213.006 |
+| `pipeline-poison` | Poisoned Pipeline Execution | `workflows.updated_workflow_file` on `main` adding a `curl … \| bash` step, then the run on a self-hosted runner reading six repository secrets | `pipeline-abuse` | T1677 |
 
 Most bursts raise exactly **one** alert. `mfa-fatigue` deliberately raises two — the
 push-bombing burst, then the approval that follows it — the same shape as
@@ -335,7 +351,7 @@ threat-intel matches.
 
 ## 6. Appliance log formats
 
-**42** sources live under the **Appliance logs ›** menu. Each burst mixes benign
+**56** sources live under the **Appliance logs ›** menu. Each burst mixes benign
 events with malicious ones, and every event is rendered in the vendor's **real
 wire format** (still wrapped in a syslog `<PRI>` header) by the matching formatter
 in `js/data.js` → `VENDOR_FORMATTERS`. The RFC 3164 / 5424 toggle does **not**
@@ -352,9 +368,9 @@ feed doesn't flood **Detections**. A file replay still takes precedence, and
 clicking a selected appliance again (or **clear** / **Reset**) restores the mix.
 
 `Syslogger.scenarioList()` exposes a **`transport`** field (`native` | `agent` |
-`api`, defaulting to `native`). 29 of the 42 sources are `native` — the device
-speaks syslog itself. Thirteen are not, and say so with a badge on their button and
-in the hover title.
+`api`, defaulting to `native`). 30 of the 56 sources are `native` — the device
+speaks syslog itself. Twenty-six are not, and say so with a badge on their button
+and in the hover title.
 
 **`agent`** — the telemetry exists locally but something else has to put it on the
 wire:
@@ -368,6 +384,11 @@ wire:
   `audisp-syslog` plugin is what puts it on the wire.
 - **`zeek`** — Zeek writes log *files* under `/opt/zeek/logs/current`, one per
   path; Filebeat or `rsyslog imfile` ships them.
+- **`windns`** — the DNS Server analytic channel is an ETW trace on the domain
+  controller; an agent is what turns it into syslog.
+- **`mssql`** — SQL Server Audit writes to a file or the Windows Security log.
+- **`docker`** — daemon and Engine-API events come off the socket, not syslog; a
+  container-runtime agent ships them.
 
 **`api`** — the product emits nothing at all on a socket; a connector polls it and
 re-emits the JSON:
@@ -385,6 +406,18 @@ re-emits the JSON:
 - **`defender`** — Defender for Endpoint publishes through the Defender XDR
   streaming API (an Event Hub or storage account) or the alerts API; there is no
   syslog anywhere in the product.
+- **`proofpoint`** — message and click events are polled from the SIEM API.
+- **`sentinelone`** — threats are read from `/web/api/v2.1/threats`.
+- **`guardduty`** — findings leave AWS through EventBridge or an S3 export.
+- **`vpcflow`** — flow logs land in CloudWatch Logs or S3 and are pulled there.
+- **`gcp`** — Cloud Audit Logs are exported through a Pub/Sub sink.
+- **`gworkspace`** — the Reports API `activities.list` endpoint is polled.
+- **`netskope`** — events come from the REST API v2.
+- **`duo`** — the Admin API authentication log is polled.
+- **`github`** — the Enterprise audit log is read from the REST API or streamed
+  to a bucket.
+- **`ocsf`** — a schema rather than a wire format: Security Lake writes OCSF
+  records to S3 and a connector re-emits them.
 
 **Configuring these for real** — agent config files, connector design, the
 Microsoft 365 / Entra ID / Defender feeds, the exact permissions each one needs,
@@ -472,6 +505,20 @@ Five detection paths cover the malicious events in each burst:
 | `azure` | Azure Activity Log — **api** | Activity Log JSON | `cloud-threat` | one of diagnostic-settings delete, `roleAssignments/write` Owner, `listKeys`, key-vault policy write |
 | `m365` | Microsoft 365 audit — **api** | unified-audit `AuditData` JSON | `cloud-threat` | `New-InboxRule` forwarding externally with `DeleteMessage True` |
 | `defender` | Defender for Endpoint — **api** | Defender XDR `AlertInfo` / `AlertEvidence` JSON | `appliance-threat` | one High alert (credential dumping / Cobalt Strike C2 / backup deletion) carrying its own `AttackTechniques`, alongside informational ones |
+| `proofpoint` | Proofpoint Email — **api** | SIEM-API message JSON | `appliance-threat` | a quarantined credential-phish or BEC lure — `phishScore` ≥ 88, `quarantineRule threat_phish`, carrying T1566.002 |
+| `sentinelone` | SentinelOne — **api** | Singularity `threats` JSON | `appliance-threat` | a mitigated Ransomware / Malware / Infostealer verdict with its own tactic and technique, alongside PUA noise |
+| `guardduty` | AWS GuardDuty — **api** | finding JSON | `appliance-threat` | one of `CryptoCurrency:EC2/BitcoinTool.B!DNS`, `Backdoor:EC2/C&CActivity.B!DNS`, `UnauthorizedAccess:IAMUser/MaliciousIPCaller.Custom`, `Exfiltration:S3/ObjectRead.Unusual` |
+| `vpcflow` | AWS VPC Flow Logs — **api** | version-2 space-separated | `port-scan` | 17–20 `REJECT` flows to distinct ports on one ENI from a threat-intel IP — no signature, correlated |
+| `gcp` | Google Cloud audit — **api** | Cloud Logging `AuditLog` JSON | `appliance-threat` | `SetIamPolicy` granting Owner, a new service-account key, or an audit sink deleted |
+| `gworkspace` | Google Workspace — **api** | Reports API `activity` JSON | `appliance-threat` | Super Admin assigned to a contractor, a document shared outside the domain, or a suspicious login |
+| `netskope` | Netskope SWG — **api** | REST v2 event JSON | `appliance-threat` | a DLP alert — PII-matched file uploaded to unsanctioned personal cloud storage (T1567.002) |
+| `duo` | Cisco Duo MFA — **api** | Admin API auth-log JSON | `mfa-fatigue` | 7–11 `duo_push` `user_declined` denials for one account from one bad IP — no signature, correlated |
+| `windns` | Windows DNS Server — **agent** | `Microsoft-Windows-DNSServer/Analytical` `key=value` | `dns-tunneling` | 12–18 unique 46-char TXT labels under a known-bad zone from one internal host |
+| `nginx` | nginx (web) | combined access log + `rt=`/`uct=` | `web-exploit`, `sql-injection` | one SQLi, traversal or web-shell request from a threat-intel IP among ordinary traffic |
+| `github` | GitHub audit — **api** | audit-log JSON | `pipeline-abuse` | `workflows.updated_workflow_file` on `main` followed by a run on a self-hosted runner that reads the repo secrets |
+| `mssql` | SQL Server audit — **agent** | `MSSQLSERVER-Audit` `key=value` | `db-repository` | four `SELECT *` statements against Customers / CreditCards / Employees / Salaries by a person through SSMS or `bcp` |
+| `docker` | Docker runtime — **agent** | Engine-API event JSON | `container-runtime` | a `--privileged` container with `/` mounted, then `chroot /host /bin/sh` exec'd into it over the socket |
+| `ocsf` | OCSF (generic) — **api** | OCSF 1.3 `Security Finding` JSON | `appliance-threat` | a finding class event whose `finding_info.title` names the behaviour, carrying its own ATT&CK cell |
 
 ### Example wire lines
 
@@ -690,11 +737,11 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 |---------|------|---------|--------|
 | `ssh-bruteforce` | SSH Brute-Force | ≥ 8 failed `sshd` logins / IP / 60 s | T1110 |
 | `brute-success` | Login After Brute Force | `Accepted password` after a failure burst | T1078 |
-| `port-scan` | Horizontal Port Scan | ≥ 15 distinct denied dst ports / IP / 30 s | T1046 |
+| `port-scan` | Horizontal Port Scan | ≥ 15 distinct denied/rejected dst ports / IP / 30 s (`firewall`, `vpcflow`) | T1046 |
 | `sql-injection` | SQL Injection | SQLi regex in an HTTP request | T1190 |
 | `c2-beacon` | C2 / Known-Bad Destination | internal host → threat-intel IP | T1071 |
 | `data-exfil` | Large Outbound Transfer | outbound flow > 100 MB | T1048 |
-| `dns-tunneling` | DNS Tunneling | long DNS label / known-bad domain (`dns`, `bind`, `infoblox`, `umbrella` sources) | T1071.004 |
+| `dns-tunneling` | DNS Tunneling | long DNS label / known-bad domain, counted once per source (`dns`, `bind`, `infoblox`, `umbrella`, `windns`) | T1071.004 |
 | `priv-esc` | Privilege Escalation | `sudo … USER=root` / Win 4672 | T1068 |
 | `ids-malware` | IDS Malware Signature | Suricata/ET trojan/exploit | T1204 |
 | `radius-brute` | RADIUS / 802.1X Brute Force | ≥ 6 Cisco ISE `5400` failures / MAC / 60 s | T1110 |
@@ -703,13 +750,13 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `web-exploit` | Web Application Attack | Log4Shell / Exchange Autodiscover SSRF (ProxyShell / ProxyNotShell) / XSS / traversal / web shell / scanner UA / `169.254.169.254` metadata SSRF | T1190·T1059·T1083·T1505.003·T1595·T1552.005 |
 | `windows-threat` | Windows Security Event | 4625 brute/spray, 4768 no-preauth RC4, 4769 RC4 or blank domain, 4662 repl, 4732/4720, 1102, 4624 PtH, 7045 PsExec (`windows` + `snare` sources) | T1110·T1558.001·T1558.003·T1558.004·T1003.006·T1136·T1070.001·T1550.002·T1021.002 |
 | `cred-dumping` | Credential Dumping (LSASS) | Sysmon **10** into `lsass.exe` with `0x1010/0x1410/0x1438/0x143a`, or `comsvcs MiniDump` / procdump / mimikatz on a command line | T1003.001 |
-| `persistence-mech` | Persistence Mechanism Created | `CurrentVersion\Run` write, `schtasks /create` or 4698, `sc create` or 7045 (PsExec-style names excluded) | T1547.001·T1053.005·T1543.003 |
+| `persistence-mech` | Persistence Mechanism Created | `CurrentVersion\Run` write, `schtasks /create` or 4698, `sc create` or 7045 (PsExec-style names excluded), or a Python startup hook (`sitecustomize.py`, `PYTHONSTARTUP`, a `.pth` import) | T1547.001·T1053.005·T1543.003·T1546.018 |
 | `lolbin-abuse` | LOLBin Download / Proxy Execution | `certutil -urlcache/-decode`, `bitsadmin /transfer`, `mshta http…`, `regsvr32 /i:http` | T1105·T1218 |
-| `security-tooling-disabled` | Security Tooling Disabled | `DisableRealtimeMonitoring`, `-ExclusionPath`, AMSI patch markers, `net stop windefend`, or an EDR's own tamper verdict (Defender: tamper protection off, scan exclusion added, sensor stopped) | T1562.001 |
+| `security-tooling-disabled` | Security Tooling Disabled | `DisableRealtimeMonitoring`, `-ExclusionPath`, AMSI patch markers, `net stop windefend`, or an EDR's own tamper verdict (Defender: tamper protection off, scan exclusion added, sensor stopped); a scanner **exclusion** that leaves the tool running is reported as its own cell | T1562.001·T1679 |
 | `ad-recon` | Active Directory Enumeration | SharpHound / BloodHound / AdFind / `Get-Domain*` on a command line, or ≥ 10 × 4662 directory reads / account / 60 s | T1087.002 |
 | `cloud-threat` | Cloud Control-Plane Abuse | three control planes in one rule — CloudTrail `eventName` (trail/detector deletion, IAM credential creation, admin policy attach, public bucket, root console login), Azure `operationName` (diagnostic-settings delete, privileged `roleAssignments/write`, `listKeys`, key-vault policy write), and Microsoft 365 via `m365Verdict()`: forwarding rules, org-wide transport rules, audit logging switched off, anonymous sharing links, external Teams guests, eDiscovery search and export, Power Automate exfil flows, mailbox `Sync` bursts (≥ 8 / 10 min) and file-download bursts (≥ 12 / 10 min) | T1562.008·T1098.001·T1098.003·T1530·T1078.004·T1552.001·T1555·T1114.002·T1114.003·T1199·T1213·T1213.002·T1567 |
 | `identity-threat` | Identity Provider Threat | Okta `user.session.start` successes from ≥ 2 countries / hour, or an MFA-factor / policy / privilege change; Entra `SignInLogs` (legacy-auth CA bypass, OAuth consent, impossible travel) and `AuditLogs` (security-info / authentication-method change, Conditional Access policy weakened or deleted) | T1078.004·T1098.003·T1528·T1556.006·T1556.009 |
-| `mfa-fatigue` | MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, then a **critical** follow-up if one is finally approved | T1621 |
+| `mfa-fatigue` | MFA Push Bombing | ≥ 6 rejected Okta push prompts / user / 5 min, then a **critical** follow-up if one is finally approved (`okta`, `duo`) | T1621 |
 | `reverse-shell` | Reverse Shell | `/dev/tcp/`, `nc -e`, `bash -i >&` | T1059 |
 | `susp-powershell` | Suspicious PowerShell | `-enc` / `FromBase64String` / hidden window | T1059.001 |
 | `cryptomining` | Cryptomining | `stratum+tcp` / known pool | T1496 |
@@ -718,16 +765,23 @@ message, srcIp, host, evidence}`. Correlating rules use the primitives above.
 | `phishing` | Phishing Email | SPF/DKIM/DMARC fail + risky attachment, or the gateway's own verdict (`mail` + `ciscoesa` sources) | T1566 |
 | `process-injection` | Process Injection | Sysmon **10** `ProcessAccess` with a `CreateRemoteThread`-shaped `GrantedAccess` | T1055 |
 | `password-store-theft` | Credentials From Password Store | browser `Login Data` **and** `Local State` read together, or one holder checking out ≥ 4 privileged CyberArk safes / 2 min | T1555.003·T1555.005 |
-| `masquerading` | Masquerading System Binary | a `System32` binary name running from a user-writable path | T1036.005 |
+| `masquerading` | Masquerading System Binary | a `System32` binary name running from a user-writable path, or a TLS fingerprint that contradicts the advertised browser | T1036.005·T1036.012 |
 | `remote-access-tool` | Unmanaged Remote Access Tool | AnyDesk / ScreenConnect-class binary making an outbound connection | T1219 |
-| `sandbox-evasion` | Sandbox / VM Evasion | VM-artefact probing before the payload runs | T1497 |
+| `sandbox-evasion` | Sandbox / VM Evasion | ≥ 2 VM-artefact probes or multi-minute stalls on one host / 60 s; a stall in the burst reports the time-based cell, otherwise the system-checks one | T1497.001·T1497.003 |
 | `covert-c2` | Covert C2 Channel | proxy `CONNECT` to Tor ports (9001 / 9051), or a fixed-cadence pull loop against a trusted SaaS host | T1090.003·T1102.002 |
 | `cloud-exfil` | Exfiltration to Cloud Storage | `PUT`/`POST` > 100 MB to Dropbox / Mega / transfer.sh and friends | T1567.002 |
-| `net-config-change` | Network Device Config Tampering | Cisco IOS `%SYS-5-CONFIG_I` removing `logging host` or an ACL | T1562.004 |
+| `net-config-change` | Network Device Config Tampering | Cisco IOS `%SYS-5-CONFIG_I` removing `logging host`, an ACL, or the device's own inspection policy | T1562.004·T1562.013 |
 | `vpn-brute` | VPN / Gateway Credential Stuffing | ≥ 6 distinct accounts tried from one IP / 2 min (`citrix` + `ivanti` sources) | T1110.004 |
 | `hypervisor-threat` | Hypervisor Tampering | ESXi lockdown mode disabled, SSH enabled, or `esxcli vm process kill` | T1562.001 |
 | `k8s-threat` | Kubernetes Cluster Abuse | privileged / `hostPID` pod create, or `pods/exec` by an anonymous subject | T1611 |
 | `lateral-exec` | Remote Execution (WMI / WinRM) | connect to 135 / 5985 followed by a remote process create | T1047·T1021.006 |
+| `container-runtime` | Container Runtime Abuse | a command exec'd through the Docker Engine API, or a `--privileged` container with the host root mounted | T1059.013·T1610·T1611 |
+| `db-repository` | Database Mass Extraction | ≥ 3 whole tables read from one database by a person through SSMS / `bcp` / `sqlcmd` / 5 min | T1213.006 |
+| `pipeline-abuse` | Poisoned Pipeline Execution | a workflow file edited, then run on a self-hosted runner holding the repository's secrets | T1677 |
+| `backup-discovery` | Backup Software Discovery | `vssadmin list shadows`, `wbadmin get versions`, or Veeam / BackupExec / Commvault enumeration | T1518.002 |
+| `storage-discovery` | Local Storage Discovery | ≥ 2 volume/drive enumerations on one host / 2 min | T1680 |
+| `malicious-library` | Malicious Library Sideload | an image-load of a DLL from a user-writable directory beside a signed binary | T1204.005 |
+| `delay-execution` | Delayed Execution | a ≥ 60 s stall chained to the command that follows it | T1678 |
 
 ---
 
@@ -1156,6 +1210,91 @@ change.
 `JEDI_AUTH=off node server.js` serves with no sign-in at all, for a throwaway
 local run. The startup banner says so in plain language, `/auth/session` reports
 `authRequired: false`, and the dashboard hides the sign-in badge.
+
+### 13.3 Single sign-on inside ApexBuild
+
+This app also runs as a **module of ApexBuild**, the suite that hosts several
+APEX tools in one window. There it is framed on its own loopback port, and the
+person using it has already signed in to the shell. Asking them for a second
+password and a second authenticator code would not be a second factor; it would
+be a second password to forget.
+
+**Standalone is unchanged and comes first.** Everything below is additive. With
+no `APEX_SSO_KEY` in the environment there is no verifier at all, an
+`?apex_sso=` parameter is ignored, and the password + TOTP sign-in behaves
+exactly as the rest of this section describes. The app remains a standalone web
+app, a desktop app and a terminal build; being hosted is one more way to start
+it.
+
+**How the ticket works.** The shell starts every module, so it hands each one a
+signing key in its environment at launch — there is no key distribution problem,
+the key never reaches disk and it dies with the shell. When the shell frames a
+module it appends a one-time ticket:
+
+```
+APEX_SSO_KEY=<32 random bytes, base64url>     in the environment, at launch
+?apex_sso=v1.<payload>.<hmac>                 on the frame URL, for one request
+
+payload = {"sub":"alfredo","name":"Alfredo","role":"admin",
+           "aud":"jedisyslogger","iat":…,"exp":…,"jti":"…","iss":"apexbuild"}
+```
+
+`apexsso.js` verifies it, in this order and for these reasons:
+
+| Check | Why |
+|-------|-----|
+| HMAC-SHA256 over `v1.<payload>`, compared in constant time | the payload is hostile input until the signature agrees, so it is not even parsed first |
+| `aud` equals `jedisyslogger` | a ticket for the terminal is not a ticket for this app; a module that accepts any audience hands every other module's tickets a way in |
+| `exp` (30 s) and `iat`, ±5 s of slack | it only has to survive one frame load |
+| `jti` not seen before | single use; the verifier remembers ids until they expire |
+
+On success `auth.ssoSignIn()` maps the claims to a local account, `server.js`
+sets its ordinary session cookie and answers **303** to the same path with the
+parameter removed — a ticket in the address bar is in the history, in
+screenshots and in anything that logs a referrer. Anything wrong is a *refusal*,
+never a failure: the reason goes to stderr (the suite shows it in the module's
+output pane) and the request falls through to the ordinary sign-in gate.
+
+**Accounts.** The first ticket for a name creates a local account for it,
+flagged `sso`. It has a random, discarded password, so the only way into it is
+another ticket — nothing else in `auth.js` needs to know it is special. The
+shell is authoritative for that account's **role** on every sign-in, because a
+suite with one identity and two answers about what it may do is worse than
+either answer. The single exception belongs to `auth.js`: it will not leave the
+app with zero admins, and says so on stdout when it declines a demotion.
+
+Accounts vouched for by the shell are not the same population as accounts
+someone made running this app alone, so `apexmod` points `JEDI_AUTH_STORE` at
+the per-module directory the host reserves (`--data-dir`). Share them by
+unsetting that instead, if that is what you want.
+
+The dashboard shows **via ApexBuild** beside the user name and hides *Sign out*
+for such a session: there is no password to come back with, and the way back in
+is the suite reloading the frame with a fresh ticket.
+
+**Making it a module.** Two files satisfy the contract, and both ship in the
+portable archive:
+
+```sh
+./apexmod info      # the manifest, as JSON
+./apexmod check     # is Node present and new enough, is the checkout complete
+./apexmod run --host 127.0.0.1 --port 8124 --data-dir DIR --embed-origin ORIGIN --no-open
+```
+
+`apexmod` is Python only because that is what the host runs on Windows, where
+cmd.exe cannot read a shebang. It prints the contract's `APEX-READY` line and
+then **`execve`s node**, replacing itself: ApexBuild stops a module by
+signalling the process it started, and a node hiding behind a Python wrapper
+would never receive it. It passes `--embed-origin` through as
+`APEX_EMBED_ORIGIN` (§13.1), points `JEDI_AUTH_STORE` at `--data-dir`, and
+points the TLS certificate at a path that does not exist so the app comes up on
+plain http — a browser will not show its accept-the-risk interstitial inside an
+iframe, it simply refuses the load. Running the app on its own still serves
+HTTPS exactly as before.
+
+`apexmodule.toml` carries a fourth copy of the version number;
+`packaging/version.sh --check` guards it alongside the three packaging
+manifests.
 
 ---
 

