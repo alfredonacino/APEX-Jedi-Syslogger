@@ -52,6 +52,10 @@ const VERSION = 'v1';
 const ENV_KEY = 'APEX_SSO_KEY';
 const ENV_MODULE = 'APEX_MODULE_ID';
 const QUERY_PARAM = 'apex_sso';
+// The shell's answer when it has nobody signed in. Telling that apart from
+// 'nobody has asked yet' is what stops the re-ask below being a loop.
+const UNAVAILABLE_PARAM = 'apex_sso_unavailable';
+const ENV_SHELL_ORIGIN = 'APEX_SHELL_ORIGIN';
 const LEEWAY_S = 5;          // clock slack, both directions
 const SEEN_KEEP_S = 60;      // how long a spent jti is remembered past its expiry
 
@@ -160,7 +164,28 @@ function mint(key, user, audience, ttl = 30) {
   return `${signed}.${b64url(mac)}`;
 }
 
-module.exports = { Verifier, fromEnvironment, mint, QUERY_PARAM, ENV_KEY, ENV_MODULE, VERSION };
+/**
+ * Where to send a frame to be handed a ticket, or '' when run standalone.
+ *
+ * The shell offers a ticket when it frames a module and at no other moment,
+ * because handing one over means reloading the frame. That leaves one gap it
+ * cannot see: our own session lapsing after the frame was loaded. The user is
+ * then sent to a sign-in form inside a suite they are already signed in to,
+ * which is the question this answers.
+ *
+ * The browser is holding the shell's session cookie and both ends are on
+ * loopback, so the shell knows who is asking although this process never did.
+ */
+function reauthUrl(audience) {
+  const origin = String(process.env[ENV_SHELL_ORIGIN] || '').trim().replace(/\/$/, '');
+  if (!origin || !audience) return '';
+  return `${origin}/api/sso/${encodeURIComponent(audience)}?redirect=1`;
+}
+
+module.exports = {
+  Verifier, fromEnvironment, mint, reauthUrl,
+  QUERY_PARAM, UNAVAILABLE_PARAM, ENV_KEY, ENV_MODULE, ENV_SHELL_ORIGIN, VERSION,
+};
 
 // ---- Self-test -------------------------------------------------------------
 // Exercises every rejection path, because the only interesting thing a verifier

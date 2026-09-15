@@ -134,6 +134,8 @@ function handleLaunch(req, res, url) {
 const apexsso = require('./apexsso.js');
 const SSO_AUDIENCE = 'jedisyslogger';
 const SSO = apexsso.fromEnvironment(SSO_AUDIENCE);
+// Where to send a frame that has lost its session, or '' when run standalone.
+const SSO_REAUTH_URL = apexsso.reauthUrl(SSO_AUDIENCE);
 
 // Spend a ticket for a session. Returns true when it answered the request.
 // Anything wrong is a refusal, never a failure: the caller falls through to the
@@ -263,6 +265,24 @@ function handleRequest(req, res) {
 // (fetch, curl, the forwarding relay) gets a JSON 401 it can act on.
 function denyAnonymous(req, res, urlPath) {
   if (String(req.headers.accept || '').includes('text/html')) {
+    // Hosted and signed out: ask the shell for a ticket before sending anyone
+    // to a sign-in form they should never see. The shell only ever volunteers
+    // one when it frames us, so a session that lapsed afterwards is invisible
+    // to it — it does not proxy us and cannot see inside the frame.
+    //
+    // Asked once. Coming back with the marker is the shell saying it has
+    // nobody to vouch for, and the sign-in form is right after all.
+    // Either the shell has already said it has nobody to vouch for, or a
+    // ticket reached us on this very request and still did not sign anybody
+    // in. Both mean asking again would only be a loop.
+    const raw = String(req.url || '');
+    const asked = raw.includes(`${apexsso.UNAVAILABLE_PARAM}=1`)
+      || raw.includes(`${apexsso.QUERY_PARAM}=`);
+    if (SSO_REAUTH_URL && !asked) {
+      console.log('  ⟲ no session under ApexBuild; asking the shell for a ticket');
+      res.writeHead(303, { Location: SSO_REAUTH_URL, 'Content-Length': '0' });
+      return res.end();
+    }
     res.writeHead(302, { Location: `/login.html?next=${encodeURIComponent(urlPath)}` });
     return res.end();
   }
