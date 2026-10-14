@@ -652,7 +652,7 @@ own native tooling — `makepkg` and `rpmbuild` — reading the tarball it produ
 jedi update          # exit 0 up to date, 10 if newer available, 1 on error
 ```
 
-The manifest is served from `https://atlasupdate.cybercontrol.tech/` and signed
+The manifest is served by the ARES Repository (`https://aresrepo.cybercontrol.tech/`) and signed
 with Ed25519. Every build carries the **public** key, so the update server is
 untrusted: it can serve any bytes it likes, but a manifest it did not sign with
 the matching private key is rejected before a version is even compared.
@@ -662,20 +662,34 @@ installed the copy — apt, dnf, pacman, brew, or unpacking the archive. An
 updater that can replace its own binary is a remote-code-execution feature with a
 friendly name, and this application has no business owning one.
 
-**Publishing a release** (maintainers):
+### Releasing
+
+One command builds, signs and publishes to the ARES Repository (app
+`apex-jedisyslogger-portable`), with no prompts:
 
 ```bash
-packaging/version.sh --set 1.1.0      # stamps app, CLI and every package manifest
-./packaging/build.sh --all
-node packaging/sign.js --notes "..."  # signs dist/ into dist/publish/
-# upload dist/publish/ to the web root, keeping stable.json at the top level
+packaging/version.sh --set 1.2.5      # stamp the new version, then commit it
+scripts/release.sh                    # build, sign, upload, publish to stable
+scripts/release.sh --stage            # upload and sign, publish later from the web UI
+scripts/release.sh --dry-run          # build and show what would be uploaded
+scripts/release.sh --help             # --channel, --rollout, --notes, --skip-build
 ```
 
-The signing key is read from `$JEDI_PUBLISH_KEY_FILE` or
-`~/.config/apex-jedisyslogger/publish.key` (mode 600) — **never** from a command
-line, where it would land in `ps`, shell history and CI logs. `sign.js` derives
-the public key from it and refuses to sign if it does not match the one builds
-trust, so a manifest that would verify nowhere cannot be published by accident.
+One-time setup:
+
+1. A publishing token, written to `~/.config/ares-repository/apex-jedisyslogger-portable.env`:
+   `"/media/RAID1/CLAUDE_PROJECTS/ARES Repository/tools/issue-release-tokens.sh" apex-jedisyslogger-portable`
+2. The signing key, read from (first found) `APEX_SIGNING_KEY` or
+   `APEX_SIGNING_KEY_FILE` in that env file, `$JEDI_PUBLISH_KEY`,
+   `$JEDI_PUBLISH_KEY_FILE`, or `~/.config/apex-jedisyslogger/publish.key`
+   (mode 600) — **never** from a command line, where it would land in `ps`,
+   shell history and CI logs.
+
+The script runs `packaging/build.sh` (with `--deb`, `--rpm`, `--arch` as this
+host allows), `packaging/sign.js`, then `packaging/publish.js`. `sign.js` derives
+the public key from the private one and refuses to sign if it does not match the
+one builds trust, so a manifest that would verify nowhere cannot be published by
+accident.
 
 **Commands**
 

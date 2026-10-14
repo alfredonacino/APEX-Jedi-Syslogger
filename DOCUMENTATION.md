@@ -100,7 +100,7 @@ All traffic is synthetic. Nothing leaves the browser unless you explicitly enabl
 | `forward.js` | The wire: UDP/TCP relays, the Splunk HEC poster, and the three connectivity probes. Required by both `server.js` and `jedi-cli.js` |
 | `bin/jedi`, `bin/jedi.cmd` | Launchers for POSIX and Windows |
 | `updater.js` | The update client: fetch, **verify the Ed25519 signature**, then compare versions (§16.6) |
-| `packaging/` | `build.sh`, `build-deb.sh`, `bundle.js`, `version.sh`, `sign.js`, `install.ps1`, `PKGBUILD`, the RPM spec, the Homebrew formula, the systemd unit |
+| `packaging/` | `build.sh`, `build-deb.sh`, `bundle.js`, `version.sh`, `sign.js`, `publish.js`, `install.ps1`, `PKGBUILD`, the RPM spec, the Homebrew formula, the systemd unit |
 | `jsconfig.json` | Editor typecheck settings — read by the editor, never shipped |
 | `types/globals.d.ts` | Ambient declarations for `window.JS` and Node globals |
 
@@ -1632,7 +1632,7 @@ Use an `if` block. That exact line cost a build here.
 
 ### 16.6 The update channel
 
-`jedi update` asks `https://atlasupdate.cybercontrol.tech/<channel>.json` whether
+`jedi update` asks the ARES Repository (`https://aresrepo.cybercontrol.tech`) whether
 a newer version exists. The server is **untrusted**. It can serve any bytes it
 likes; what it cannot do is produce an Ed25519 signature over them without the
 private key, and every build carries the public half
@@ -1663,16 +1663,19 @@ Nothing downstream of the check runs on unverified bytes. Details that matter:
 Exit codes: `0` current, `10` an update is available, `1` the check failed —
 including a signature that did not verify, which is a failure and not a "no".
 
-**Publishing.** `packaging/sign.js` builds the manifest and signs it:
+**Publishing.** `scripts/release.sh` does the whole release unattended: it runs
+`packaging/build.sh`, then `packaging/sign.js` (builds the manifest and signs
+it), then `packaging/publish.js` (uploads to the ARES Repository and publishes):
 
 ```bash
 packaging/version.sh --set 1.1.0
-./packaging/build.sh --all
-node packaging/sign.js --notes "what changed"
-# upload dist/publish/ to the web root, <channel>.json at the top level
+scripts/release.sh --notes "what changed"     # --stage, --dry-run, --help
 ```
 
-The private key is read from `$JEDI_PUBLISH_KEY`, `$JEDI_PUBLISH_KEY_FILE`, or
+The publishing token comes from `~/.config/ares-repository/apex-jedisyslogger-portable.env`,
+created once with `ARES Repository/tools/issue-release-tokens.sh apex-jedisyslogger-portable`.
+The private key is read from `APEX_SIGNING_KEY` / `APEX_SIGNING_KEY_FILE` in that
+file, else `$JEDI_PUBLISH_KEY`, `$JEDI_PUBLISH_KEY_FILE`, or
 `~/.config/apex-jedisyslogger/publish.key`, and the file must not be group- or
 world-readable. **It is never accepted on the command line** — argv is visible in
 `ps`, in shell history and in CI logs. `sign.js` then derives the public key from

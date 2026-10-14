@@ -1,10 +1,14 @@
 #!/usr/bin/env node
 /*
- * publish.js — push a signed release to the Apex Update Server.
+ * publish.js — push a signed release to the ARES Repository.
+ *
+ * Normally run by scripts/release.sh, which builds, signs and then calls this.
  *
  *   node packaging/publish.js                 publish dist/publish/ to the default channel
  *   node packaging/publish.js --dry-run       show what would happen, touch nothing
  *   node packaging/publish.js --channel beta
+ *   node packaging/publish.js --stage         upload and sign, but do not offer it yet
+ *   node packaging/publish.js --rollout 25    offer it to ~25% of clients
  *
  * The server's flow is four calls, and the order is the point: artefacts land in
  * staging, and only attaching the signed manifest turns them into a release.
@@ -16,7 +20,8 @@
  *
  * The API token is never accepted on the command line — argv is visible in `ps`,
  * in shell history and in CI logs. It comes from $APEX_TOKEN, $APEX_TOKEN_FILE,
- * or ~/.config/apex-jedisyslogger/apex.token (mode 600).
+ * or ~/.config/apex-jedisyslogger/apex.token (mode 600). The server is
+ * $APEX_SERVER if set, otherwise UPDATE_URL from js/version.js.
  *
  * Node core only.
  */
@@ -36,7 +41,13 @@ const flag = (n, d) => { const i = argv.indexOf(`--${n}`); return i === -1 ? d :
 const DRY = argv.includes('--dry-run');
 const CHANNEL = String(flag('channel', UPDATE_CHANNEL || 'stable'));
 const SLUG = String(flag('app', UPDATE_APP));
-const HOST = new URL(UPDATE_URL).origin;
+const STAGE = argv.includes('--stage');
+const ROLLOUT = flag('rollout', null);
+const HOST = new URL(process.env.APEX_SERVER || UPDATE_URL).origin;
+if (ROLLOUT !== null && !(/^\d+$/.test(String(ROLLOUT)) && +ROLLOUT >= 1 && +ROLLOUT <= 100)) {
+  process.stderr.write('publish: --rollout wants a whole number from 1 to 100\n');
+  process.exit(2);
+}
 
 function die(msg, hint) {
   process.stderr.write(`publish: ${msg}\n`);
@@ -129,7 +140,8 @@ const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).dig
       process.stderr.write(`  would PUT   ${f}  [${d.platform}/${d.arch}/${d.format}]\n`);
     }
     process.stderr.write(`  would POST  the signed manifest (${manifest.artifacts.length} artefacts)\n`);
-    process.stderr.write(`  would POST  publish to ${CHANNEL}\n\n`);
+    if (STAGE) process.stderr.write(`  would NOT publish (--stage)\n\n`);
+    else process.stderr.write(`  would POST  publish to ${CHANNEL}${ROLLOUT !== null ? ` at ${ROLLOUT}%` : ''}\n\n`);
     return;
   }
 
@@ -172,7 +184,13 @@ const sha256 = (f) => crypto.createHash('sha256').update(fs.readFileSync(f)).dig
   process.stderr.write(`  attached the signed manifest\n`);
 
   // 4. publish
-  r = await request('POST', `/api/v1/apps/${SLUG}/releases/${encodeURIComponent(VERSION)}/publish`, { json: { channel: CHANNEL } });
+  if (STAGE) {
+    process.stderr.write(`  staged, not published — publish it from the release page when ready\n\n`);
+    return;
+  }
+  const pub = { channel: CHANNEL };
+  if (ROLLOUT !== null) pub.rollout_percent = Number(ROLLOUT);
+  r = await request('POST', `/api/v1/apps/${SLUG}/releases/${encodeURIComponent(VERSION)}/publish`, { json: pub });
   if (!ok(r)) die(`publish failed: ${explain(r)}`);
-  process.stderr.write(`  published to ${CHANNEL}\n\n  verify with:  ./packaging/verify-published.sh\n\n`);
+  process.stderr.write(`  published to ${CHANNEL}${ROLLOUT !== null ? ` at ${ROLLOUT}%` : ''}\n\n`);
 })().catch((e) => die(e.message));

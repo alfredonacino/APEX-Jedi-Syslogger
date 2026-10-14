@@ -149,7 +149,7 @@ if (argv.includes('--generate')) {
 const DIST = path.join(ROOT, 'dist');
 if (!fs.existsSync(DIST)) die('dist/ does not exist', 'run ./packaging/build.sh first');
 
-const baseUrl = String(flag('base-url', `https://atlasupdate.cybercontrol.tech/${VERSION}/`));
+const baseUrl = String(flag('base-url', `https://aresrepo.cybercontrol.tech/${VERSION}/`));
 const channel = String(flag('channel', UPDATE_CHANNEL || 'stable'));
 const notes = flag('notes', null);
 
@@ -236,9 +236,9 @@ const manifestUrl = require('../js/version.js').UPDATE_URL;
 fs.writeFileSync(path.join(outDir, 'UPLOAD.txt'), [
   `APEX JediSyslogger ${VERSION} — upload checklist`,
   ``,
-  `Every file in this directory goes to the Apex Update Server. Two rules:`,
+  `Every file in this directory goes to the ARES Repository.`,
   ``,
-  `  Publish with:  node packaging/publish.js`,
+  `  Publish with:  scripts/release.sh --skip-build   (or node packaging/publish.js)`,
   ``,
   `  or by hand: attach ${channel}.json to release ${VERSION} of app "${doc.app}"`,
   `  and publish it to the ${channel} channel. Clients read the manifest from`,
@@ -257,14 +257,11 @@ fs.writeFileSync(path.join(outDir, 'UPLOAD.txt'), [
   `Checksums are inside the signed manifest, so a corrupted upload is detected`,
   `by clients, not just by you.`,
   ``,
-  `Afterwards, verify from outside:`,
-  `  ./packaging/verify-published.sh`,
-  ``,
-].join('\n'));
+  ].join('\n'));
 
 process.stderr.write(`\n  signed with the key from ${from}\n`);
 process.stderr.write(`  self-check: signature verifies against UPDATE_PUBKEY\n\n`);
 process.stderr.write(`  dist/publish/${channel}.json — ${artifacts.length} artefacts, ${signedBytes.length} signed bytes\n`);
 for (const a of artifacts)
   process.stderr.write(`    ${a.filename.padEnd(38)} ${a.platform}/${a.arch}/${a.format}\n`);
-process.stderr.write(`\n  publish with:  node packaging/publish.js\n\n`);
+process.stderr.write(`\n  publish with:  node packaging/publish.js   (scripts/release.sh does this for you)\n\n`);

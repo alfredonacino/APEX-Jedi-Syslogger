@@ -29,10 +29,11 @@
     // any build log. `packaging/sign.js` reads it from JEDI_PUBLISH_KEY or from
     // a file outside the tree, and refuses to run if it does not match the key
     // below. See DOCUMENTATION.md §16.6.
-    // The origin of the Apex Update Server. Paths are built from UPDATE_APP,
+    // The origin of the ARES Repository (the old atlasupdate.cybercontrol.tech
+    // name still answers for builds that shipped with it). Paths are built from UPDATE_APP,
     // so a mirror only needs this one value changed. Baked into every artefact
     // at build time, which is why it must be right before anything is packaged.
-    UPDATE_URL: 'https://atlasupdate.cybercontrol.tech',
+    UPDATE_URL: 'https://aresrepo.cybercontrol.tech',
     UPDATE_APP: 'apex-jedisyslogger-portable',
     UPDATE_PUBKEY: '5n-pji7b1FvJEpjhgpjyu8sUFL7TOcgFQ34-93PuVh0',
     UPDATE_CHANNEL: 'stable',
