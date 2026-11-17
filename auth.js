@@ -54,7 +54,10 @@ const STORE = storePath();
 
 // Documented defaults — README §Signing in and DOCUMENTATION.md §11 repeat these
 // verbatim. Change them together if they ever change.
-const DEFAULT_USER = 'admin';
+const DEFAULT_USER = 'apexadmin';
+// Installs from before apexadmin was the default have an account named 'admin';
+// load() renames it once (see renameLegacyAdmin).
+const LEGACY_DEFAULT_USER = 'admin';
 const DEFAULT_PASSWORD = 'APEXjedi2026!';
 
 const ISSUER = 'APEX JediSyslogger';
@@ -141,11 +144,28 @@ function load() {
     if (!u.collector) u.collector = defaultCollector();
     if (!Array.isArray(u.collectorHistory)) u.collectorHistory = [];
   }
+  renameLegacyAdmin(store);
   // Compare against the text that was read, not against `raw` — for a file that
   // is already current, migrate() hands back that same object, so comparing the
   // two would compare it with itself and a backfill would never reach disk.
   if (serialise(store) !== rawText) save(store);
   return store;
+}
+
+// One-time upgrade: the old built-in account 'admin' becomes DEFAULT_USER. Only
+// when an account is named exactly 'admin' and none already holds the new name
+// (names compare case-insensitively at sign-in). The entry is renamed in place,
+// so its id, password hash, TOTP secret, role and collector are untouched and
+// signed-in sessions (keyed by id) stay valid. Idempotent: after the rename
+// there is no 'admin' left to match.
+function renameLegacyAdmin(store) {
+  if (DEFAULT_USER === LEGACY_DEFAULT_USER) return false;
+  const legacy = store.users.find((u) => u.user === LEGACY_DEFAULT_USER);
+  const taken = store.users.some((u) => String(u.user).toLowerCase() === DEFAULT_USER.toLowerCase());
+  if (!legacy || taken) return false;
+  legacy.user = DEFAULT_USER;
+  console.log(`  ⟲ auth.json: renamed the account "${LEGACY_DEFAULT_USER}" to "${DEFAULT_USER}" (the new default administrator name)`);
+  return true;
 }
 
 const serialise = (store) => JSON.stringify(store, null, 2) + '\n';
